@@ -30,6 +30,8 @@ Every pattern carries `first_release`: the deploy that was live when it first ap
 
 Times accept `30m`, `2h`, an ISO time, or a marker name.
 
+Tool definitions are sent with every model call an agent makes, so they cost tokens on every turn. `--tools core` offers only `diagnose`, `whats_new`, `get_pattern`, `get_context`, `get_request` and `verify_fix`, about half the definitions; `--tools diagnose,get_pattern` picks any set. The default is all of them.
+
 Output is built for agent context. By default it's brief: compact JSON, relative times ("21m ago"), samples only on the top findings, and stack traces trimmed to your app's own frames plus the exception line (library frames are counted, not shown). Pass `detail: "full"` for absolute times, raw rates and untrimmed samples. On the demo, brief output is 40 to 60% smaller than before: `whats_new` is about 350 tokens, `get_pattern` about 200 and `verify_fix` about 115.
 
 Every answer also has a hard size limit, however noisy the log: 8,000 characters brief (about 2k tokens) and 16,000 full, or whatever `max_chars` asks for (at least 1,000). To fit, starlist shortens samples, then drops them, then moves the last findings to the next page, and says what it cut in `trimmed`. `whats_new`, `compare_deploy` and `list_patterns` return a `next_cursor` when more remain; pass it back as `cursor` to get the next page of the same snapshot.

@@ -103,3 +103,58 @@ async fn agent_finds_bug_and_verifies_fix_over_http() -> anyhow::Result<()> {
     let _ = client.cancel().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_smaller_tool_set_is_listed_and_enforced() -> anyhow::Result<()> {
+    let db = std::env::temp_dir().join(format!("starlist-tools-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db);
+    let store = Arc::new(Store::open(&db)?);
+    let core: Vec<String> = starlist::server::CORE_TOOLS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let service: StreamableHttpService<LogServer, LocalSessionManager> = StreamableHttpService::new(
+        move || Ok(LogServer::new(store.clone()).with_tools(Some(&core))),
+        Default::default(),
+        StreamableHttpServerConfig::default(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    tokio::spawn(async move {
+        axum::serve(listener, axum::Router::new().nest_service("/mcp", service)).await
+    });
+    let client = ClientConfig::default()
+        .serve(StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(format!("http://{addr}/mcp")),
+        ))
+        .await?;
+
+    let mut names: Vec<String> = client
+        .list_all_tools()
+        .await?
+        .into_iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    names.sort();
+    let mut want: Vec<String> = starlist::server::CORE_TOOLS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    want.sort();
+    assert_eq!(names, want);
+    let info = client.peer_info().unwrap();
+    let instructions = info.instructions.clone().unwrap_or_default();
+    assert!(
+        !instructions.contains("set_pattern_state"),
+        "{instructions}"
+    );
+
+    // A tool that isn't offered can't be called either.
+    let r = client
+        .call_tool(CallToolRequestParams::new("merge_patterns"))
+        .await;
+    assert!(r.is_err(), "{r:?}");
+
+    let _ = client.cancel().await;
+    Ok(())
+}

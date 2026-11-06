@@ -24,6 +24,16 @@ Runtime evidence from the app's logs, as redacted patterns with stable IDs. If a
 Start with diagnose; whats_new lists every change, get_pattern and get_request go deeper. After a fix: verify_fix, then set_pattern_state resolved.
 Times: '30m', ISO time or a marker (deploys are detected). Optional on most tools: detail 'full', max_chars, and cursor (a previous next_cursor).";
 
+/// The tools `--tools core` keeps: enough to find a problem and check a fix.
+pub const CORE_TOOLS: &[&str] = &[
+    "diagnose",
+    "whats_new",
+    "get_pattern",
+    "get_context",
+    "get_request",
+    "verify_fix",
+];
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WhatsNewArgs {
     /// Recent period, like "15m" or "1h". Default: since the latest deploy if it was in the last 6h, else "1h".
@@ -222,6 +232,28 @@ impl LogServer {
             .into_iter()
             .map(compact_tool)
             .collect()
+    }
+
+    /// Every tool's name.
+    pub fn tool_names() -> Vec<String> {
+        Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect()
+    }
+
+    /// Offer only these tools (`None` keeps them all). Each tool definition is sent with
+    /// every model call, so a smaller set costs an agent less per turn.
+    pub fn with_tools(mut self, keep: Option<&[String]>) -> Self {
+        if let Some(keep) = keep {
+            for name in Self::tool_names() {
+                if !keep.contains(&name) {
+                    self.tool_router.remove_route(&name);
+                }
+            }
+        }
+        self
     }
 
     /// Let clients subscribe to the whats_new resource and get alerts.
@@ -523,7 +555,12 @@ impl ServerHandler for LogServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, McpError> {
         Ok(rmcp::model::ListToolsResult {
-            tools: Self::new_tools(),
+            tools: self
+                .tool_router
+                .list_all()
+                .into_iter()
+                .map(compact_tool)
+                .collect(),
             ..Default::default()
         })
     }
@@ -543,7 +580,11 @@ impl ServerHandler for LogServer {
         };
         ServerConfig::new(caps)
             .with_server_info(Implementation::new("starlist", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(if self.tool_router.has_route("set_pattern_state") {
+                INSTRUCTIONS.to_string()
+            } else {
+                INSTRUCTIONS.replace(", then set_pattern_state resolved", "")
+            })
     }
 
     async fn list_resources(
