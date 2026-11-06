@@ -2,6 +2,8 @@
 //!
 //!   cargo run --example ask -- http://127.0.0.1:7341/mcp                    # list tools
 //!   cargo run --example ask -- http://127.0.0.1:7341/mcp whats_new '{"window":"1h"}'
+//!
+//! Set STARLIST_TOKEN when the server requires a bearer token.
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, ClientConfig};
@@ -12,7 +14,11 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let url = args.next().unwrap_or_else(|| "http://127.0.0.1:7341/mcp".into());
-    let transport = StreamableHttpClientTransport::from_config(StreamableHttpClientTransportConfig::with_uri(url));
+    let mut config = StreamableHttpClientTransportConfig::with_uri(url);
+    if let Ok(t) = std::env::var("STARLIST_TOKEN") {
+        config = config.auth_header(t);
+    }
+    let transport = StreamableHttpClientTransport::from_config(config);
     let client = ClientConfig::default().serve(transport).await?;
     match args.next() {
         None => {
