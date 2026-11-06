@@ -46,6 +46,7 @@ pub fn router(
     store: Arc<Store>,
     token: Option<String>,
     allowed_hosts: Vec<String>,
+    alerts: Option<Arc<crate::alerts::Alerts>>,
 ) -> axum::Router {
     let mut config = StreamableHttpServerConfig::default();
     if !allowed_hosts.is_empty() {
@@ -54,7 +55,7 @@ pub fn router(
         config = config.disable_allowed_hosts();
     }
     let service: StreamableHttpService<LogServer, LocalSessionManager> = StreamableHttpService::new(
-        move || Ok(LogServer::new(store.clone())),
+        move || Ok(LogServer::new(store.clone()).with_alerts(alerts.clone())),
         Default::default(),
         config,
     );
