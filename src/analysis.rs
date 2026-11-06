@@ -129,6 +129,198 @@ pub fn trim_trace(text: &str, max_lines: usize) -> String {
     }
     out.join("\n")
 }
+/// Default upper bound on one tool answer, in characters of compact JSON
+/// (roughly 2k tokens brief, 4k full).
+pub const DEFAULT_MAX_CHARS: usize = 8000;
+pub const DEFAULT_MAX_CHARS_FULL: usize = 16000;
+/// Smallest budget an agent may ask for; below this an answer can't say much.
+pub const MIN_MAX_CHARS: usize = 1000;
+/// Sample length kept when trimming to fit the budget.
+const TRIMMED_SAMPLE_CHARS: usize = 200;
+
+/// Which slice of a list to return and how large the answer may get.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Page {
+    pub limit: usize,
+    pub offset: usize,
+    pub max_chars: usize,
+}
+
+impl Page {
+    /// The first page with the default budget for `d`.
+    pub fn first(limit: usize, d: Detail) -> Self {
+        Self {
+            limit: limit.max(1),
+            offset: 0,
+            max_chars: Self::default_budget(d),
+        }
+    }
+
+    pub fn default_budget(d: Detail) -> usize {
+        if d.full() {
+            DEFAULT_MAX_CHARS_FULL
+        } else {
+            DEFAULT_MAX_CHARS
+        }
+    }
+
+    /// Build a page from tool arguments. A cursor carries the offset and the
+    /// `now` of the first call, so later pages rank the same snapshot of time;
+    /// the returned time replaces `now` for this call.
+    pub fn from_args(
+        limit: usize,
+        cursor: Option<&str>,
+        max_chars: Option<usize>,
+        d: Detail,
+        now: f64,
+    ) -> Result<(Self, f64), String> {
+        let max_chars = max_chars
+            .unwrap_or_else(|| Self::default_budget(d))
+            .max(MIN_MAX_CHARS);
+        let (offset, now) = match cursor.map(str::trim).filter(|c| !c.is_empty()) {
+            None => (0, now),
+            Some(c) => parse_cursor(c)?,
+        };
+        Ok((
+            Self {
+                limit: limit.max(1),
+                offset,
+                max_chars,
+            },
+            now,
+        ))
+    }
+}
+
+fn make_cursor(offset: usize, now: f64) -> String {
+    format!("{offset}@{}", (now * 1000.0).round() as i64)
+}
+
+fn parse_cursor(c: &str) -> Result<(usize, f64), String> {
+    let bad = || format!("Invalid cursor '{c}'. Pass next_cursor exactly as returned.");
+    let (o, t) = c.split_once('@').ok_or_else(bad)?;
+    let offset = o.parse::<usize>().map_err(|_| bad())?;
+    let ms = t.parse::<i64>().map_err(|_| bad())?;
+    Ok((offset, ms as f64 / 1000.0))
+}
+
+fn json_len(v: &Value) -> usize {
+    serde_json::to_string(v)
+        .map(|s| s.chars().count())
+        .unwrap_or(0)
+}
+
+/// Shorten (`Some(n)`) or drop (`None`) the sample text in a finding or pattern.
+fn shrink_samples(v: &mut Value, keep: Option<usize>) {
+    let Some(o) = v.as_object_mut() else { return };
+    match keep {
+        Some(n) => {
+            if let Some(Value::String(t)) = o.get_mut("sample") {
+                *t = truncate(t, n);
+            }
+            if let Some(Value::Array(a)) = o.get_mut("samples") {
+                for x in a.iter_mut() {
+                    if let Some(Value::String(t)) = x.get_mut("text") {
+                        *t = truncate(t, n);
+                    }
+                }
+            }
+        }
+        None => {
+            o.remove("sample");
+            o.remove("samples");
+        }
+    }
+}
+
+/// Assemble an answer from `head` plus one page of `items` under `key`, and keep
+/// it within the page budget: shorten samples, then drop them, then move the
+/// last items to the next page. Says what was cut and how to get the rest.
+/// With `pageable` false there is no cursor, only a count of what was left out.
+fn paged(
+    head: Value,
+    key: &str,
+    mut items: Vec<Value>,
+    total: usize,
+    page: &Page,
+    pageable: bool,
+    now: f64,
+) -> Value {
+    let page_len = items.len();
+    let build = |items: &[Value], notes: &[String]| {
+        let mut v = head.clone();
+        v[key] = json!(items);
+        let shown = page.offset + items.len();
+        if shown < total {
+            if pageable {
+                v["next_cursor"] = json!(make_cursor(shown, now));
+            }
+            v["remaining"] = json!(total - shown);
+        }
+        if !notes.is_empty() {
+            v["trimmed"] = json!(notes.join(" "));
+        }
+        compact(v)
+    };
+    let fits = |v: &Value| json_len(v) <= page.max_chars;
+
+    let mut notes: Vec<String> = vec![];
+    let v = build(&items, &notes);
+    if fits(&v) {
+        return v;
+    }
+    for step in [Some(TRIMMED_SAMPLE_CHARS), None] {
+        for it in items.iter_mut() {
+            shrink_samples(it, step);
+        }
+        notes = vec![match step {
+            Some(_) => "Samples shortened to fit max_chars.".to_string(),
+            None => "Samples removed to fit max_chars; get_pattern shows them.".to_string(),
+        }];
+        let v = build(&items, &notes);
+        if fits(&v) {
+            return v;
+        }
+    }
+    while items.len() > 1 {
+        items.pop();
+        let moved = page_len - items.len();
+        let mut n = notes.clone();
+        n.push(if pageable {
+            format!("{moved} more moved to the next page to fit max_chars.")
+        } else {
+            format!("{moved} more left out to fit max_chars.")
+        });
+        let v = build(&items, &n);
+        if fits(&v) {
+            return v;
+        }
+    }
+    let moved = page_len - items.len();
+    if moved > 0 {
+        notes.push(format!(
+            "{moved} more moved to the next page to fit max_chars."
+        ));
+    }
+    build(&items, &notes)
+}
+
+/// Keep a single-object answer within budget by shortening, then dropping, its samples.
+fn fit_samples(mut v: Value, max_chars: usize) -> Value {
+    v = compact(v);
+    for step in [Some(TRIMMED_SAMPLE_CHARS), None] {
+        if json_len(&v) <= max_chars {
+            break;
+        }
+        shrink_samples(&mut v, step);
+        v["trimmed"] = json!(match step {
+            Some(_) => "Samples shortened to fit max_chars.",
+            None => "Samples removed to fit max_chars.",
+        });
+    }
+    v
+}
+
 /// How many occurrences we need to have expected before calling an absence meaningful.
 const MIN_EXPECTED: f64 = 3.0;
 
@@ -327,7 +519,10 @@ fn markers_between(
         .markers(lo, hi, 10)
         .map_err(db)?
         .into_iter()
-        .map(|m| json!({"name": m.name, "kind": if d.full() { Some(m.kind) } else { None }, "at": fmt_t(m.ts, now, d), "note": m.note}))
+        .map(|m| {
+            let note = m.note.map(|n| truncate(&n, if d.full() { 300 } else { 100 }));
+            json!({"name": m.name, "kind": if d.full() { Some(m.kind) } else { None }, "at": fmt_t(m.ts, now, d), "note": note})
+        })
         .collect())
 }
 
@@ -337,7 +532,7 @@ pub fn whats_new(
     window: &str,
     baseline: &str,
     min_level: Option<&str>,
-    limit: usize,
+    page: &Page,
     d: Detail,
     now: f64,
 ) -> AResult {
@@ -415,10 +610,11 @@ pub fn whats_new(
         found.push(((group, 4 - lvl, order, -after), v));
     }
     found.sort_by_key(|a| a.0);
-    let more = found.len().saturating_sub(limit);
+    let total = found.len();
     let findings: Vec<Value> = found
         .into_iter()
-        .take(limit)
+        .skip(page.offset)
+        .take(page.limit)
         .enumerate()
         .map(|(i, (_, mut v))| {
             if v["kind"] != "gone_quiet"
@@ -431,7 +627,7 @@ pub fn whats_new(
         })
         .collect();
 
-    let summary = if findings.is_empty() {
+    let summary = if total == 0 {
         format!(
             "Nothing new: {events_in_window} events across {active} known patterns, all within their usual rates."
         )
@@ -443,7 +639,7 @@ pub fn whats_new(
     };
     let traffic_note = (traffic >= 2.0 || traffic <= 0.5)
         .then(|| format!("Overall log volume is {traffic:.1}x its baseline."));
-    Ok(json!({
+    let head = json!({
         "window": if d.full() {
             format!("last {} (since {}) vs the {} before", fmt_duration(w), fmt_time(split, now), fmt_duration(b))
         } else {
@@ -461,9 +657,8 @@ pub fn whats_new(
         },
         "current_release": rel.latest().map(|(_, n)| n),
         "markers_in_window": markers_between(store, split, now, now, d)?,
-        "findings": findings,
-        "more_not_shown": if more > 0 { Some(more) } else { None },
-    }))
+    });
+    Ok(paged(head, "findings", findings, total, page, true, now))
 }
 
 /// Did this pattern stop (or drop) after a point in time?
@@ -620,7 +815,7 @@ pub fn compare_deploy(
     store: &Store,
     at: Option<&str>,
     before: Option<&str>,
-    limit: usize,
+    page: &Page,
     d: Detail,
     now: f64,
 ) -> AResult {
@@ -691,9 +886,14 @@ pub fn compare_deploy(
         ));
     }
     found.sort_by_key(|x| x.0);
-    let more = found.len().saturating_sub(limit);
-    let findings: Vec<Value> = found.into_iter().take(limit).map(|(_, v)| v).collect();
-    Ok(json!({
+    let total = found.len();
+    let findings: Vec<Value> = found
+        .into_iter()
+        .skip(page.offset)
+        .take(page.limit)
+        .map(|(_, v)| v)
+        .collect();
+    let head = json!({
         "split": {"at": fmt_t(split, now, d), "marker": marker},
         "compared": format!("{} before vs {} after", fmt_duration(span), fmt_duration(after_secs)),
         "summary": format!(
@@ -701,9 +901,8 @@ pub fn compare_deploy(
             tally[0], tally[1], tally[2], tally[3]
         ),
         "traffic_per_hour": format!("{} before, {} after", per_hour(tb, span), per_hour(ta, after_secs)),
-        "findings": findings,
-        "more_not_shown": if more > 0 { Some(more) } else { None },
-    }))
+    });
+    Ok(paged(head, "findings", findings, total, page, true, now))
 }
 
 pub fn list_patterns(
@@ -711,7 +910,7 @@ pub fn list_patterns(
     since: &str,
     min_level: Option<&str>,
     contains: Option<&str>,
-    limit: usize,
+    page: &Page,
     d: Detail,
     now: f64,
 ) -> AResult {
@@ -740,25 +939,23 @@ pub fn list_patterns(
     let rel = Releases::load(store)?;
     let items: Vec<Value> = stats
         .iter()
-        .take(limit)
+        .skip(page.offset)
+        .take(page.limit)
         .map(|s| {
             let mut v = pattern_brief(&s.row, &rel, now, d);
             v["count"] = json!(s.before);
             v
         })
         .collect();
-    let more = total.saturating_sub(limit);
-    Ok(json!({
-        "since": fmt_t(lo, now, d),
-        "patterns": items,
-        "more_not_shown": if more > 0 { Some(more) } else { None },
-    }))
+    let head = json!({"since": fmt_t(lo, now, d)});
+    Ok(paged(head, "patterns", items, total, page, true, now))
 }
 
 pub fn get_pattern(
     store: &Store,
     pattern_id: &str,
     samples: Option<i64>,
+    max_chars: usize,
     d: Detail,
     now: f64,
 ) -> AResult {
@@ -791,7 +988,7 @@ pub fn get_pattern(
             })
             .collect::<Vec<_>>()
     );
-    Ok(v)
+    Ok(fit_samples(v, max_chars))
 }
 
 pub fn add_marker(
@@ -819,11 +1016,19 @@ pub fn add_marker(
     Ok(json!({"marker": name, "kind": kind, "at": fmt_time(ts, now)}))
 }
 
-pub fn list_markers(store: &Store, limit: i64, now: f64) -> AResult {
+pub fn list_markers(store: &Store, limit: i64, max_chars: usize, now: f64) -> AResult {
     let ms = store
         .markers(f64::MIN, f64::MAX, limit.clamp(1, 100))
         .map_err(db)?;
-    Ok(json!({
-        "markers": ms.into_iter().map(|m| json!({"name": m.name, "kind": m.kind, "at": fmt_time(m.ts, now), "note": m.note})).collect::<Vec<_>>()
-    }))
+    let items: Vec<Value> = ms
+        .into_iter()
+        .map(|m| json!({"name": m.name, "kind": m.kind, "at": fmt_time(m.ts, now), "note": m.note.map(|n| truncate(&n, 300))}))
+        .collect();
+    let total = items.len();
+    let page = Page {
+        limit: total,
+        offset: 0,
+        max_chars,
+    };
+    Ok(paged(json!({}), "markers", items, total, &page, false, now))
 }

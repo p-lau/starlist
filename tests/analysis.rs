@@ -1,7 +1,8 @@
 //! Scenario tests for "what's new" and "verify my fix" with controlled time.
 
 use starlist::analysis::{
-    Detail, compact, compare_deploy, get_pattern, trim_trace, verify_fix, whats_new,
+    DEFAULT_MAX_CHARS, Detail, Page, compact, compare_deploy, get_pattern, trim_trace, verify_fix,
+    whats_new,
 };
 use starlist::pattern::{Event, mask, parse_event, pattern_id};
 use starlist::redact::Redactor;
@@ -89,7 +90,16 @@ fn whats_new_finds_new_spiking_and_quiet_patterns() {
         1440,
     );
 
-    let v = whats_new(&s, "1h", "24h", None, 10, Detail::Brief, NOW).unwrap();
+    let v = whats_new(
+        &s,
+        "1h",
+        "24h",
+        None,
+        &Page::first(10, Detail::Brief),
+        Detail::Brief,
+        NOW,
+    )
+    .unwrap();
     let findings = v["findings"].as_array().unwrap();
     let kinds: Vec<(&str, &str)> = findings
         .iter()
@@ -132,8 +142,17 @@ fn whats_new_is_quiet_when_nothing_changed() {
         NOW,
         3000,
     );
-    let v = whats_new(&s, "1h", "24h", None, 10, Detail::Brief, NOW).unwrap();
-    assert!(v["findings"].as_array().unwrap().is_empty());
+    let v = whats_new(
+        &s,
+        "1h",
+        "24h",
+        None,
+        &Page::first(10, Detail::Brief),
+        Detail::Brief,
+        NOW,
+    )
+    .unwrap();
+    assert!(v["findings"].as_array().is_none_or(|f| f.is_empty()), "{v}");
     assert!(v["summary"].as_str().unwrap().starts_with("Nothing new"));
 }
 
@@ -211,7 +230,15 @@ fn compare_deploy_lists_regressions_first() {
     s.add_marker("v1.5.0", NOW - H, "deploy", None).unwrap();
     spread(&s, BUG, NOW - 55.0 * M, NOW, 30);
     spread(&s, "ERROR db timeout 3000ms", NOW - 55.0 * M, NOW, 60);
-    let v = compare_deploy(&s, Some("v1.5.0"), Some("2h"), 10, Detail::Brief, NOW).unwrap();
+    let v = compare_deploy(
+        &s,
+        Some("v1.5.0"),
+        Some("2h"),
+        &Page::first(10, Detail::Brief),
+        Detail::Brief,
+        NOW,
+    )
+    .unwrap();
     println!("{}", serde_json::to_string_pretty(&v).unwrap());
     let f = v["findings"].as_array().unwrap();
     assert_eq!(f[0]["kind"], "new_after");
@@ -237,7 +264,18 @@ fn unknown_inputs_give_helpful_errors() {
             .unwrap_err()
             .contains("list_markers")
     );
-    assert!(whats_new(&s, "soon", "24h", None, 5, Detail::Brief, NOW).is_err());
+    assert!(
+        whats_new(
+            &s,
+            "soon",
+            "24h",
+            None,
+            &Page::first(5, Detail::Brief),
+            Detail::Brief,
+            NOW
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -269,7 +307,16 @@ fn busier_traffic_alone_is_not_a_spike() {
     spread(&s, "WARN slow query took 900ms", NOW - H, NOW, 50); // grew with traffic
     spread(&s, "ERROR db pool exhausted", NOW - 25.0 * H, NOW - H, 24); // 1/h
     spread(&s, "ERROR db pool exhausted", NOW - H, NOW, 60); // grew much faster than traffic
-    let v = whats_new(&s, "1h", "24h", None, 10, Detail::Brief, NOW).unwrap();
+    let v = whats_new(
+        &s,
+        "1h",
+        "24h",
+        None,
+        &Page::first(10, Detail::Brief),
+        Detail::Brief,
+        NOW,
+    )
+    .unwrap();
     let f = v["findings"].as_array().unwrap();
     assert_eq!(f.len(), 1, "{v}");
     assert!(f[0]["template"].as_str().unwrap().contains("db pool"));
@@ -337,7 +384,7 @@ fn brief_output_is_much_smaller_than_full() {
     }
     let size = |d| {
         serde_json::to_string(&compact(
-            whats_new(&s, "1h", "24h", None, 10, d, NOW).unwrap(),
+            whats_new(&s, "1h", "24h", None, &Page::first(10, d), d, NOW).unwrap(),
         ))
         .unwrap()
         .len()
@@ -354,6 +401,6 @@ fn brief_output_is_much_smaller_than_full() {
         0.0,
     )
     .pattern_id;
-    let g = get_pattern(&s, &id, None, Detail::Brief, NOW).unwrap();
+    let g = get_pattern(&s, &id, None, DEFAULT_MAX_CHARS, Detail::Brief, NOW).unwrap();
     assert_eq!(g["samples"].as_array().unwrap().len(), 1);
 }

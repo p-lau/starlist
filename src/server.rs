@@ -1,6 +1,6 @@
 //! MCP surface: a handful of tools that answer from the local store.
 
-use crate::analysis::{self, AResult, Detail};
+use crate::analysis::{self, AResult, Detail, Page};
 use crate::store::Store;
 use rmcp::{
     ServerHandler,
@@ -29,6 +29,10 @@ pub struct WhatsNewArgs {
     pub limit: Option<usize>,
     /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
     pub detail: Option<String>,
+    /// Continue a previous answer: pass its next_cursor unchanged.
+    pub cursor: Option<String>,
+    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -53,6 +57,10 @@ pub struct CompareDeployArgs {
     pub limit: Option<usize>,
     /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
     pub detail: Option<String>,
+    /// Continue a previous answer: pass its next_cursor unchanged.
+    pub cursor: Option<String>,
+    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -67,6 +75,10 @@ pub struct ListPatternsArgs {
     pub limit: Option<usize>,
     /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
     pub detail: Option<String>,
+    /// Continue a previous answer: pass its next_cursor unchanged.
+    pub cursor: Option<String>,
+    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -76,6 +88,8 @@ pub struct GetPatternArgs {
     pub samples: Option<i64>,
     /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
     pub detail: Option<String>,
+    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -94,6 +108,8 @@ pub struct AddMarkerArgs {
 pub struct ListMarkersArgs {
     /// Maximum markers to return, newest first. Default 20.
     pub limit: Option<i64>,
+    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    pub max_chars: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -110,6 +126,12 @@ fn detail(d: &Option<String>) -> Result<Detail, String> {
     Detail::parse(d.as_deref())
 }
 
+fn budget(max_chars: Option<usize>, d: Detail) -> usize {
+    max_chars
+        .unwrap_or_else(|| Page::default_budget(d))
+        .max(analysis::MIN_MAX_CHARS)
+}
+
 #[tool_router]
 impl LogServer {
     pub fn new(store: Arc<Store>) -> Self {
@@ -124,14 +146,22 @@ impl LogServer {
         annotations(read_only_hint = true)
     )]
     fn whats_new(&self, Parameters(a): Parameters<WhatsNewArgs>) -> Result<String, String> {
+        let d = detail(&a.detail)?;
+        let (page, now) = Page::from_args(
+            a.limit.unwrap_or(10).clamp(1, 50),
+            a.cursor.as_deref(),
+            a.max_chars,
+            d,
+            analysis::now(),
+        )?;
         out(analysis::whats_new(
             &self.store,
             a.window.as_deref().unwrap_or("1h"),
             a.baseline.as_deref().unwrap_or("24h"),
             a.min_level.as_deref(),
-            a.limit.unwrap_or(10).clamp(1, 50),
-            detail(&a.detail)?,
-            analysis::now(),
+            &page,
+            d,
+            now,
         ))
     }
 
@@ -158,13 +188,21 @@ impl LogServer {
         &self,
         Parameters(a): Parameters<CompareDeployArgs>,
     ) -> Result<String, String> {
+        let d = detail(&a.detail)?;
+        let (page, now) = Page::from_args(
+            a.limit.unwrap_or(10).clamp(1, 50),
+            a.cursor.as_deref(),
+            a.max_chars,
+            d,
+            analysis::now(),
+        )?;
         out(analysis::compare_deploy(
             &self.store,
             a.at.as_deref(),
             a.before.as_deref(),
-            a.limit.unwrap_or(10).clamp(1, 50),
-            detail(&a.detail)?,
-            analysis::now(),
+            &page,
+            d,
+            now,
         ))
     }
 
@@ -173,14 +211,22 @@ impl LogServer {
         annotations(read_only_hint = true)
     )]
     fn list_patterns(&self, Parameters(a): Parameters<ListPatternsArgs>) -> Result<String, String> {
+        let d = detail(&a.detail)?;
+        let (page, now) = Page::from_args(
+            a.limit.unwrap_or(20).clamp(1, 100),
+            a.cursor.as_deref(),
+            a.max_chars,
+            d,
+            analysis::now(),
+        )?;
         out(analysis::list_patterns(
             &self.store,
             a.since.as_deref().unwrap_or("24h"),
             a.min_level.as_deref(),
             a.contains.as_deref(),
-            a.limit.unwrap_or(20).clamp(1, 100),
-            detail(&a.detail)?,
-            analysis::now(),
+            &page,
+            d,
+            now,
         ))
     }
 
@@ -193,6 +239,7 @@ impl LogServer {
             &self.store,
             &a.pattern_id,
             a.samples,
+            budget(a.max_chars, detail(&a.detail)?),
             detail(&a.detail)?,
             analysis::now(),
         ))
@@ -225,6 +272,7 @@ impl LogServer {
         out(analysis::list_markers(
             &self.store,
             a.limit.unwrap_or(20),
+            budget(a.max_chars, Detail::Brief),
             analysis::now(),
         ))
     }

@@ -1,6 +1,8 @@
 //! Which release introduced each pattern (issue #7).
 
-use starlist::analysis::{Detail, add_marker, compare_deploy, get_pattern, whats_new};
+use starlist::analysis::{
+    DEFAULT_MAX_CHARS, Detail, Page, add_marker, compare_deploy, get_pattern, whats_new,
+};
 use starlist::pattern::{Event, parse_event};
 use starlist::redact::Redactor;
 use starlist::store::Store;
@@ -48,13 +50,22 @@ fn whats_new_names_the_release_that_introduced_a_pattern() {
     s.add_deploy("v1.4.3", NOW - 40.0 * M, None).unwrap();
     spread(&s, BUG, NOW - 30.0 * M, NOW, 9);
 
-    let v = whats_new(&s, "1h", "24h", None, 10, Detail::Brief, NOW).unwrap();
+    let v = whats_new(
+        &s,
+        "1h",
+        "24h",
+        None,
+        &Page::first(10, Detail::Brief),
+        Detail::Brief,
+        NOW,
+    )
+    .unwrap();
     assert_eq!(v["current_release"], "v1.4.3", "{v}");
     let f = &v["findings"][0];
     assert_eq!(f["kind"], "new");
     assert_eq!(f["first_release"], "v1.4.3", "{v}");
 
-    let p = get_pattern(&s, &id_of(BG), None, Detail::Brief, NOW).unwrap();
+    let p = get_pattern(&s, &id_of(BG), None, DEFAULT_MAX_CHARS, Detail::Brief, NOW).unwrap();
     assert_eq!(p["first_release"], "v1.4.2", "{p}");
 }
 
@@ -63,7 +74,7 @@ fn patterns_before_the_first_deploy_have_no_release() {
     let s = store();
     spread(&s, BG, NOW - 3.0 * H, NOW, 300);
     s.add_deploy("v2.0.0", NOW - H, None).unwrap();
-    let p = get_pattern(&s, &id_of(BG), None, Detail::Brief, NOW).unwrap();
+    let p = get_pattern(&s, &id_of(BG), None, DEFAULT_MAX_CHARS, Detail::Brief, NOW).unwrap();
     assert!(p.get("first_release").is_none_or(|r| r.is_null()), "{p}");
 }
 
@@ -94,7 +105,15 @@ fn add_marker_can_record_a_deploy() {
 #[test]
 fn compare_deploy_defaults_to_the_latest_deploy() {
     let s = store();
-    let err = compare_deploy(&s, None, None, 10, Detail::Brief, NOW).unwrap_err();
+    let err = compare_deploy(
+        &s,
+        None,
+        None,
+        &Page::first(10, Detail::Brief),
+        Detail::Brief,
+        NOW,
+    )
+    .unwrap_err();
     assert!(err.contains("deploy"), "{err}");
 
     spread(&s, BG, NOW - 3.0 * H, NOW, 1000);
@@ -103,7 +122,15 @@ fn compare_deploy_defaults_to_the_latest_deploy() {
         .unwrap();
     s.add_deploy("v1.5.1", NOW - H, None).unwrap();
     spread(&s, BUG, NOW - 50.0 * M, NOW, 20);
-    let v = compare_deploy(&s, None, None, 10, Detail::Brief, NOW).unwrap();
+    let v = compare_deploy(
+        &s,
+        None,
+        None,
+        &Page::first(10, Detail::Brief),
+        Detail::Brief,
+        NOW,
+    )
+    .unwrap();
     assert_eq!(v["split"]["marker"], "v1.5.1", "{v}");
     assert_eq!(v["findings"][0]["kind"], "new_after");
     assert_eq!(v["findings"][0]["first_release"], "v1.5.1");
