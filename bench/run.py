@@ -18,9 +18,18 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import scenarios
-
 HERE = Path(__file__).resolve().parent
+# A suite is a directory with app/, simulate.py, scenarios.py and checks/:
+# round 1 is this directory, round 2 is v2/.
+SUITES = {"round1": HERE, "round2": HERE / "v2"}
+
+
+def load_scenarios(suite: Path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(f"scenarios_{suite.name}", suite / "scenarios.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 REPO = HERE.parent
 
 PROMPT = """You're on call for the shop service; its Python code is in the current directory. {symptom}
@@ -41,10 +50,11 @@ NO_HINT = "An alert fired after the latest release, but nobody knows yet what is
 BASE_TOOLS = ["Read", "Edit", "Grep", "Glob"]
 
 
-def prepare(work: Path, scenario: str, arm: str, seed: int, starlist: Path, sim_args: list,
-            hint: bool) -> dict:
+def prepare(suite: Path, work: Path, scenario: str, arm: str, seed: int, starlist: Path,
+            sim_args: list, hint: bool) -> dict:
+    scenarios = load_scenarios(suite)
     ws, logs = work / "ws", work / "logs"
-    shutil.copytree(HERE / "app", ws, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(suite / "app", ws, ignore=shutil.ignore_patterns("__pycache__"))
     scenarios.apply(ws, scenario)
     if arm == "none":  # control: can the bug be found from the code alone?
         args = ["--tools", ",".join(BASE_TOOLS), "--strict-mcp-config",
@@ -54,7 +64,7 @@ def prepare(work: Path, scenario: str, arm: str, seed: int, starlist: Path, sim_
                 "prompt": PROMPT.format(symptom=symptom, logs=LOGS["none"])}
     logs.mkdir()
     log = logs / "app.log"
-    subprocess.run([sys.executable, str(HERE / "simulate.py"), "--scenario", scenario,
+    subprocess.run([sys.executable, str(suite / "simulate.py"), "--scenario", scenario,
                     "--out", str(log), "--seed", str(seed), *sim_args], check=True)
     args = ["--tools", ",".join(BASE_TOOLS), "--strict-mcp-config"]
     if arm == "raw":
@@ -76,12 +86,14 @@ def prepare(work: Path, scenario: str, arm: str, seed: int, starlist: Path, sim_
     return {"ws": ws, "args": args, "prompt": prompt}
 
 
-def grade(work: Path, scenario: str) -> dict:
+def grade(suite: Path, work: Path, scenario: str) -> dict:
     """Run the visible tests and the hidden check on a copy of what the agent left."""
     g = work / "grade"
     shutil.rmtree(g, ignore_errors=True)
     shutil.copytree(work / "ws", g, ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copy(HERE / "checks" / f"{scenario}.py", g / "tests" / "test_hidden_check.py")
+    shutil.copy(suite / "checks" / f"{scenario}.py", g / "tests" / "test_hidden_check.py")
+    for helper in (suite / "checks").glob("fake_*.py"):
+        shutil.copy(helper, g / "tests" / helper.name)
     env = {**os.environ, "PYTHONPATH": str(g)}
     r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"],
                        cwd=g, env=env, capture_output=True, text=True, timeout=120)
@@ -156,7 +168,8 @@ def run_one(job: dict) -> dict:
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
-    p = prepare(work, job["scenario"], job["arm"], job["seed"], Path(job["starlist"]),
+    suite = Path(job["suite"])
+    p = prepare(suite, work, job["scenario"], job["arm"], job["seed"], Path(job["starlist"]),
                 job["sim_args"], job["hint"])
     log = work / "logs" / "app.log"
     log_bytes = log.stat().st_size if log.exists() else None
@@ -172,9 +185,9 @@ def run_one(job: dict) -> dict:
             timed_out = False
         except subprocess.TimeoutExpired:
             timed_out = True
-    row = {k: job[k] for k in ("variant", "scenario", "arm", "seed", "model")}
+    row = {k: job[k] for k in ("round", "variant", "scenario", "arm", "seed", "model")}
     row.update(measure(transcript))
-    row.update(grade(work, job["scenario"]))
+    row.update(grade(suite, work, job["scenario"]))
     if log_bytes:
         row["log_bytes"] = log_bytes
     if not job["keep"]:  # logs and databases are large; keep the transcript and the edit
@@ -191,6 +204,8 @@ def run_one(job: dict) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser()
+    p.add_argument("--round", choices=sorted(SUITES), default="round1",
+                   help="round1: bugs visible in the code; round2: bugs only the logs reveal")
     p.add_argument("--model", default="claude-sonnet-5-5")
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--scenario", action="append", help="Only these (repeatable)")
@@ -213,18 +228,19 @@ def main() -> None:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     variant = ("large" if a.large else "small") + ("-no-hint" if a.no_hint else "")
     sim_args = ["--traffic", "8", "--debug"] if a.large else []
-    out = Path(a.out or HERE / "results" / f"{stamp}-{variant}-{a.model}.jsonl")
+    out = Path(a.out or HERE / "results" / f"{stamp}-{a.round}-{variant}-{a.model}.jsonl")
     out.parent.mkdir(exist_ok=True)
     jobs = []
     for seed in range(1, a.repeats + 1):
-        for scenario in a.scenario or sorted(scenarios.SCENARIOS):
+        for scenario in a.scenario or sorted(load_scenarios(SUITES[a.round]).SCENARIOS):
             for arm in a.arm or ["raw", "starlist"]:
                 jobs.append({"variant": variant, "sim_args": sim_args, "keep": a.keep,
-                             "hint": not a.no_hint,
+                             "hint": not a.no_hint, "round": a.round,
+                             "suite": str(SUITES[a.round]),
                              "scenario": scenario, "arm": arm, "seed": seed, "model": a.model,
                              "starlist": a.starlist, "max_turns": a.max_turns,
                              "timeout": a.timeout,
-                             "work": f"{a.work}/{stamp}-{variant}/{scenario}-{arm}-{seed}"})
+                             "work": f"{a.work}/{stamp}-{a.round}-{variant}/{scenario}-{arm}-{seed}"})
     with ThreadPoolExecutor(a.parallel) as pool, open(out, "a") as f:
         for row in pool.map(run_one, jobs):
             f.write(json.dumps(row) + "\n")

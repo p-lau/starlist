@@ -1,84 +1,125 @@
 # Token benchmark: raw logs vs starlist
 
-Does an agent fix a production bug with fewer tokens when it reads logs through starlist instead of the raw log file? This benchmark runs the same debugging tasks both ways with a real coding agent and grades the fix with a hidden check.
+Does an agent fix a production bug with fewer tokens when it reads logs through starlist instead of the raw log file? This benchmark runs the same debugging tasks both ways with a real coding agent and grades each fix with a check the agent never sees.
+
+**Short answer (Sonnet 5.5, 210 runs, about $10):** it depends on whether the bug needs the logs at all.
+
+- **When the code alone gives the bug away** (round 1), starlist makes no real difference. The agent finds the bug by reading the code, and log reads are 1 to 3% of its tokens.
+- **When only the logs can explain the failure** (round 2), starlist fixes as many bugs as raw logs with 32% fewer tokens and half the cost on a 17 MB log. On a 300 MB log it takes 2.7x fewer tokens and 2.9x less cost. Without logs the agent fixed 2 of 12.
 
 ## Setup
 
-- **The service.** `app/` is a small checkout service in Python (about 470 lines: catalog, cart pricing, coupons, inventory, shipping quotes, payments, receipts). It has realistic background noise: slow queries, a flaky payment gateway, SMTP disconnects, a long-standing `NotFound` crash for deleted products, card declines and out-of-stock rejections.
-- **The logs.** `simulate.py` runs the real service code against 26 hours of simulated traffic with a simulated clock, so every line and stack trace comes from executing the code. Version 2.3.4 runs for 25 hours, then 2.4.0 (the release with the bug) is deployed and runs for the last 45 minutes. Stock levels survive the deploy. Two sizes:
-  - **small**: INFO level, about 165k lines and 17 MB.
+- **The service.** A small checkout service in Python (about 470 lines: catalog, pricing, coupons, inventory, shipping quotes, payments, receipts). It has realistic background noise: slow queries, a flaky payment gateway, mail relay disconnects, a long-standing crash for deleted products, card declines and out-of-stock rejections.
+- **The logs.** The simulator runs the real service code against 26 hours of simulated traffic with a simulated clock, so every line and stack trace comes from executing the code. There are two sizes:
+  - **small**: INFO level, about 170k lines and 17 MB.
   - **large**: DEBUG level and 8x the traffic, about 2.9M lines and 300 MB.
-- **The bugs** (`scenarios.py`). Every release also carries unrelated changes (version bump, a new market), so the bug isn't the only difference.
-
-  | Scenario | What the release broke | What shows in the logs |
-  |---|---|---|
-  | coupon-percent | Coupons became whole percents in config; pricing still treats them as fractions, so totals go negative | New `ValueError` from `payments.py`, under the same message as an old, unrelated crash |
-  | shipping-weight | A new grams-to-kg helper divides by a million | New WARN on every quote: carrier rejects the weight, flat rate used. No errors |
-  | receipt-giftcard | Gift card receipt line adds a `Decimal` to a `str` | New `TypeError` under the same message as old SMTP failures |
-  | cache-config | The cache TTL setting was renamed; catalog reads the old name and gets 0 | Cache hit rate drops to 0, slow queries jump. No errors |
-  | stock-boundary | Stock check became `stock > qty` | Out-of-stock rejections rise about 1.5x; the INFO line shows `requested=2 available=2` |
-
-- **The agent.** Headless Claude Code (`claude -p`), Sonnet 5.5, default system prompt, tools limited to Read, Edit, Grep and Glob (no shell), no user settings, at most 40 turns. It gets a fresh copy of the released code with no git history and this prompt: "You're on call for the shop service... {symptom}. {how to read logs}. Find the root cause and fix it with the smallest change. You can't run the service or the tests."
+- **The agent.** Headless Claude Code (`claude -p`) on Sonnet 5.5, with the default system prompt and no user settings, at most 40 turns. Its tools are limited to Read, Edit, Grep and Glob, with no shell. It gets a fresh copy of the code with no git history and this prompt: "You're on call for the shop service... {symptom}. {how to read logs}. Find the root cause and fix it with the smallest change. You can't run the service or the tests."
 - **Arms.**
-  - **raw**: the log file's path. The agent reads it with Grep (which has count mode and a result limit) and Read.
-  - **starlist**: the log is ingested with `starlist ingest --source-root /app`, deleted, and served with `starlist mcp --stdio`. The agent only sees starlist's tools.
+  - **raw**: the agent gets the log file's path and reads it with Grep (which has a count mode and a result limit) and Read.
+  - **starlist**: the log is ingested with `starlist ingest --source-root /app`, deleted, and served with `starlist mcp --stdio`. The agent sees only starlist's tools.
   - **none** (control): no logs at all, to check whether the bug can be found from the code alone.
-- **No hint.** With `--no-hint` the symptom is replaced by "An alert fired after the latest release, but nobody knows yet what is wrong", so the agent has to find the problem itself.
-- **Grading.** After the agent stops, the visible tests and a hidden check (`checks/<scenario>.py`) run on a copy of its workspace. The hidden check fails on the released code and passes on a correct fix.
-- **Metrics.** From the agent's stream: total tokens (input + cache reads + cache writes + output, summed over every model call), cost, turns, peak context, and the characters that log tools returned (Grep/Read on the log file, or starlist calls). "Log output tokens" is that character count divided by 4.
+- **Grading.** When the agent stops, the visible tests and a hidden check run on a copy of its workspace. Each hidden check fails on the code as shipped and passes on a correct fix.
+- **Metrics** (from the agent's stream):
+  - total tokens: input, cache reads, cache writes and output, summed over every model call
+  - cost and turns
+  - peak context
+  - log output: the characters returned by log tools (Grep or Read on the log file, or starlist calls), divided by 4 to estimate tokens
 
-## Results (2026-11-06, Sonnet 5.5, 3 runs per cell, 120 runs, about $5)
+### Round 1: bugs a release introduced (`scenarios.py`, `checks/`)
 
-Totals over the 5 scenarios × 3 runs:
+Version 2.3.4 runs for 25 hours, then 2.4.0 is deployed and runs for the last 45 minutes. The release also carries unrelated changes, so the bug isn't the only difference.
 
-| Logs | Hint | Arm | Fixed | Total tokens | Log output | Output tokens | Turns | Cost |
+| Scenario | What the release broke | What shows in the logs |
+|---|---|---|
+| coupon-percent | Coupons became whole percents in config; pricing still treats them as fractions, so totals go negative | New `ValueError` from `payments.py`, under the same message as an old, unrelated crash |
+| shipping-weight | A new grams-to-kg helper divides by a million | New WARN on every quote: the carrier rejects the weight and the flat rate is used. No errors |
+| receipt-giftcard | The gift card receipt line adds a `Decimal` to a `str` | New `TypeError` under the same message as old SMTP failures |
+| cache-config | The cache TTL setting was renamed; catalog reads the old name and gets 0 | Cache hit rate drops to 0 and slow queries jump. No errors |
+| stock-boundary | The stock check became `stock > qty` | Out-of-stock rejections rise about 1.5x; the INFO line shows `requested=2 available=2` |
+
+`--no-hint` replaces the symptom with "An alert fired after the latest release, but nobody knows yet what is wrong."
+
+### Round 2: bugs only the logs reveal (`v2/`)
+
+Nothing is deployed. About 40 minutes before the end of the log, something outside the service changes, and code that looks fine starts failing. The database and the upstream services are simulated outside the service code (`v2/simulate.py`), so reading the code shows a normal HTTP client and nothing about what changed. The symptom always says "Nothing was deployed today."
+
+| Scenario | What changed outside the service | Symptom given |
+|---|---|---|
+| gateway-rate-limit | The payment gateway answers 18% of charges with code `rate_limited`; the service treats unknown codes as declines | More customers are told their card was declined |
+| carrier-format | The carrier's rate API moved the price to `rate.amount_cents` | Shipping prices look wrong |
+| product-data | A catalog import left five popular products with no weight | Some checkouts fail with a server error |
+| mobile-qty | A new iOS app release sends quantities as strings | Some checkouts fail with a server error (same symptom as product-data) |
+
+## Results
+
+All runs used Sonnet 5.5 with 3 runs per scenario. The table shows totals over each round's scenarios. "Fixed" means the hidden check passed.
+
+| Round | Logs | Arm | Fixed | Total tokens | Log output | Output tokens | Turns | Cost |
 |---|---|---|---|---|---|---|---|---|
-| small (17 MB) | symptom | raw | 15/15 | 1,100k | ≈30k | 20.7k | 127 | $0.86 |
-| small (17 MB) | symptom | starlist | 15/15 | 1,006k | ≈19k | 11.5k | 100 | $0.58 |
-| large (300 MB) | symptom | raw | 15/15 | 894k | ≈17k | 18.7k | 116 | $0.67 |
-| large (300 MB) | symptom | starlist | 15/15 | 1,048k | ≈18k | 11.3k | 97 | $0.58 |
-| large (300 MB) | none | raw | 15/15 | 981k | ≈17k | 20.5k | 132 | $0.69 |
-| large (300 MB) | none | starlist | 15/15 | 1,555k | ≈22k | 17.1k | 138 | $0.75 |
-| no logs | symptom | none | 15/15 | 597k | 0 | 10.6k | 81 | $0.38 |
-| no logs | none | none | 15/15 | 858k | 0 | 16.0k | 138 | $0.54 |
+| 1 | small, symptom | raw | 15/15 | 1,100k | ≈30k | 20.7k | 127 | $0.86 |
+| 1 | small, symptom | starlist | 15/15 | 1,006k | ≈19k | 11.5k | 100 | $0.58 |
+| 1 | small, symptom | starlist after fixes | 15/15 | 928k | ≈8k | 9.9k | 90 | $0.68 |
+| 1 | small, symptom | none | 15/15 | 597k | 0 | 10.6k | 81 | $0.38 |
+| 1 | large, symptom | raw | 15/15 | 894k | ≈17k | 18.7k | 116 | $0.67 |
+| 1 | large, symptom | starlist | 15/15 | 1,048k | ≈18k | 11.3k | 97 | $0.58 |
+| 1 | large, no symptom | raw | 15/15 | 981k | ≈17k | 20.5k | 132 | $0.69 |
+| 1 | large, no symptom | starlist | 15/15 | 1,555k | ≈22k | 17.1k | 138 | $0.75 |
+| 1 | large, no symptom | starlist after fixes | 15/15 | 1,323k | ≈12k | 13.3k | 117 | $0.67 |
+| 1 | none, no symptom | none | 15/15 | 858k | 0 | 16.0k | 138 | $0.54 |
+| 2 | small | raw | 12/12 | 1,416k | ≈47k | 23.4k | 141 | $0.98 |
+| 2 | small | starlist | 12/12 | 960k | ≈8k | 12.2k | 95 | $0.47 |
+| 2 | small | none | **2/12** | 1,089k | 0 | 25.8k | 164 | $0.74 |
+| 2 | large | raw | 12/12 | 2,636k | ≈52k | 39.0k | 201 | $1.39 |
+| 2 | large | starlist | 12/12 | 978k | ≈9k | 12.9k | 98 | $0.48 |
 
-Per-scenario medians are in `results/*.jsonl`; print them with `python3 report.py results/<file>.jsonl`.
+Round 2 used starlist after the fixes described below. For per-scenario medians, run `python3 report.py results/<file>.jsonl`.
 
 ### What this says
 
-1. **These bugs don't need logs.** The control arm fixed all 30 with the fewest tokens. On a 470-line codebase the agent reads every file in a few turns and spots the bug, so this round can't show log tooling helping anyone find a bug. It does measure what logs cost.
-2. **Raw logs don't flood the context.** Even at 300 MB, the raw-log agent's log reads were about 1k tokens per run, because it greps with counts and result limits. Log output is 1 to 3% of total tokens in either arm. A 10x cut in log tokens moves the total by a few percent at most.
-3. **Most tokens are fixed overhead re-read every turn.** The system prompt and tool definitions are about 8k tokens per turn. starlist's 9 tool definitions add about 3.6k more per turn (first-turn context 11.7k vs 8.1k), which is why the starlist arm often uses more total tokens.
-4. **starlist is still cheaper in dollars when the agent knows the symptom** (13 to 33% less), because the agent writes about 40% fewer output tokens and takes fewer turns. `location` and `first_release` point it at the right file, so it reasons less. Output tokens cost far more than cached input.
-5. **Without a symptom, starlist did worse** (58% more tokens, 9% more cost), mostly on cache-config and stock-boundary. `whats_new` on its default 60-minute window didn't flag a 1.5x rise in out-of-stock rejections or the cache regression; agents had to try `compare_deploy`, `list_patterns` and longer windows. One agent asked `whats_new` for a 26-hour window on 26 hours of data and got "7 new" patterns and "volume 352x its baseline", which is noise.
+1. **A benchmark has to need the logs.** In round 1 the no-logs control fixed all 15 with the fewest tokens: on a 470-line codebase the agent reads every file and spots the bug. In round 2 it fixed 2 of 12, and both of those were guesses that rate-limit codes should be retried.
+2. **When logs matter, starlist saves tokens, and more as logs grow.** In round 2, raw-log agents spent 1.5x the tokens on a 17 MB log and 2.7x on a 300 MB log. The biggest gap was product-data on the large log: 550k tokens and 34 turns for the median raw run, against 112k and 11 for starlist. The raw agent had to grep its way from a `TypeError` to which products were affected, while starlist's `get_request` and samples showed it in a few calls.
+3. **Raw logs don't flood the context; they cost turns.** Grep with counts and limits keeps each read small: about 4k tokens of log per run even at 300 MB. The cost comes from extra turns, because each turn re-reads the whole conversation, and from two to three times the output tokens spent reasoning about what the greps showed.
+4. **Fixed overhead matters.** The system prompt and tool definitions are re-read on every turn. Before the fixes, starlist's tools added 3.6k tokens per turn in this branch's version (4.6k with the full v0.12 tool set), which wiped out its savings in round 1.
 
-### starlist issues found
+### What changed in starlist because of this
 
-- Fixed in this branch: Python exceptions without an `Error`/`Exception` suffix (`NotFound`, `GatewayTimeout`, `SMTPServerDisconnected`) were split from their traceback, so they lost their stack and timestamp and showed up as brand-new patterns after every ingest.
-- `whats_new` with a window as long as the history compares against an empty baseline and reports everything as new and spiking.
-- A deploy in the window isn't used as the comparison point automatically; a gradual rise (1.5x) or a change with no new pattern is missed unless the agent calls `compare_deploy`.
-- Tool definitions cost about 3.6k tokens on every turn.
-- Ingest runs at about 3.5 MB/s (300 MB in 88 s).
+The benchmark found these issues, all fixed on the `starlist-fixes` branch:
 
-### Limits of this round
+- **Python exceptions not named `...Error`** (`NotFound`, `GatewayTimeout`) were split from their traceback. They lost their stack and timestamp and showed up as new patterns after every ingest.
+- **Tool definitions were large.** They are now 2.4k tokens per turn instead of 4.6k: no `$schema`, plain types, terse descriptions, and the options every tool shares are explained once.
+- **`whats_new` used a fixed last hour.** It now compares everything since the latest deploy when one went out in the last 6 hours.
+- **The baseline counted hours with no logs.** It now starts at the first log line, so a window as long as the history no longer reports everything as new and "volume 352x its baseline".
 
-- One small codebase. Real services are large enough that reading every file isn't an option, which is where logs (and a code location) should matter most.
-- Every bug is visible in the code. Bugs that come from data, configuration in production, an upstream change or another service can't be found without logs.
-- No shell for the agent, so no `tail`/`awk` pipelines in the raw arm (Claude Code's permission rules blocked running a sub-agent with an unrestricted shell here).
-- One model, three runs per cell.
+After the fixes, starlist's round-1 runs used 8 to 15% fewer tokens. The no-symptom round-1 case is still worse than raw logs (1,323k vs 981k tokens), and `whats_new` still doesn't flag a 1.5x rise like the one in stock-boundary. A finer spike test, such as rate-based significance or comparing the same hour of the previous day, is left for later.
+
+### Limits
+
+- One small codebase. On a large one, the round-1 control would no longer read every file, and the location starlist attaches to each pattern should matter more.
+- The agent had no shell, so the raw arm had no `tail`/`awk` pipelines. Claude Code's permission rules blocked running a sub-agent with an unrestricted shell here.
+- One model, three runs per cell. Single runs vary a lot: raw product-data runs took between 540k and 640k tokens on the large log, and between 130k and 360k on the small one.
+- In round 2, the carrier-format check first also required the old rate format to keep working. Every agent that had logs diagnosed the change correctly and switched to the new format, which is a reasonable fix for an API that fully moved. That requirement was dropped and those runs were regraded. The results files mark them `regraded`.
 
 ## Run it
 
-Needs Python 3.11+, a release build of starlist, and the `claude` CLI signed in.
+You need Python 3.11+, a release build of starlist and the `claude` CLI signed in.
 
 ```sh
 cargo build --release
 cd bench
-python3 run.py --repeats 3                      # small logs, raw and starlist
-python3 run.py --large --repeats 3              # 300 MB logs (each run simulates and ingests them: a few minutes)
-python3 run.py --large --no-hint --repeats 3    # no symptom given
-python3 run.py --arm none --repeats 3           # control: no logs
+python3 run.py --repeats 3                                  # round 1, small logs, raw and starlist
+python3 run.py --large --no-hint --repeats 3                # round 1, 300 MB logs, no symptom
+python3 run.py --arm none --repeats 3                       # round 1 control: no logs
+python3 run.py --round round2 --arm raw --arm starlist --arm none --repeats 3
+python3 run.py --round round2 --large --repeats 3           # a few minutes per run: 300 MB simulated and ingested
 python3 report.py results/<file>.jsonl
 ```
 
-Options: `--scenario NAME` (repeatable), `--arm raw|starlist|none`, `--model`, `--parallel`, `--keep` (keep logs and databases in `--work`, default `/tmp/starlist-bench`). To see a scenario's logs without an agent: `python3 simulate.py --scenario coupon-percent --out app.log`.
+Options:
+- `--scenario NAME` (repeatable)
+- `--arm raw|starlist|none`
+- `--model`
+- `--parallel`
+- `--starlist PATH` (another build)
+- `--keep` (keep logs and databases in `--work`, default `/tmp/starlist-bench`)
+
+To see a scenario's logs without an agent, run `python3 simulate.py --scenario coupon-percent --out app.log` (or `v2/simulate.py`).
