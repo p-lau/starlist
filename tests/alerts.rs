@@ -1,12 +1,13 @@
 //! Push alerts for new and spiking errors (issue #12).
 
 use rmcp::model::{
-    ReadResourceRequestParams, ResourceUpdatedNotificationParam, SubscribeRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ResourceUpdatedNotificationParam,
+    ServerNotification, SubscribeRequestParams, SubscriptionFilter,
 };
-use rmcp::service::{NotificationContext, RoleClient};
+use rmcp::service::{NotificationContext, RoleClient, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{ClientHandler, ServiceExt};
+use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt, ServiceExt};
 use starlist::alerts::{AlertConfig, Detector, RESOURCE_URI, post_webhook, spawn_watcher};
 use starlist::pattern::{Event, parse_event};
 use starlist::redact::Redactor;
@@ -170,31 +171,65 @@ impl ClientHandler for Listener {
     }
 }
 
-#[tokio::test]
-async fn subscribed_agent_hears_about_a_new_crash_within_seconds() -> anyhow::Result<()> {
+/// Serves the MCP endpoint over HTTP against a store with a quiet day of
+/// traffic, with a fast alert watcher unless `alerts` is false.
+async fn serve(alerts: bool) -> anyhow::Result<(Arc<Store>, String)> {
     let s = store();
     let now = starlist::analysis::now();
     let evs: Vec<Event> = (0..600)
         .map(|i| ev("INFO GET /items 200", now - 86400.0 + i as f64 * 144.0))
         .collect();
     s.record(&evs)?;
-    let alerts = spawn_watcher(
-        s.clone(),
-        AlertConfig {
-            interval: Duration::from_millis(200),
-            debounce_secs: 0.5,
-            ..Default::default()
-        },
-    );
-    let router = starlist::http::router(s.clone(), None, vec![], Some(alerts));
+    let alerts = alerts.then(|| {
+        spawn_watcher(
+            s.clone(),
+            AlertConfig {
+                interval: Duration::from_millis(200),
+                debounce_secs: 0.5,
+                ..Default::default()
+            },
+        )
+    });
+    let router = starlist::http::router(s.clone(), None, vec![], alerts);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     tokio::spawn(async move { axum::serve(listener, router).await });
+    Ok((s, format!("http://{addr}/mcp")))
+}
 
+fn crash(s: &Store) -> anyhow::Result<f64> {
+    let at = starlist::analysis::now();
+    s.record(&[ev("FATAL worker crashed\nPanicError: out of memory", at)])?;
+    Ok(at)
+}
+
+/// A client on the current protocol, which has no initialize handshake.
+async fn modern_client(url: String) -> anyhow::Result<RunningService<RoleClient, ()>> {
+    Ok(()
+        .serve_with_lifecycle(
+            StreamableHttpClientTransport::from_config(
+                StreamableHttpClientTransportConfig::with_uri(url),
+            ),
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::LATEST],
+            },
+        )
+        .await?)
+}
+
+fn whats_new_filter() -> SubscriptionFilter {
+    SubscriptionFilter::builder()
+        .resource_subscription(RESOURCE_URI)
+        .build()
+}
+
+#[tokio::test]
+async fn subscribed_agent_hears_about_a_new_crash_within_seconds() -> anyhow::Result<()> {
+    let (s, url) = serve(true).await?;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let client = Listener(tx)
         .serve(StreamableHttpClientTransport::from_config(
-            StreamableHttpClientTransportConfig::with_uri(format!("http://{addr}/mcp")),
+            StreamableHttpClientTransportConfig::with_uri(url),
         ))
         .await?;
     let resources = client.list_resources(None).await?;
@@ -204,13 +239,11 @@ async fn subscribed_agent_hears_about_a_new_crash_within_seconds() -> anyhow::Re
         .subscribe(SubscribeRequestParams::new(RESOURCE_URI))
         .await?;
 
-    // The app crashes.
-    let crash = starlist::analysis::now();
-    s.record(&[ev("FATAL worker crashed\nPanicError: out of memory", crash)])?;
+    let at = crash(&s)?;
 
     let uri = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await?;
     assert_eq!(uri.as_deref(), Some(RESOURCE_URI));
-    assert!(starlist::analysis::now() - crash < 10.0);
+    assert!(starlist::analysis::now() - at < 10.0);
 
     let r = client
         .read_resource(ReadResourceRequestParams::new(RESOURCE_URI))
@@ -220,5 +253,53 @@ async fn subscribed_agent_hears_about_a_new_crash_within_seconds() -> anyhow::Re
         text.contains("latest_alert") && text.contains("worker crashed"),
         "{text}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn listening_agent_hears_about_a_new_crash_within_seconds() -> anyhow::Result<()> {
+    let (s, url) = serve(true).await?;
+    let client = modern_client(url).await?;
+    let mut sub = client.listen(whats_new_filter()).await?;
+    assert_eq!(sub.acknowledged(), &whats_new_filter());
+
+    let at = crash(&s)?;
+
+    let n = tokio::time::timeout(Duration::from_secs(10), sub.next())
+        .await??
+        .expect("subscription ended early");
+    match n {
+        ServerNotification::ResourceUpdatedNotification(n) => {
+            assert_eq!(n.params.uri, RESOURCE_URI)
+        }
+        other => panic!("unexpected notification: {other:?}"),
+    }
+    assert!(starlist::analysis::now() - at < 10.0);
+
+    let r = client
+        .read_resource(ReadResourceRequestParams::new(RESOURCE_URI))
+        .await?;
+    assert!(serde_json::to_string(&r)?.contains("worker crashed"));
+
+    // Ending the subscription leaves the session usable.
+    sub.cancel().await?;
+    assert_eq!(
+        client.list_resources(None).await?.resources[0].uri,
+        RESOURCE_URI
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn listen_is_refused_when_alerts_are_off() -> anyhow::Result<()> {
+    let (_s, url) = serve(false).await?;
+    let client = modern_client(url).await?;
+    let err = client
+        .listen(whats_new_filter())
+        .await
+        .expect_err("listen should be refused without alerts");
+    assert!(err.to_string().contains("-32601"), "{err}");
+    // The session keeps working for everything else.
+    client.list_resources(None).await?;
     Ok(())
 }
