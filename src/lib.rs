@@ -7,5 +7,6 @@ pub mod location;
 pub mod merge;
 pub mod pattern;
 pub mod redact;
+pub mod request;
 pub mod server;
 pub mod store;

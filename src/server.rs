@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 const INSTRUCTIONS: &str = "\
 Distilled, redacted view of one app's logs. Lines are grouped into patterns with stable IDs.
-Flow: whats_new -> get_pattern (get_context for surrounding lines) -> ship a fix -> add_marker (deploys are also auto-detected) -> verify_fix(pattern_id, since=marker).
+Flow: whats_new -> get_pattern (get_context for surrounding lines, get_request for one request's path) -> ship a fix -> add_marker (deploys are also auto-detected) -> verify_fix(pattern_id, since=marker).
 Patterns show first_release, the deploy live when they first appeared.
 Times: '30m', '2h', ISO time, or marker name. Output is brief by default; pass detail='full' for more.";
 
@@ -102,6 +102,16 @@ pub struct AddMarkerArgs {
     pub at: Option<String>,
     /// True if this is a release going live; patterns first seen after it are attributed to it.
     pub deploy: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetRequestArgs {
+    /// Request or trace ID, e.g. a finding's example_request. A full traceparent also works.
+    pub request_id: String,
+    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    pub max_chars: Option<usize>,
+    /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -273,6 +283,21 @@ impl LogServer {
             a.at.as_deref(),
             a.before.unwrap_or(20),
             a.after.unwrap_or(20),
+            budget(a.max_chars, d),
+            d,
+            analysis::now(),
+        ))
+    }
+
+    #[tool(
+        description = "Every event of one request, in order, redacted: the path that led to an error. Findings carry example_request IDs.",
+        annotations(read_only_hint = true)
+    )]
+    fn get_request(&self, Parameters(a): Parameters<GetRequestArgs>) -> Result<String, String> {
+        let d = detail(&a.detail)?;
+        out(analysis::get_request(
+            &self.store,
+            &a.request_id,
             budget(a.max_chars, d),
             d,
             analysis::now(),

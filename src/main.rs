@@ -91,7 +91,11 @@ struct PipelineArgs {
     /// Disk space for recent redacted lines that get_context reads, like "20MB" or "1GB".
     #[arg(long, default_value = "20MB", value_parser = parse_size)]
     raw_size: i64,
-    /// Keep no raw lines (get_context is then unavailable) and delete any already stored.
+    /// Extra field that holds a request ID, beyond trace_id, request_id,
+    /// traceparent and similar (repeatable, any spelling).
+    #[arg(long = "request-key")]
+    request_keys: Vec<String>,
+    /// Keep no raw lines (get_context and get_request are then unavailable) and delete any already stored.
     #[arg(long)]
     no_raw: bool,
     /// Merge patterns that differ in one word once it has taken this many values (0 turns merging off).
@@ -230,7 +234,8 @@ fn pipeline(opts: &PipelineArgs, store: Arc<Store>) -> Result<Pipeline> {
     Ok(
         Pipeline::with_merging(store, Redactor::new(!opts.keep_ips, extra), marker, merge)
             .with_log_tz(opts.log_tz.unwrap_or(0))
-            .with_source_roots(opts.source_roots.clone()),
+            .with_source_roots(opts.source_roots.clone())
+            .with_request_keys(&opts.request_keys),
     )
 }
 

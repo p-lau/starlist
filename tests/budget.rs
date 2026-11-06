@@ -3,8 +3,8 @@
 
 use serde_json::Value;
 use starlist::analysis::{
-    Detail, MIN_MAX_CHARS, Page, compact, compare_deploy, get_context, get_pattern, list_markers,
-    list_patterns, verify_fix, whats_new,
+    Detail, MIN_MAX_CHARS, Page, compact, compare_deploy, get_context, get_pattern, get_request,
+    list_markers, list_patterns, verify_fix, whats_new,
 };
 use starlist::pattern::{Event, parse_event};
 use starlist::redact::Redactor;
@@ -46,7 +46,7 @@ fn noisy_line(i: usize) -> String {
         .map(|f| format!("\n  File \"/srv/app/{w}/module{f}.py\", line {f}, in handler_{w}"))
         .collect();
     format!(
-        "ERROR request failed in {w} {} because the upstream {w} service rejected it{frames}\nValueError: bad {w}",
+        "ERROR request failed in {w} {} because the upstream {w} service rejected it request_id=noisy-req{frames}\nValueError: bad {w}",
         "while processing a very long description of the work ".repeat(4)
     )
 }
@@ -126,6 +126,7 @@ fn every_tool_stays_within_its_default_budget() {
                 verify_fix(&s, &id_of(&noisy_line(0)), "v1.1.0", None, d, NOW),
             ),
             ("list_markers", list_markers(&s, 100, max, NOW)),
+            ("get_request", get_request(&s, "noisy-req", max, d, NOW)),
             (
                 "get_context",
                 get_context(
