@@ -314,13 +314,22 @@ impl Store {
         Ok(())
     }
 
-    /// Adds the marker only if none with this name exists (used for deploy
-    /// markers detected in logs, so replica restarts don't move the marker).
-    pub fn add_marker_if_absent(&self, name: &str, ts: f64, kind: &str) -> R<bool> {
-        if self.marker(name)?.is_some() {
+    /// Record that release `name` went live at `ts`, unless it was already
+    /// the live release then. Replica restarts and re-imported logs don't add
+    /// duplicates, while a rollback to an older release is still recorded.
+    pub fn add_deploy(&self, name: &str, ts: f64, note: Option<&str>) -> R<bool> {
+        let live: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT name FROM markers WHERE kind = 'deploy' AND ts <= ?1 ORDER BY ts DESC, id DESC LIMIT 1",
+                [ts],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if live.as_deref() == Some(name) {
             return Ok(false);
         }
-        self.add_marker(name, ts, kind, None)?;
+        self.add_marker(name, ts, "deploy", note)?;
         Ok(true)
     }
 
@@ -340,6 +349,15 @@ impl Store {
                 },
             )
             .optional()
+    }
+
+    /// Deploy markers (name, time), oldest first.
+    pub fn deploys(&self) -> R<Vec<(f64, String)>> {
+        let conn = self.conn();
+        let mut st = conn
+            .prepare_cached("SELECT ts, name FROM markers WHERE kind = 'deploy' ORDER BY ts, id")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
     }
 
     /// Markers in [lo, hi], newest first.

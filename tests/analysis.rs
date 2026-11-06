@@ -211,7 +211,7 @@ fn compare_deploy_lists_regressions_first() {
     s.add_marker("v1.5.0", NOW - H, "deploy", None).unwrap();
     spread(&s, BUG, NOW - 55.0 * M, NOW, 30);
     spread(&s, "ERROR db timeout 3000ms", NOW - 55.0 * M, NOW, 60);
-    let v = compare_deploy(&s, "v1.5.0", Some("2h"), 10, Detail::Brief, NOW).unwrap();
+    let v = compare_deploy(&s, Some("v1.5.0"), Some("2h"), 10, Detail::Brief, NOW).unwrap();
     println!("{}", serde_json::to_string_pretty(&v).unwrap());
     let f = v["findings"].as_array().unwrap();
     assert_eq!(f[0]["kind"], "new_after");

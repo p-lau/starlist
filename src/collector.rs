@@ -118,10 +118,7 @@ impl Pipeline {
             for e in &events {
                 if let Some(name) = re.captures(&e.head).and_then(|c| c.name("name")) {
                     let name = format!("v{}", name.as_str().trim_start_matches('v'));
-                    if let Ok(true) =
-                        self.store
-                            .add_marker_if_absent(&name, e.ts.unwrap(), "deploy")
-                    {
+                    if let Ok(true) = self.store.add_deploy(&name, e.ts.unwrap(), None) {
                         eprintln!("starlist: deploy marker {name}");
                     }
                 }
