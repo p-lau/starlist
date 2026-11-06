@@ -30,6 +30,8 @@ pub struct Pipeline {
     merger: Option<Mutex<Merger>>,
     /// Seconds east of UTC for log timestamps that have no zone.
     log_tz: i32,
+    /// Path prefixes stripped from code locations so they match the repository.
+    source_roots: Vec<String>,
 }
 
 impl Pipeline {
@@ -62,7 +64,14 @@ impl Pipeline {
             marker_re,
             merger,
             log_tz: 0,
+            source_roots: vec![],
         }
+    }
+
+    /// Strip these path prefixes (like `/app`) from code locations.
+    pub fn with_source_roots(mut self, roots: Vec<String>) -> Self {
+        self.source_roots = roots;
+        self
     }
 
     /// Read zone-less log timestamps as this offset from UTC (seconds east).
@@ -79,6 +88,11 @@ impl Pipeline {
             *t -= self.log_tz as f64;
         }
         e.ts.get_or_insert(now);
+        if !self.source_roots.is_empty()
+            && let Some(l) = e.location.take()
+        {
+            e.location = Some(crate::location::strip_root(&l, &self.source_roots).to_string());
+        }
         e
     }
 
@@ -108,6 +122,11 @@ impl Pipeline {
             for e in events.iter_mut() {
                 if let Some(c) = m.canonical_of(&e.pattern_id).map(str::to_string) {
                     e.pattern_id = c;
+                }
+                // The canonical pattern may have been generalized after its
+                // first event in this batch was parsed.
+                if let Some(t) = m.template_of(&e.pattern_id) {
+                    t.clone_into(&mut e.template);
                 }
             }
         }

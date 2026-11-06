@@ -24,6 +24,8 @@ pub struct PatternRow {
     pub first_seen: f64,
     pub last_seen: f64,
     pub total: i64,
+    /// The most frequent code location of this pattern's events.
+    pub location: Option<String>,
 }
 
 /// A pattern with its counts before and after a split time.
@@ -57,11 +59,12 @@ fn row_to_pattern(r: &rusqlite::Row, off: usize) -> R<PatternRow> {
         first_seen: r.get(off + 4)?,
         last_seen: r.get(off + 5)?,
         total: r.get(off + 6)?,
+        location: r.get(off + 7)?,
     })
 }
 
-const PATTERN_COLS: &str =
-    "p.id, p.template, p.level, p.exc_type, p.first_seen, p.last_seen, p.total";
+const PATTERN_COLS: &str = "p.id, p.template, p.level, p.exc_type, p.first_seen, p.last_seen, p.total,
+     (SELECT l.location FROM locations l WHERE l.pattern_id = p.id ORDER BY l.n DESC, l.last_seen DESC LIMIT 1)";
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> R<Self> {
@@ -84,7 +87,10 @@ impl Store {
              CREATE TABLE IF NOT EXISTS markers(
                 id INTEGER PRIMARY KEY, name TEXT NOT NULL, ts REAL NOT NULL, kind TEXT NOT NULL, note TEXT);
              CREATE INDEX IF NOT EXISTS markers_name ON markers(name);
-             CREATE TABLE IF NOT EXISTS aliases(alias TEXT PRIMARY KEY, canonical TEXT NOT NULL) WITHOUT ROWID;",
+             CREATE TABLE IF NOT EXISTS aliases(alias TEXT PRIMARY KEY, canonical TEXT NOT NULL) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS locations(
+                pattern_id TEXT NOT NULL, location TEXT NOT NULL, n INTEGER NOT NULL, last_seen REAL NOT NULL,
+                PRIMARY KEY(pattern_id, location)) WITHOUT ROWID;",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -123,6 +129,11 @@ impl Store {
                 tx.prepare_cached("INSERT INTO samples(pattern_id, ts, text) VALUES (?1, ?2, ?3)")?;
             let mut set_sample =
                 tx.prepare_cached("UPDATE patterns SET last_sample_ts = ?2 WHERE id = ?1")?;
+            let mut up_loc = tx.prepare_cached(
+                "INSERT INTO locations(pattern_id, location, n, last_seen) VALUES (?1, ?2, 1, ?3)
+                 ON CONFLICT(pattern_id, location) DO UPDATE SET
+                   n = n + 1, last_seen = MAX(last_seen, excluded.last_seen)",
+            )?;
             let mut prune = tx.prepare_cached(
                 "DELETE FROM samples WHERE pattern_id = ?1 AND id NOT IN
                    (SELECT id FROM samples WHERE pattern_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2)",
@@ -131,6 +142,9 @@ impl Store {
                 let ts = e.ts.expect("event timestamp must be set before recording");
                 up_pattern.execute(params![e.pattern_id, e.template, e.level, e.exc_type, ts])?;
                 up_count.execute(params![e.pattern_id, bucket_of(ts)])?;
+                if let Some(l) = &e.location {
+                    up_loc.execute(params![e.pattern_id, l, ts])?;
+                }
                 let last: Option<f64> = last_sample.query_row([&e.pattern_id], |r| r.get(0))?;
                 if last.is_none_or(|l| (ts - l).abs() >= SAMPLE_EVERY_SECS) {
                     ins_sample.execute(params![e.pattern_id, ts, e.body])?;
@@ -205,6 +219,14 @@ impl Store {
             )?;
             tx.execute("DELETE FROM counts WHERE pattern_id = ?1", [a])?;
             tx.execute(
+                "INSERT INTO locations(pattern_id, location, n, last_seen)
+                 SELECT ?1, location, n, last_seen FROM locations WHERE pattern_id = ?2 AND true
+                 ON CONFLICT(pattern_id, location) DO UPDATE SET
+                   n = n + excluded.n, last_seen = MAX(last_seen, excluded.last_seen)",
+                params![c, a],
+            )?;
+            tx.execute("DELETE FROM locations WHERE pattern_id = ?1", [a])?;
+            tx.execute(
                 "UPDATE samples SET pattern_id = ?1 WHERE pattern_id = ?2",
                 params![c, a],
             )?;
@@ -251,8 +273,8 @@ impl Store {
         let rows = st.query_map(params![lo_b, split_b, hi_b], |r| {
             Ok(SplitStat {
                 row: row_to_pattern(r, 0)?,
-                before: r.get(7)?,
-                after: r.get(8)?,
+                before: r.get(8)?,
+                after: r.get(9)?,
             })
         })?;
         rows.collect()
@@ -295,6 +317,16 @@ impl Store {
             out[i] += n;
         }
         Ok(out)
+    }
+
+    /// Code locations of a pattern's events, most frequent first.
+    pub fn locations(&self, pattern_id: &str, limit: i64) -> R<Vec<(String, i64)>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT location, n FROM locations WHERE pattern_id = ?1 ORDER BY n DESC, last_seen DESC LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![pattern_id, limit], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
     }
 
     pub fn samples(&self, pattern_id: &str, limit: i64) -> R<Vec<(f64, String)>> {

@@ -200,6 +200,11 @@ impl Merger {
         })
     }
 
+    /// The current template of a canonical pattern.
+    pub fn template_of(&self, id: &str) -> Option<&str> {
+        self.templates.get(id).map(String::as_str)
+    }
+
     pub fn canonical_of(&self, id: &str) -> Option<&str> {
         self.aliases.get(id).map(String::as_str)
     }

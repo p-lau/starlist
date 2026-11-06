@@ -84,6 +84,10 @@ struct PipelineArgs {
     /// UTC offset for log timestamps that have no zone, like "+02:00" or "-0800". Default UTC.
     #[arg(long, value_parser = parse_tz)]
     log_tz: Option<i32>,
+    /// Path prefix to strip from code locations so they match your repository,
+    /// like "/app" in a container (repeatable).
+    #[arg(long = "source-root")]
+    source_roots: Vec<String>,
     /// Merge patterns that differ in one word once it has taken this many values (0 turns merging off).
     #[arg(long, default_value_t = starlist::merge::DEFAULT_THRESHOLD)]
     merge_after: usize,
@@ -200,7 +204,8 @@ fn pipeline(opts: &PipelineArgs, store: Arc<Store>) -> Result<Pipeline> {
     let merge = (opts.merge_after > 0).then_some(opts.merge_after);
     Ok(
         Pipeline::with_merging(store, Redactor::new(!opts.keep_ips, extra), marker, merge)
-            .with_log_tz(opts.log_tz.unwrap_or(0)),
+            .with_log_tz(opts.log_tz.unwrap_or(0))
+            .with_source_roots(opts.source_roots.clone()),
     )
 }
 
