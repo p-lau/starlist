@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { get, session } from '#lib/api.svelte.ts';
+	import { get, post, refresh, session } from '#lib/api.svelte.ts';
+	import StateBadge from '#lib/StateBadge.svelte';
 	import LevelBadge from '#lib/LevelBadge.svelte';
 	import LevelChart from '#lib/LevelChart.svelte';
 	import Lines from '#lib/Lines.svelte';
@@ -59,6 +60,27 @@
 		}
 	}
 
+	let stateNote = $state('');
+	let stateError: string | null = $state(null);
+	let busy = $state(false);
+	async function setState(state: string, extra: Record<string, unknown> = {}) {
+		busy = true;
+		try {
+			p = await post<PatternDetail>(`/patterns/${encodeURIComponent(id)}/state`, {
+				state,
+				note: stateNote.trim() || null,
+				...extra
+			});
+			stateError = null;
+			stateNote = '';
+			refresh();
+		} catch (e) {
+			stateError = (e as Error).message;
+		} finally {
+			busy = false;
+		}
+	}
+
 	const GOOD = new Set(['fixed', 'reduced']);
 	const BAD = new Set(['worse', 'still_occurring', 'appeared_after']);
 </script>
@@ -70,7 +92,11 @@
 {:else}
 	<div class="stack">
 		<section class="card">
-			<div class="row"><LevelBadge level={p.level} /><span class="faint mono id">{p.id}</span></div>
+			<div class="row">
+				<LevelBadge level={p.level} />
+				<StateBadge state={p.state} />
+				<span class="faint mono id">{p.id}</span>
+			</div>
 			<h1 class="mono tpl">{p.template}</h1>
 			<dl class="facts">
 				{#if p.exception}<div><dt>Exception</dt><dd class="mono">{p.exception}</dd></div>{/if}
@@ -81,6 +107,45 @@
 				<div><dt>Last 24h</dt><dd>{num(p.count_last_24h)}</dd></div>
 				<div><dt>All time</dt><dd>{num(p.total)}</dd></div>
 			</dl>
+		</section>
+
+		<section class="card stack">
+			<h2>Issue state</h2>
+			{#if p.state.state === 'regressed'}
+				<p class="error-box">
+					This was resolved {ago(p.state.resolved_at)} and came back {ago(p.state.regressed_at)}{#if p.state.regressed_in}{' in '}{p.state.regressed_in}{/if}.
+				</p>
+			{:else if p.state.state !== 'open'}
+				<p class="muted">
+					{#if p.state.state === 'ignored'}
+						Left out of what's new and alerts{#if p.state.until}{' until '}{when(p.state.until)}{/if}{#if p.state.remaining}{' for '}{p.state.remaining} more events{/if}.
+					{:else if p.state.state === 'resolved_next'}
+						Resolved from the next deploy on. If it occurs after that, it shows as regressed.
+					{:else}
+						Resolved {ago(p.state.resolved_at)}. If it occurs again, it shows as regressed.
+					{/if}
+					{#if p.state.note}<br />Note: {p.state.note}{/if}
+				</p>
+			{/if}
+			<div class="row">
+				<input class="note" bind:value={stateNote} placeholder="Note (optional)" aria-label="Note" />
+			</div>
+			<div class="row">
+				{#if p.state.state !== 'resolved'}
+					<button class="primary" disabled={busy} onclick={() => setState('resolved')}>Resolve</button>
+				{/if}
+				{#if p.state.state !== 'resolved_next'}
+					<button disabled={busy} onclick={() => setState('resolved_next')}>Resolve in next release</button>
+				{/if}
+				{#if p.state.state !== 'ignored'}
+					<button disabled={busy} onclick={() => setState('ignored', { ignore_for: '24h' })}>Ignore for 24h</button>
+					<button disabled={busy} onclick={() => setState('ignored')}>Ignore</button>
+				{/if}
+				{#if p.state.state !== 'open'}
+					<button disabled={busy} onclick={() => setState('open')}>Reopen</button>
+				{/if}
+			</div>
+			{#if stateError}<div class="error-box">{stateError}</div>{/if}
 		</section>
 
 		<section class="card">
@@ -205,6 +270,12 @@
 	.verdict.bad {
 		border-color: var(--error);
 		background: var(--error-soft);
+	}
+	.note {
+		flex: 1 1 260px;
+	}
+	.error-box {
+		margin: 0;
 	}
 	.small {
 		font-size: 0.78rem;

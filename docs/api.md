@@ -48,6 +48,7 @@ curl -s -H "Authorization: Bearer $(cat starlist.token)" http://host:7341/api/v1
   "version": "0.1.0",
   "now": "2026-11-06T12:00:00.000Z",
   "service": null,
+  "env": "production",
   "current_release": {"name": "v1.4.3", "at": "2026-11-06T11:45:00.000Z"},
   "patterns": 42,
   "last_hour": {"events": 9120, "errors": 27},
@@ -121,7 +122,8 @@ a baseline. Same rules as the `whats_new` tool.
 }
 ```
 
-`kind` is `new`, `returning`, `spike` or `gone_quiet`.
+`kind` is `new`, `regressed`, `returning`, `spike` or `gone_quiet`. Ignored
+patterns are left out.
 
 ### Patterns
 
@@ -138,9 +140,15 @@ A pattern, wherever one appears:
   "last_seen": "...",
   "first_release": "v1.4.3",
   "total": 27,
-  "example_request": "badreq-0001"
+  "example_request": "badreq-0001",
+  "state": {"state": "open", "since": null, "note": null}
 }
 ```
+
+`state.state` is `open`, `resolved`, `resolved_next` (resolved from the next
+deploy on), `ignored` or `regressed` (resolved, then seen again). Depending on
+the state it also has `resolved_at`, `regressed_at` and `regressed_in` (the
+release it came back in), or `until` and `remaining` for an ignore.
 
 #### `GET /patterns`
 
@@ -151,6 +159,7 @@ A pattern, wherever one appears:
 | `contains` | | Case-insensitive text in the template |
 | `limit`, `offset` | 50, 0 | limit up to 500 |
 | `trend` | 24 | Points in each pattern's `trend` (0 to 96, 0 leaves it out) |
+| `state` | any | Only patterns in this state |
 
 Returns `{since, trend_step_seconds, total, offset, patterns}`, each pattern
 with `count` in the period and `trend`, its counts over the period. Most severe,
@@ -218,6 +227,49 @@ Every event of one request in order, from the raw buffer (at most 2,000).
   "lines": [{"id": 1, "at": "...", "offset_ms": 0, "pattern_id": "...", "text": "..."}]
 }
 ```
+
+#### `POST /patterns/{id}/state`
+
+```json
+{"state": "resolved", "note": "fixed by raising the retry budget"}
+{"state": "ignored", "ignore_for": "24h"}
+{"state": "ignored", "ignore_count": 100}
+{"state": "open"}
+```
+
+Returns the pattern with its new state. A resolved pattern that occurs again
+is reported as `regressed` by `/whats-new`, alerts and the pattern itself.
+
+#### `POST /patterns/merge`
+
+`{"ids": ["p1", "p2", "p3"]}` merges the others into the first. Their counts,
+samples and locations move over, and their IDs keep resolving to it. Returns
+the merged pattern.
+
+### Releases
+
+- `GET /releases` lists deploys newest first: `{releases: [{name, at, until, current}]}`.
+- `GET /releases/{name}` (or `current`) is a release's report card:
+
+```json
+{
+  "name": "v1.4.3",
+  "at": "...",
+  "until": null,
+  "current": true,
+  "previous": "v1.4.2",
+  "env": "production",
+  "events_per_hour": 820.5,
+  "errors_per_hour": 0.4,
+  "previous_errors_per_hour": 61.6,
+  "new": [ { "...": "patterns first seen in this release" } ],
+  "regressed": [ { "...": "...", "regressed_at": "..." } ],
+  "resolved": [ { "...": "...", "resolved_at": "..." } ]
+}
+```
+
+The previous release's error rate is measured over at most as long as this one
+has been live, so a release an hour old isn't compared with a week.
 
 ### Markers
 

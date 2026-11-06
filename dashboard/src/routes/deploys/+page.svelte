@@ -3,13 +3,14 @@
 	import Load from '#lib/Load.svelte';
 	import PatternTitle from '#lib/PatternTitle.svelte';
 	import { ago, num, rate, when } from '#lib/format.ts';
-	import type { Change, Compare, Marker } from '#lib/types.ts';
+	import type { Change, Compare, Marker, Release } from '#lib/types.ts';
 
 	let markers: Marker[] | null = $state(null);
 	let selected: string | null = $state(null);
 	let diff: Compare | null = $state(null);
 	let error: string | null = $state(null);
 	let diffError: string | null = $state(null);
+	let rel: Release | null = $state(null);
 
 	let name = $state('');
 	let note = $state('');
@@ -49,6 +50,20 @@
 				diff = null;
 				diffError = e.message;
 			}
+		);
+	});
+
+	// A deploy also gets its release report card.
+	$effect(() => {
+		void session.tick;
+		const m = markers?.find((x) => x.name === selected);
+		if (!m || m.kind !== 'deploy') {
+			rel = null;
+			return;
+		}
+		get<Release>(`/releases/${encodeURIComponent(m.name)}`).then(
+			(r) => (rel = r),
+			() => (rel = null)
 		);
 	});
 
@@ -105,6 +120,37 @@
 		</form>
 	</aside>
 
+	<div class="stack">
+	{#if rel}
+		<section class="card stack">
+			<div>
+				<h2>Release {rel.name}{#if rel.env}<span class="faint">{' · '}{rel.env}</span>{/if}</h2>
+				<p class="faint small">
+					{rel.current ? `Live since ${when(rel.at)}` : `Live ${when(rel.at)} to ${when(rel.until)}`}
+				</p>
+			</div>
+			<div class="stats">
+				<div><span class="faint small">Errors per hour</span><b>{rel.errors_per_hour}</b>
+					{#if rel.previous_errors_per_hour !== null}<span class="faint small">vs {rel.previous_errors_per_hour} in {rel.previous}</span>{/if}
+				</div>
+				<div><span class="faint small">Events per hour</span><b>{num(rel.events_per_hour)}</b></div>
+				<div><span class="faint small">New patterns</span><b>{rel.new.length}</b></div>
+				<div><span class="faint small">Regressed</span><b>{rel.regressed.length}</b></div>
+				<div><span class="faint small">Resolved</span><b>{rel.resolved.length}</b></div>
+			</div>
+			{#each [{ t: 'Regressed in this release', l: rel.regressed }, { t: 'First seen in this release', l: rel.new }, { t: 'Resolved in this release', l: rel.resolved }] as g (g.t)}
+				{#if g.l.length}
+					<div>
+						<h3>{g.t}</h3>
+						<ul class="plain">
+							{#each g.l.slice(0, 10) as p (p.id)}<li><PatternTitle {p} /></li>{/each}
+						</ul>
+						{#if g.l.length > 10}<p class="faint small">and {g.l.length - 10} more</p>{/if}
+					</div>
+				{/if}
+			{/each}
+		</section>
+	{/if}
 	<section class="card">
 		{#if diffError}
 			<div class="error-box">{diffError}</div>
@@ -137,6 +183,7 @@
 			<p class="muted">Pick a deploy to see what changed around it.</p>
 		{/if}
 	</section>
+	</div>
 </div>
 
 <style>
@@ -171,6 +218,25 @@
 	}
 	.add input[type='checkbox'] {
 		margin: 0;
+	}
+	.stats {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+		gap: 12px;
+	}
+	.stats div {
+		display: grid;
+	}
+	.stats b {
+		font-size: 1.3rem;
+		font-variant-numeric: tabular-nums;
+	}
+	.plain {
+		list-style: none;
+		margin: 6px 0 0;
+		padding: 0;
+		display: grid;
+		gap: 8px;
 	}
 	.changes {
 		list-style: none;

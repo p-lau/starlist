@@ -1,5 +1,6 @@
 <script lang="ts">
 	import LevelBadge from './LevelBadge.svelte';
+	import StateBadge from './StateBadge.svelte';
 	import type { Pattern } from './types.ts';
 	import { ago } from './format.ts';
 
@@ -9,6 +10,7 @@
 <div class="pt">
 	<div class="top">
 		<LevelBadge level={p.level} />
+		{#if p.state && p.state.state !== 'open'}<StateBadge state={p.state} />{/if}
 		{#if link}
 			<a class="tpl mono" href="/patterns/{p.id}">{p.template}</a>
 		{:else}

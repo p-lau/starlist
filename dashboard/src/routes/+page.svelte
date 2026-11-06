@@ -15,6 +15,7 @@
 	const WINDOWS = ['15m', '1h', '6h', '24h'];
 	const KIND: Record<Finding['kind'], string> = {
 		new: 'New',
+		regressed: 'Regressed',
 		returning: 'Returning',
 		spike: 'Spiking',
 		gone_quiet: 'Gone quiet'
@@ -215,6 +216,7 @@
 		padding-top: 2px;
 	}
 	.kind.new,
+	.kind.regressed,
 	.kind.returning {
 		color: var(--error);
 	}

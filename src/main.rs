@@ -133,6 +133,10 @@ struct PipelineArgs {
     /// Keep no raw lines (get_context and get_request are then unavailable) and delete any already stored.
     #[arg(long)]
     no_raw: bool,
+    /// Put every line matching this regex into one pattern, named by its (?P<name>...)
+    /// group if it has one (repeatable). Checked against the redacted first line.
+    #[arg(long = "group")]
+    groups: Vec<String>,
     /// Merge patterns that differ in one word once it has taken this many values (0 turns merging off).
     #[arg(long, default_value_t = starlist::merge::DEFAULT_THRESHOLD)]
     merge_after: usize,
@@ -159,6 +163,9 @@ struct SourceArgs {
     /// (when it differs from the release already live).
     #[arg(long, env = "STARLIST_VERSION")]
     app_version: Option<String>,
+    /// Environment this collector watches, like "production" or "staging".
+    #[arg(long, env = "STARLIST_ENV")]
+    env: Option<String>,
     #[command(flatten)]
     opts: PipelineArgs,
 }
@@ -274,13 +281,20 @@ fn pipeline(opts: &PipelineArgs, store: Arc<Store>) -> Result<Pipeline> {
     } else {
         Some(Regex::new(&opts.marker_regex).context("bad --marker-regex")?)
     };
+    let groups = opts
+        .groups
+        .iter()
+        .map(|r| Regex::new(r))
+        .collect::<Result<Vec<_>, _>>()
+        .context("bad --group regex")?;
     let merge = (opts.merge_after > 0).then_some(opts.merge_after);
     store.set_raw_cap((!opts.no_raw).then_some(opts.raw_size))?;
     Ok(
         Pipeline::with_merging(store, Redactor::new(!opts.keep_ips, extra), marker, merge)
             .with_log_tz(opts.log_tz.unwrap_or(0))
             .with_source_roots(opts.source_roots.clone())
-            .with_request_keys(&opts.request_keys),
+            .with_request_keys(&opts.request_keys)
+            .with_groups(groups),
     )
 }
 
@@ -303,6 +317,9 @@ fn start_collection(
         && store.add_deploy(v, starlist::analysis::now(), None)?
     {
         eprintln!("starlist: deploy marker {v}");
+    }
+    if let Some(env) = src.env.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+        store.set_meta("env", Some(env))?;
     }
     let p = Arc::new(pipeline(&src.opts, store)?);
     static STOP: AtomicBool = AtomicBool::new(false);

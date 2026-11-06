@@ -46,6 +46,23 @@ pub struct Marker {
     pub note: Option<String>,
 }
 
+/// A pattern's issue state as stored. See `issues` for what it means now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StateRow {
+    pub pattern_id: String,
+    /// "resolved", "resolved_next" or "ignored".
+    pub state: String,
+    /// When the state was set.
+    pub since: f64,
+    /// Ignored until this time.
+    pub until_ts: Option<f64>,
+    /// Ignored until this many more events.
+    pub until_count: Option<i64>,
+    /// The pattern's total when the state was set.
+    pub base_total: i64,
+    pub note: Option<String>,
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
     raw: Mutex<RawBuffer>,
@@ -130,6 +147,14 @@ impl Store {
         if !has_req {
             conn.execute_batch("ALTER TABLE raw ADD COLUMN request_id TEXT;")?;
         }
+        // Added in 0.10: issue states and collector settings.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pattern_state(
+                pattern_id TEXT PRIMARY KEY, state TEXT NOT NULL, since REAL NOT NULL,
+                until_ts REAL, until_count INTEGER, base_total INTEGER NOT NULL DEFAULT 0,
+                note TEXT) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;",
+        )?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS raw_req ON raw(request_id, ts) WHERE request_id IS NOT NULL;
              CREATE INDEX IF NOT EXISTS raw_pid_req ON raw(pattern_id, ts) WHERE request_id IS NOT NULL;",
@@ -207,23 +232,30 @@ impl Store {
                 "DELETE FROM samples WHERE pattern_id = ?1 AND id NOT IN
                    (SELECT id FROM samples WHERE pattern_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2)",
             )?;
+            // Patterns merged by hand (or by another process) keep resolving
+            // to the pattern they were merged into.
+            let aliases: std::collections::HashMap<String, String> = tx
+                .prepare_cached("SELECT alias, canonical FROM aliases")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<R<_>>()?;
             for e in events {
                 let ts = e.ts.expect("event timestamp must be set before recording");
-                up_pattern.execute(params![e.pattern_id, e.template, e.level, e.exc_type, ts])?;
-                up_count.execute(params![e.pattern_id, bucket_of(ts)])?;
+                let pid = aliases.get(&e.pattern_id).unwrap_or(&e.pattern_id);
+                up_pattern.execute(params![pid, e.template, e.level, e.exc_type, ts])?;
+                up_count.execute(params![pid, bucket_of(ts)])?;
                 if let Some(l) = &e.location {
-                    up_loc.execute(params![e.pattern_id, l, ts])?;
+                    up_loc.execute(params![pid, l, ts])?;
                 }
                 if raw.cap.is_some() {
                     let text = crate::pattern::truncate(&e.body, RAW_EVENT_CHARS);
-                    ins_raw.execute(params![ts, e.pattern_id, text, e.request_id])?;
+                    ins_raw.execute(params![ts, pid, text, e.request_id])?;
                     *raw.bytes.get_or_insert(0) += text.len() as i64;
                 }
-                let last: Option<f64> = last_sample.query_row([&e.pattern_id], |r| r.get(0))?;
+                let last: Option<f64> = last_sample.query_row([pid], |r| r.get(0))?;
                 if last.is_none_or(|l| (ts - l).abs() >= SAMPLE_EVERY_SECS) {
-                    ins_sample.execute(params![e.pattern_id, ts, e.body])?;
-                    set_sample.execute(params![e.pattern_id, ts])?;
-                    prune.execute(params![e.pattern_id, SAMPLES_PER_PATTERN])?;
+                    ins_sample.execute(params![pid, ts, e.body])?;
+                    set_sample.execute(params![pid, ts])?;
+                    prune.execute(params![pid, SAMPLES_PER_PATTERN])?;
                 }
             }
             // Over the cap: drop the oldest lines until 90% of it is used.
@@ -426,6 +458,7 @@ impl Store {
                 params![c, a],
             )?;
             tx.execute("DELETE FROM patterns WHERE id = ?1", [a])?;
+            tx.execute("DELETE FROM pattern_state WHERE pattern_id = ?1", [a])?;
             tx.execute(
                 "UPDATE aliases SET canonical = ?1 WHERE canonical = ?2",
                 params![c, a],
@@ -539,6 +572,78 @@ impl Store {
             out[k].1[i] += n;
         }
         Ok(out)
+    }
+
+    /// Every pattern's stored state (patterns without one are open).
+    pub fn states(&self) -> R<std::collections::HashMap<String, StateRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT pattern_id, state, since, until_ts, until_count, base_total, note FROM pattern_state",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(StateRow {
+                pattern_id: r.get(0)?,
+                state: r.get(1)?,
+                since: r.get(2)?,
+                until_ts: r.get(3)?,
+                until_count: r.get(4)?,
+                base_total: r.get(5)?,
+                note: r.get(6)?,
+            })
+        })?;
+        rows.map(|r| r.map(|s| (s.pattern_id.clone(), s))).collect()
+    }
+
+    /// Set a pattern's state, or clear it (`None` = open).
+    pub fn set_state(&self, pattern_id: &str, row: Option<&StateRow>) -> R<()> {
+        let conn = self.conn();
+        match row {
+            None => conn.execute("DELETE FROM pattern_state WHERE pattern_id = ?1", [pattern_id])?,
+            Some(s) => conn.execute(
+                "INSERT OR REPLACE INTO pattern_state(pattern_id, state, since, until_ts, until_count, base_total, note)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![pattern_id, s.state, s.since, s.until_ts, s.until_count, s.base_total, s.note],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// Start of the first 10-second bucket after `ts` in which the pattern occurred.
+    pub fn first_after(&self, pattern_id: &str, ts: f64) -> R<Option<f64>> {
+        let b: Option<i64> = self.conn().query_row(
+            "SELECT MIN(bucket) FROM counts WHERE pattern_id = ?1 AND bucket > ?2",
+            params![pattern_id, bucket_of(ts)],
+            |r| r.get(0),
+        )?;
+        Ok(b.map(|b| b as f64 * BUCKET_SECS))
+    }
+
+    /// Patterns first seen in [lo, hi), oldest first.
+    pub fn patterns_first_seen(&self, lo: f64, hi: f64) -> R<Vec<PatternRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(&format!(
+            "SELECT {PATTERN_COLS} FROM patterns p WHERE p.first_seen >= ?1 AND p.first_seen < ?2 ORDER BY p.first_seen"
+        ))?;
+        let rows = st.query_map(params![lo, hi], |r| row_to_pattern(r, 0))?;
+        rows.collect()
+    }
+
+    pub fn meta(&self, key: &str) -> R<Option<String>> {
+        self.conn()
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .optional()
+    }
+
+    pub fn set_meta(&self, key: &str, value: Option<&str>) -> R<()> {
+        let conn = self.conn();
+        match value {
+            Some(v) => conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)",
+                params![key, v],
+            )?,
+            None => conn.execute("DELETE FROM meta WHERE key = ?1", [key])?,
+        };
+        Ok(())
     }
 
     /// Number of patterns (merged ones count once).

@@ -6,6 +6,7 @@
 
 use crate::alerts::Alerts;
 use crate::analysis::{self, Releases};
+use crate::issues::{Effective, States};
 use crate::pattern::{level_rank, truncate};
 use crate::store::{Marker, PatternRow, RawLine, Store};
 use axum::extract::rejection::{JsonRejection, QueryRejection};
@@ -13,7 +14,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, SecondsFormat};
 use serde::Deserialize;
@@ -40,6 +41,10 @@ pub fn routes(state: ApiState) -> Router {
         .route("/patterns", get(patterns))
         .route("/patterns/{id}", get(pattern))
         .route("/patterns/{id}/verify", get(verify))
+        .route("/patterns/{id}/state", post(set_state))
+        .route("/patterns/merge", post(merge))
+        .route("/releases", get(releases))
+        .route("/releases/{name}", get(release))
         .route("/compare", get(compare))
         .route("/context", get(context))
         .route("/requests/{id}", get(request))
@@ -123,7 +128,51 @@ fn round1(x: f64) -> f64 {
     (x * 10.0).round() / 10.0
 }
 
-fn pattern_json(row: &PatternRow, rel: &Releases) -> Value {
+/// What every pattern answer needs: releases and issue states.
+struct Cx<'a> {
+    store: &'a Store,
+    rel: Releases,
+    states: States,
+    now: f64,
+}
+
+impl<'a> Cx<'a> {
+    fn load(store: &'a Store, now: f64) -> Result<Self, String> {
+        Ok(Self {
+            store,
+            rel: Releases::load(store)?,
+            states: States::load(store)?,
+            now,
+        })
+    }
+}
+
+fn state_json(cx: &Cx, row: &PatternRow) -> Value {
+    let eff = cx.states.effective(cx.store, row, cx.now);
+    let stored = cx.states.row(&row.id);
+    let mut v = json!({
+        "state": eff.name(),
+        "since": stored.map(|s| iso(s.since)),
+        "note": stored.and_then(|s| s.note.clone()),
+    });
+    match eff {
+        Effective::Ignored { until, remaining } => {
+            v["until"] = json!(until.map(iso));
+            v["remaining"] = json!(remaining);
+        }
+        Effective::Resolved { at } => v["resolved_at"] = json!(iso(at)),
+        Effective::Regressed { resolved_at, at } => {
+            v["resolved_at"] = json!(iso(resolved_at));
+            v["regressed_at"] = json!(iso(at));
+            v["regressed_in"] = json!(cx.rel.at(at));
+        }
+        _ => {}
+    }
+    v
+}
+
+fn pattern_json(row: &PatternRow, cx: &Cx) -> Value {
+    let rel = &cx.rel;
     json!({
         "id": row.id,
         "level": row.level.as_deref().unwrap_or("INFO"),
@@ -135,6 +184,7 @@ fn pattern_json(row: &PatternRow, rel: &Releases) -> Value {
         "first_release": rel.at(row.first_seen),
         "total": row.total,
         "example_request": row.example_request,
+        "state": state_json(cx, row),
     })
 }
 
@@ -185,7 +235,7 @@ async fn status(State(s): State<ApiState>) -> ApiResult {
     blocking(move || {
         let store = &s.store;
         let now = analysis::now();
-        let rel = Releases::load(store)?;
+        let cx = Cx::load(store, now)?;
         let hour = store
             .level_series(now - 3600.0, now, 3600.0)
             .map_err(analysis::db)?;
@@ -200,7 +250,8 @@ async fn status(State(s): State<ApiState>) -> ApiResult {
             "version": env!("CARGO_PKG_VERSION"),
             "now": iso(now),
             "service": Value::Null,
-            "current_release": rel.latest().map(|(t, n)| json!({"name": n, "at": iso(t)})),
+            "env": store.meta("env").map_err(analysis::db)?,
+            "current_release": cx.rel.latest().map(|(t, n)| json!({"name": n, "at": iso(t)})),
             "patterns": store.pattern_count().map_err(analysis::db)?,
             "last_hour": {"events": events, "errors": errors},
             "raw": {"events": raw_n, "oldest": raw_oldest.map(iso)},
@@ -299,7 +350,7 @@ async fn whats_new(
         let w = analysis::duration_arg(q.window.as_deref().unwrap_or("1h"), "window")?;
         let b = analysis::duration_arg(q.baseline.as_deref().unwrap_or("24h"), "baseline")?;
         let data = analysis::whats_new_data(store, w, b, q.min_level.as_deref(), now)?;
-        let rel = Releases::load(store)?;
+        let cx = Cx::load(store, now)?;
         let (limit, offset) = (q.limit.unwrap_or(20).clamp(1, 200), q.offset.unwrap_or(0));
         let findings: Vec<Value> = data
             .findings
@@ -319,7 +370,7 @@ async fn whats_new(
                     "count_baseline": f.count_baseline,
                     "per_hour_window": f.per_hour_window,
                     "per_hour_baseline": f.per_hour_baseline,
-                    "pattern": pattern_json(&f.row, &rel),
+                    "pattern": pattern_json(&f.row, &cx),
                     "sample": sample,
                 })
             })
@@ -329,13 +380,13 @@ async fn whats_new(
             "window": {"from": iso(data.window_from), "to": iso(now)},
             "baseline": {"from": iso(data.baseline_from), "to": iso(data.window_from)},
             "summary": data.summary(),
-            "counts": {"new": t[0], "returning": t[1], "spike": t[2], "gone_quiet": t[3]},
+            "counts": {"new": t[0], "regressed": data.regressed, "returning": t[1], "spike": t[2], "gone_quiet": t[3]},
             "traffic": {
                 "events_window": data.events_in_window,
                 "events_baseline": data.events_in_baseline,
                 "ratio": round1(data.traffic),
             },
-            "current_release": rel.latest().map(|(_, n)| n),
+            "current_release": cx.rel.latest().map(|(_, n)| n),
             "markers": markers_in(store, data.window_from, now)?,
             "total": data.findings.len(),
             "offset": offset,
@@ -354,6 +405,8 @@ struct PatternsQ {
     offset: Option<usize>,
     /// Points in each pattern's `trend` over the period, 0 to 96. Default 24.
     trend: Option<usize>,
+    /// Only patterns in this state: open, resolved, resolved_next, ignored or regressed.
+    state: Option<String>,
 }
 
 async fn patterns(
@@ -382,13 +435,16 @@ async fn patterns(
                     .is_none_or(|n| s.row.template.to_lowercase().contains(n))
             })
             .collect();
+        let cx = Cx::load(store, now)?;
+        if let Some(want) = q.state.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+            stats.retain(|s| cx.states.effective(store, &s.row, now).name() == want);
+        }
         stats.sort_by_key(|s| {
             (
                 std::cmp::Reverse(level_rank(s.row.level.as_deref())),
                 std::cmp::Reverse(s.before),
             )
         });
-        let rel = Releases::load(store)?;
         let (limit, offset) = (q.limit.unwrap_or(50).clamp(1, 500), q.offset.unwrap_or(0));
         let points = q.trend.unwrap_or(24).min(96);
         let step = (now - lo) / points.max(1) as f64;
@@ -397,7 +453,7 @@ async fn patterns(
             .skip(offset)
             .take(limit)
             .map(|s| {
-                let mut v = pattern_json(&s.row, &rel);
+                let mut v = pattern_json(&s.row, &cx);
                 v["count"] = json!(s.before);
                 if points > 0 {
                     v["trend"] = json!(
@@ -428,7 +484,7 @@ async fn pattern(State(s): State<ApiState>, Path(id): Path<String>) -> ApiResult
             .pattern(&id)
             .map_err(analysis::db)?
             .ok_or_else(|| format!("Unknown pattern_id '{id}'."))?;
-        let mut v = pattern_json(&row, &Releases::load(store)?);
+        let mut v = pattern_json(&row, &Cx::load(store, now)?);
         v["locations"] = json!(
             store
                 .locations(&row.id, 20)
@@ -486,7 +542,7 @@ async fn verify(
             .filter(|x| !x.is_empty())
             .ok_or("Pass 'since': a marker name, ISO time or duration like '20m'.")?;
         let c = analysis::verify_fix_data(store, &id, since, q.before.as_deref(), now)?;
-        let rel = Releases::load(store)?;
+        let cx = Cx::load(store, now)?;
         let per_hour = |n: i64, secs: f64| {
             if secs > 0.0 {
                 round1(n as f64 * 3600.0 / secs)
@@ -495,7 +551,7 @@ async fn verify(
             }
         };
         Ok(json!({
-            "pattern": pattern_json(&c.row, &rel),
+            "pattern": pattern_json(&c.row, &cx),
             "verdict": c.verdict,
             "explanation": c.explanation,
             "split": {"at": iso(c.split), "marker": c.marker},
@@ -533,7 +589,7 @@ async fn compare(
         let store = &s.store;
         let now = analysis::now();
         let d = analysis::compare_deploy_data(store, q.at.as_deref(), q.before.as_deref(), now)?;
-        let rel = Releases::load(store)?;
+        let cx = Cx::load(store, now)?;
         let (limit, offset) = (q.limit.unwrap_or(50).clamp(1, 500), q.offset.unwrap_or(0));
         let changes: Vec<Value> = d
             .changes
@@ -545,7 +601,7 @@ async fn compare(
                     "kind": c.kind,
                     "before": {"count": c.count_before, "per_hour": c.per_hour_before},
                     "after": {"count": c.count_after, "per_hour": c.per_hour_after},
-                    "pattern": pattern_json(&c.row, &rel),
+                    "pattern": pattern_json(&c.row, &cx),
                 })
             })
             .collect();
@@ -739,4 +795,112 @@ async fn alert_stream(State(s): State<ApiState>) -> Result<Response, ApiError> {
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response())
+}
+
+#[derive(Deserialize)]
+struct NewState {
+    state: String,
+    ignore_for: Option<String>,
+    ignore_count: Option<i64>,
+    note: Option<String>,
+}
+
+async fn set_state(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    body: Result<Json<NewState>, JsonRejection>,
+) -> ApiResult {
+    let Json(b) = body?;
+    blocking(move || {
+        let store = &s.store;
+        let now = analysis::now();
+        let (row, _) = crate::issues::set_state(
+            store,
+            &id,
+            &b.state,
+            b.ignore_for.as_deref(),
+            b.ignore_count,
+            b.note.as_deref(),
+            now,
+        )?;
+        let row = store.pattern(&row.id).map_err(analysis::db)?.unwrap_or(row);
+        Ok(pattern_json(&row, &Cx::load(store, now)?))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct MergeBody {
+    ids: Vec<String>,
+}
+
+async fn merge(
+    State(s): State<ApiState>,
+    body: Result<Json<MergeBody>, JsonRejection>,
+) -> ApiResult {
+    let Json(b) = body?;
+    blocking(move || {
+        let store = &s.store;
+        let row = crate::issues::merge(store, &b.ids)?;
+        let mut v = pattern_json(&row, &Cx::load(store, analysis::now())?);
+        v["merged_from"] = json!(b.ids.iter().filter(|i| **i != row.id).collect::<Vec<_>>());
+        Ok(v)
+    })
+    .await
+}
+
+async fn releases(State(s): State<ApiState>) -> ApiResult {
+    blocking(move || {
+        let ds = s.store.deploys().map_err(analysis::db)?;
+        let n = ds.len();
+        let items: Vec<Value> = ds
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(i, (t, name))| {
+                json!({
+                    "name": name,
+                    "at": iso(*t),
+                    "until": ds.get(i + 1).map(|(u, _)| iso(*u)),
+                    "current": i + 1 == n,
+                })
+            })
+            .collect();
+        Ok(json!({"releases": items}))
+    })
+    .await
+}
+
+async fn release(State(s): State<ApiState>, Path(name): Path<String>) -> ApiResult {
+    blocking(move || {
+        let store = &s.store;
+        let now = analysis::now();
+        let wanted = (name != "current").then_some(name.as_str());
+        let r = crate::issues::release(store, wanted, now)?;
+        let cx = Cx::load(store, now)?;
+        let with_time = |rows: &[(PatternRow, f64)], key: &str| -> Vec<Value> {
+            rows.iter()
+                .map(|(p, t)| {
+                    let mut v = pattern_json(p, &cx);
+                    v[key] = json!(iso(*t));
+                    v
+                })
+                .collect()
+        };
+        Ok(json!({
+            "name": r.name,
+            "at": iso(r.at),
+            "until": r.until.map(iso),
+            "current": r.until.is_none(),
+            "previous": r.previous,
+            "env": r.env,
+            "events_per_hour": r.events_per_hour,
+            "errors_per_hour": r.errors_per_hour,
+            "previous_errors_per_hour": r.previous_errors_per_hour,
+            "new": r.new.iter().map(|p| pattern_json(p, &cx)).collect::<Vec<_>>(),
+            "regressed": with_time(&r.regressed, "regressed_at"),
+            "resolved": with_time(&r.resolved, "resolved_at"),
+        }))
+    })
+    .await
 }

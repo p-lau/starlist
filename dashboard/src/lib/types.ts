@@ -2,6 +2,17 @@
 
 export type Level = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'FATAL';
 
+export interface PatternState {
+	state: 'open' | 'resolved' | 'resolved_next' | 'ignored' | 'regressed';
+	since: string | null;
+	note: string | null;
+	until?: string | null;
+	remaining?: number | null;
+	resolved_at?: string;
+	regressed_at?: string;
+	regressed_in?: string | null;
+}
+
 export interface Pattern {
 	id: string;
 	level: Level;
@@ -13,6 +24,7 @@ export interface Pattern {
 	first_release: string | null;
 	total: number;
 	example_request: string | null;
+	state: PatternState;
 }
 
 export interface Marker {
@@ -26,6 +38,7 @@ export interface Status {
 	version: string;
 	now: string;
 	service: string | null;
+	env: string | null;
 	current_release: { name: string; at: string } | null;
 	patterns: number;
 	last_hour: { events: number; errors: number };
@@ -47,7 +60,7 @@ export interface Sample {
 }
 
 export interface Finding {
-	kind: 'new' | 'returning' | 'spike' | 'gone_quiet';
+	kind: 'new' | 'regressed' | 'returning' | 'spike' | 'gone_quiet';
 	note: string | null;
 	count_window: number;
 	count_baseline: number;
@@ -61,7 +74,7 @@ export interface WhatsNew {
 	window: { from: string; to: string };
 	baseline: { from: string; to: string };
 	summary: string;
-	counts: { new: number; returning: number; spike: number; gone_quiet: number };
+	counts: { new: number; regressed: number; returning: number; spike: number; gone_quiet: number };
 	traffic: { events_window: number; events_baseline: number; ratio: number };
 	current_release: string | null;
 	markers: Marker[];
@@ -143,4 +156,19 @@ export interface RequestTrace {
 	events: number;
 	truncated: boolean;
 	lines: Line[];
+}
+
+export interface Release {
+	name: string;
+	at: string;
+	until: string | null;
+	current: boolean;
+	previous: string | null;
+	env: string | null;
+	events_per_hour: number;
+	errors_per_hour: number;
+	previous_errors_per_hour: number | null;
+	new: Pattern[];
+	regressed: (Pattern & { regressed_at: string })[];
+	resolved: (Pattern & { resolved_at: string })[];
 }

@@ -558,6 +558,8 @@ pub struct WhatsNewData {
     pub active: usize,
     /// Findings per kind: new, returning, spike, gone_quiet.
     pub tally: [usize; 4],
+    /// Resolved patterns that came back.
+    pub regressed: usize,
     pub findings: Vec<Finding>,
 }
 
@@ -570,8 +572,13 @@ impl WhatsNewData {
             )
         } else {
             let t = self.tally;
+            let regressed = if self.regressed > 0 {
+                format!("{} regressed, ", self.regressed)
+            } else {
+                String::new()
+            };
             format!(
-                "{} new, {} returning, {} spiking, {} gone quiet. {} events across {} patterns in the window.",
+                "{} new, {regressed}{} returning, {} spiking, {} gone quiet. {} events across {} patterns in the window.",
                 t[0], t[1], t[2], t[3], self.events_in_window, self.active
             )
         }
@@ -602,15 +609,38 @@ pub fn whats_new_data(
     };
     let active = stats.iter().filter(|s| s.after > 0).count();
 
+    let states = crate::issues::States::load(store)?;
+    let rel = Releases::load(store)?;
     // (group, level, kind order, count) for sorting; group 1 = good news, listed last.
     let mut found: Vec<((u8, u8, u8, i64), Finding)> = vec![];
     let mut tally = [0usize; 4];
+    let mut regressed = 0;
     for SplitStat { row, before, after } in stats {
         let lvl = level_rank(row.level.as_deref());
         if lvl < min_rank {
             continue;
         }
+        let state = states.effective(store, &row, now);
+        if state.is_ignored() {
+            continue;
+        }
         let (a_rate, b_rate) = (per_hour(after, w), per_hour(before, b));
+        if after > 0 && matches!(state, crate::issues::Effective::Regressed { .. }) {
+            regressed += 1;
+            found.push((
+                (0, 4 - lvl, 0, -after),
+                Finding {
+                    note: crate::issues::describe(&state, &rel, now),
+                    row,
+                    kind: "regressed",
+                    count_window: after,
+                    count_baseline: before,
+                    per_hour_window: a_rate,
+                    per_hour_baseline: b_rate,
+                },
+            ));
+            continue;
+        }
         let (kind, order, note) = if after > 0 && row.first_seen >= split {
             ("new", 0u8, None)
         } else if after > 0 && before == 0 {
@@ -667,6 +697,7 @@ pub fn whats_new_data(
         traffic,
         active,
         tally,
+        regressed,
         findings: found.into_iter().map(|(_, f)| f).collect(),
     })
 }
@@ -1202,6 +1233,14 @@ pub fn get_pattern(
                 .collect::<Vec<_>>()
         );
     }
+    let states = crate::issues::States::load(store)?;
+    let state = states.effective(store, &row, now);
+    v["state"] = json!(state.name());
+    v["state_note"] = json!(crate::issues::describe(
+        &state,
+        &Releases::load(store)?,
+        now
+    ));
     v["total_seen"] = json!(row.total);
     v["count_last_hour"] = json!(store.count(&row.id, now - 3600.0, now).map_err(db)?);
     v["count_last_24h"] = json!(store.count(&row.id, day, now).map_err(db)?);
@@ -1496,4 +1535,118 @@ pub fn get_request(
         v = build(&keep, short, &n);
     }
     Ok(v)
+}
+
+/// MCP: change a pattern's issue state.
+pub fn set_pattern_state(
+    store: &Store,
+    pattern_id: &str,
+    state: &str,
+    ignore_for: Option<&str>,
+    ignore_count: Option<i64>,
+    note: Option<&str>,
+    now: f64,
+) -> AResult {
+    let (row, eff) = crate::issues::set_state(
+        store,
+        pattern_id,
+        state,
+        ignore_for,
+        ignore_count,
+        note,
+        now,
+    )?;
+    let rel = Releases::load(store)?;
+    Ok(compact(json!({
+        "pattern_id": row.id,
+        "template": truncate(&row.template, 120),
+        "state": eff.name(),
+        "note": crate::issues::describe(&eff, &rel, now),
+    })))
+}
+
+/// MCP: what a release changed: new, regressed and resolved patterns, and its error rate.
+pub fn get_release(
+    store: &Store,
+    name: Option<&str>,
+    max_chars: usize,
+    d: Detail,
+    now: f64,
+) -> AResult {
+    let r = crate::issues::release(store, name, now)?;
+    let rel = Releases::load(store)?;
+    let limit = if d.full() { 25 } else { 8 };
+    let list = |rows: Vec<Value>, total: usize| {
+        let mut v = json!({"total": total, "patterns": rows});
+        if total == 0 {
+            v = json!({"total": 0});
+        }
+        v
+    };
+    let new: Vec<Value> = r
+        .new
+        .iter()
+        .take(limit)
+        .map(|p| pattern_brief(p, &rel, now, d))
+        .collect();
+    let regressed: Vec<Value> = r
+        .regressed
+        .iter()
+        .take(limit)
+        .map(|(p, at)| {
+            let mut v = pattern_brief(p, &rel, now, d);
+            v["back"] = json!(fmt_t(*at, now, d));
+            v
+        })
+        .collect();
+    let resolved: Vec<Value> = r
+        .resolved
+        .iter()
+        .take(limit)
+        .map(|(p, at)| {
+            let mut v = pattern_brief(p, &rel, now, d);
+            v["resolved"] = json!(fmt_t(*at, now, d));
+            v
+        })
+        .collect();
+    let trend = match r.previous_errors_per_hour {
+        Some(prev) if prev > 0.0 => Some(format!(
+            "{}/h errors vs {prev}/h in {}",
+            r.errors_per_hour,
+            r.previous.as_deref().unwrap_or("the previous release")
+        )),
+        Some(_) => Some(format!(
+            "{}/h errors; none in {}",
+            r.errors_per_hour,
+            r.previous.as_deref().unwrap_or("the previous release")
+        )),
+        None => None,
+    };
+    let v = json!({
+        "release": r.name,
+        "env": r.env,
+        "live": match r.until {
+            Some(u) => format!("{} to {}", fmt_t(r.at, now, d), fmt_t(u, now, d)),
+            None => format!("since {} (current)", fmt_t(r.at, now, d)),
+        },
+        "events_per_hour": r.events_per_hour,
+        "errors_per_hour": r.errors_per_hour,
+        "vs_previous": trend,
+        "new": list(new, r.new.len()),
+        "regressed": list(regressed, r.regressed.len()),
+        "resolved": list(resolved, r.resolved.len()),
+    });
+    Ok(fit_samples(v, max_chars))
+}
+
+/// MCP: merge patterns into the first by hand.
+pub fn merge_patterns(store: &Store, ids: &[String]) -> AResult {
+    let row = crate::issues::merge(store, ids)?;
+    Ok(json!({
+        "pattern_id": row.id,
+        "template": truncate(&row.template, TEMPLATE_CHARS),
+        "merged": ids.len() - 1,
+        "total_seen": row.total,
+        "note": "The other IDs now resolve to this one.",
+    }))
 }

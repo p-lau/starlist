@@ -352,3 +352,77 @@ async fn alert_stream_is_server_sent_events() {
     let (_, a) = get(&format!("http://{addr}/api/v1/alerts")).await;
     assert_eq!(a["enabled"], true);
 }
+
+async fn post_json(url: &str, body: Value) -> (u16, Value) {
+    let r = reqwest::Client::new()
+        .post(url)
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    let code = r.status().as_u16();
+    let text = r.text().await.unwrap();
+    (
+        code,
+        serde_json::from_str(&text).unwrap_or(Value::String(text)),
+    )
+}
+
+#[tokio::test]
+async fn issue_states_and_releases() {
+    let base = serve(open_cfg()).await;
+    let (_, ps) = get(&format!("{base}/api/v1/patterns?min_level=ERROR")).await;
+    let id = ps["patterns"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(ps["patterns"][0]["state"]["state"], "open");
+
+    let (code, p) = post_json(
+        &format!("{base}/api/v1/patterns/{id}/state"),
+        json!({"state": "ignored", "ignore_for": "2h", "note": "known"}),
+    )
+    .await;
+    assert_eq!(code, 200, "{p}");
+    assert_eq!(p["state"]["state"], "ignored");
+    assert_eq!(p["state"]["note"], "known");
+    assert!(p["state"]["until"].is_string());
+
+    let (_, wn) = get(&format!("{base}/api/v1/whats-new?min_level=ERROR")).await;
+    assert_eq!(wn["total"], 0);
+    let (_, ign) = get(&format!("{base}/api/v1/patterns?state=ignored")).await;
+    assert_eq!(ign["total"], 1);
+
+    let (code, e) = post_json(
+        &format!("{base}/api/v1/patterns/{id}/state"),
+        json!({"state": "maybe"}),
+    )
+    .await;
+    assert_eq!(code, 400, "{e}");
+
+    let (code, rs) = get(&format!("{base}/api/v1/releases")).await;
+    assert_eq!(code, 200);
+    assert_eq!(rs["releases"][0]["name"], "v2.0.0");
+    assert_eq!(rs["releases"][0]["current"], true);
+    let (code, r) = get(&format!("{base}/api/v1/releases/current")).await;
+    assert_eq!(code, 200, "{r}");
+    assert_eq!(r["name"], "v2.0.0");
+    assert_eq!(r["new"].as_array().unwrap().len(), 2);
+    let (code, _) = get(&format!("{base}/api/v1/releases/v9")).await;
+    assert_eq!(code, 404);
+
+    let (_, all) = get(&format!("{base}/api/v1/patterns")).await;
+    let ids: Vec<String> = all["patterns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap().to_string())
+        .collect();
+    let (code, m) = post_json(
+        &format!("{base}/api/v1/patterns/merge"),
+        json!({"ids": [ids[1], ids[2]]}),
+    )
+    .await;
+    assert_eq!(code, 200, "{m}");
+    assert_eq!(m["id"], ids[1].as_str());
+    let (_, all) = get(&format!("{base}/api/v1/patterns")).await;
+    assert_eq!(all["total"], 2);
+}

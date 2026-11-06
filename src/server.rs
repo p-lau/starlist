@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 const INSTRUCTIONS: &str = "\
 Distilled, redacted view of one app's logs. Lines are grouped into patterns with stable IDs.
 Flow: whats_new -> get_pattern (get_context for surrounding lines, get_request for one request's path) -> ship a fix -> add_marker (deploys are also auto-detected) -> verify_fix(pattern_id, since=marker).
-Patterns show first_release, the deploy live when they first appeared.
+Patterns show first_release, the deploy live when they first appeared. After a fix is verified, set_pattern_state(resolved); if it returns, whats_new reports it as regressed. get_release summarizes a deploy.
 Times: '30m', '2h', ISO time, or marker name. Output is brief by default; pass detail='full' for more.";
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -136,6 +136,37 @@ pub struct GetContextArgs {
     pub max_chars: Option<usize>,
     /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
     pub detail: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetPatternStateArgs {
+    pub pattern_id: String,
+    /// "resolved" (occurrences after now reopen it as regressed), "resolved_next"
+    /// (resolved from the next deploy on), "ignored" (left out of whats_new and
+    /// alerts), or "open".
+    pub state: String,
+    /// With "ignored": only for this long, like "24h".
+    pub ignore_for: Option<String>,
+    /// With "ignored": only for this many more events.
+    pub ignore_count: Option<i64>,
+    /// Why, for later reference.
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetReleaseArgs {
+    /// Release (deploy marker) name. Default: the live release.
+    pub name: Option<String>,
+    /// "brief" (default, compact) or "full" (absolute times, more patterns).
+    pub detail: Option<String>,
+    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    pub max_chars: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MergePatternsArgs {
+    /// Two or more pattern IDs; the first is kept and the others resolve to it.
+    pub pattern_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -358,6 +389,59 @@ impl LogServer {
             a.deploy.unwrap_or(false),
             analysis::now(),
         ))
+    }
+
+    #[tool(
+        description = "Mark a pattern resolved (it reopens as 'regressed' if it occurs again), resolved_next (from the next deploy), ignored, or open. Use after verify_fix says fixed.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    fn set_pattern_state(
+        &self,
+        Parameters(a): Parameters<SetPatternStateArgs>,
+    ) -> Result<String, String> {
+        out(analysis::set_pattern_state(
+            &self.store,
+            &a.pattern_id,
+            &a.state,
+            a.ignore_for.as_deref(),
+            a.ignore_count,
+            a.note.as_deref(),
+            analysis::now(),
+        ))
+    }
+
+    #[tool(
+        description = "What a release changed: new, regressed and resolved patterns, and its error rate vs the previous release. Default: the live release.",
+        annotations(read_only_hint = true)
+    )]
+    fn get_release(&self, Parameters(a): Parameters<GetReleaseArgs>) -> Result<String, String> {
+        let d = detail(&a.detail)?;
+        out(analysis::get_release(
+            &self.store,
+            a.name.as_deref(),
+            budget(a.max_chars, d),
+            d,
+            analysis::now(),
+        ))
+    }
+
+    #[tool(
+        description = "Merge patterns that are really the same issue into the first ID; the other IDs keep resolving to it.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true
+        )
+    )]
+    fn merge_patterns(
+        &self,
+        Parameters(a): Parameters<MergePatternsArgs>,
+    ) -> Result<String, String> {
+        out(analysis::merge_patterns(&self.store, &a.pattern_ids))
     }
 
     #[tool(

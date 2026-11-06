@@ -10,6 +10,7 @@
 	let query = $state('');
 	let level = $state('');
 	let since = $state('24h');
+	let stateFilter = $state('');
 	let limit = $state(50);
 	let list: PatternList | null = $state(null);
 	let error: string | null = $state(null);
@@ -24,7 +25,7 @@
 
 	$effect(() => {
 		void session.tick;
-		get<PatternList>('/patterns', { since, min_level: level, contains: query, limit }).then(
+		get<PatternList>('/patterns', { since, min_level: level, contains: query, limit, state: stateFilter }).then(
 			(l) => {
 				list = l;
 				error = null;
@@ -45,6 +46,13 @@
 			<option value="INFO">Info and up</option>
 			<option value="WARN">Warnings and up</option>
 			<option value="ERROR">Errors only</option>
+		</select>
+		<select bind:value={stateFilter} aria-label="State">
+			<option value="">Any state</option>
+			<option value="open">Open</option>
+			<option value="regressed">Regressed</option>
+			<option value="resolved">Resolved</option>
+			<option value="ignored">Ignored</option>
 		</select>
 		<select bind:value={since} aria-label="Period">
 			<option value="1h">Last hour</option>

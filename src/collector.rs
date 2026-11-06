@@ -34,6 +34,8 @@ pub struct Pipeline {
     source_roots: Vec<String>,
     /// Extra keys that hold a request ID, beyond the defaults.
     request_keys: Option<crate::request::RequestKeys>,
+    /// Lines matching one of these regexes all go to one pattern per rule.
+    groups: Vec<Regex>,
 }
 
 impl Pipeline {
@@ -68,7 +70,16 @@ impl Pipeline {
             log_tz: 0,
             source_roots: vec![],
             request_keys: None,
+            groups: vec![],
         }
+    }
+
+    /// Fingerprint rules: a line whose first line matches a rule belongs to
+    /// one pattern for that rule, named by its `name` capture group if it has
+    /// one (so one rule can make a few patterns), or by the rule itself.
+    pub fn with_groups(mut self, rules: Vec<Regex>) -> Self {
+        self.groups = rules;
+        self
     }
 
     /// Also read request IDs from these keys (any spelling), like "order_ref".
@@ -100,6 +111,16 @@ impl Pipeline {
             *t -= self.log_tz as f64;
         }
         e.ts.get_or_insert(now);
+        if let Some(label) = self.groups.iter().find_map(|re| {
+            re.captures(&e.head).map(|c| {
+                c.name("name")
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| re.as_str().to_string())
+            })
+        }) {
+            e.template = format!("{} group: {label}", e.level.unwrap_or("INFO"));
+            e.pattern_id = crate::pattern::pattern_id(&e.template);
+        }
         if !self.source_roots.is_empty()
             && let Some(l) = e.location.take()
         {

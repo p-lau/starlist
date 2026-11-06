@@ -6,6 +6,7 @@ pub mod api;
 pub mod collector;
 pub mod dashboard;
 pub mod http;
+pub mod issues;
 pub mod location;
 pub mod merge;
 pub mod pattern;
