@@ -28,6 +28,8 @@ pub struct Pipeline {
     redactor: Redactor,
     marker_re: Option<Regex>,
     merger: Option<Mutex<Merger>>,
+    /// Seconds east of UTC for log timestamps that have no zone.
+    log_tz: i32,
 }
 
 impl Pipeline {
@@ -44,11 +46,22 @@ impl Pipeline {
                 Merger::new(t)
             }))
         });
-        Self { store, redactor, marker_re, merger }
+        Self { store, redactor, marker_re, merger, log_tz: 0 }
+    }
+
+    /// Read zone-less log timestamps as this offset from UTC (seconds east).
+    pub fn with_log_tz(mut self, offset_secs: i32) -> Self {
+        self.log_tz = offset_secs;
+        self
     }
 
     pub fn parse(&self, text: &str, now: f64) -> Event {
         let mut e = parse_event(text, &self.redactor, None, None);
+        if e.ts_naive
+            && let Some(t) = e.ts.as_mut()
+        {
+            *t -= self.log_tz as f64;
+        }
         e.ts.get_or_insert(now);
         e
     }

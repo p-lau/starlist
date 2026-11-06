@@ -47,6 +47,12 @@ npm start | ./target/release/starlist serve --stdin --tee
 
 Claude Code: `claude mcp add --transport http logs http://127.0.0.1:7341/mcp`
 
+### Security and time zones
+
+- On localhost (the default) no token is needed, and only loopback `Host` headers are accepted, which blocks DNS-rebinding tricks from a browser.
+- When listening beyond localhost (`--http 0.0.0.0:7341`), a bearer token is required. Pass `--token` or set `STARLIST_TOKEN`. If you don't, one is generated and saved next to the database as `<db>.token` (owner-only permissions). Agents send it as `Authorization: Bearer <token>`, e.g. `claude mcp add --transport http logs http://host:7341/mcp --header "Authorization: Bearer $(cat starlist.token)"`.
+- Log timestamps without a zone are read as UTC. If your app logs local time, pass `--log-tz +02:00` (or `-0800`, `UTC`). Timestamps that carry a zone are never shifted.
+
 ## Demo
 
 ```sh
@@ -62,6 +68,6 @@ cargo run --release --example ask -- http://127.0.0.1:7341/mcp verify_fix '{"pat
 
 ## Known limits (prototype)
 
-- Timestamps without a timezone are read as UTC; lines without timestamps get the time they were read.
-- HTTP binds to localhost with no auth. Add tokens/TLS before exposing it.
+- Lines without a timestamp get the time they were read.
+- No TLS of its own: put it behind a reverse proxy (Caddy, nginx) or an SSH tunnel when it leaves the machine.
 - No hub yet for many apps; collectors would push events to one optional hub.
