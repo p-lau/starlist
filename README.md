@@ -20,6 +20,8 @@ Release build: ~5 MB static binary, ~11 MB memory while serving.
 
 Times accept `30m`, `2h`, an ISO time, or a marker name.
 
+Output is built for agent context. By default it's brief: compact JSON, relative times ("21m ago"), samples only on the top findings, and stack traces trimmed to your app's own frames plus the exception line (library frames are counted, not shown). Pass `detail: "full"` for absolute times, raw rates and untrimmed samples. On the demo, brief output is 40 to 60% smaller than before: `whats_new` is about 350 tokens, `get_pattern` about 200 and `verify_fix` about 115.
+
 ## How it works
 
 1. **Collect**: follows files like `tail -F` (rotation-safe) or reads stdin; groups stack-trace lines with the log line that produced them.
