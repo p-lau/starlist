@@ -1041,3 +1041,139 @@ pub fn list_markers(store: &Store, limit: i64, max_chars: usize, now: f64) -> AR
     };
     Ok(paged(json!({}), "markers", items, total, &page, false, now))
 }
+
+/// Signed offset from the anchor, like "-12s" or "+2m".
+fn offset(dt: f64) -> String {
+    if dt.abs() < 0.5 {
+        return "0s".into();
+    }
+    format!(
+        "{}{}",
+        if dt < 0.0 { "-" } else { "+" },
+        fmt_duration(dt.abs())
+    )
+}
+
+/// The raw, redacted lines around an occurrence of a pattern or a point in time.
+/// Lines come from the raw buffer, so only recent history is available.
+#[allow(clippy::too_many_arguments)]
+pub fn get_context(
+    store: &Store,
+    pattern_id: Option<&str>,
+    at: Option<&str>,
+    before: i64,
+    after: i64,
+    max_chars: usize,
+    d: Detail,
+    now: f64,
+) -> AResult {
+    let pid = match pattern_id.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => Some(
+            store
+                .pattern(p)
+                .map_err(db)?
+                .ok_or_else(|| {
+                    format!("Unknown pattern_id '{p}'. Call list_patterns or whats_new for IDs.")
+                })?
+                .id,
+        ),
+        None => None,
+    };
+    let at = match at.map(str::trim).filter(|a| !a.is_empty()) {
+        Some(a) => Some(resolve_time(store, a, now)?.0),
+        None if pid.is_none() => return Err("Pass pattern_id, at, or both.".into()),
+        None => None,
+    };
+    let Some(anchor) = store.raw_anchor(pid.as_deref(), at).map_err(db)? else {
+        let (n, oldest) = store.raw_span().map_err(db)?;
+        return Err(match oldest {
+            None if n == 0 => {
+                "No raw lines are stored. starlist keeps recent lines unless it runs with --no-raw."
+                    .into()
+            }
+            _ => format!(
+                "No stored line matches. The raw buffer holds the last {n} events, back to {}.",
+                fmt_time(oldest.unwrap_or(now), now)
+            ),
+        });
+    };
+    let lines = store
+        .raw_around(&anchor, before.clamp(0, 200), after.clamp(0, 200))
+        .map_err(db)?;
+
+    let render = |l: &crate::store::RawLine, short: Option<usize>| -> Value {
+        let is_anchor = l.id == anchor.id;
+        let limit = short.unwrap_or(match (d.full(), is_anchor) {
+            (true, _) => 2000,
+            (false, true) => 800,
+            (false, false) => 300,
+        });
+        let text = if d.full() {
+            truncate(&l.text, limit)
+        } else {
+            truncate(&trim_trace(&l.text, if is_anchor { 16 } else { 6 }), limit)
+        };
+        let off = offset(l.ts - anchor.ts);
+        if d.full() {
+            json!({
+                "at": fmt_time(l.ts, now),
+                "offset": off,
+                "pattern_id": l.pattern_id,
+                "anchor": if is_anchor { Some(true) } else { None },
+                "text": text,
+            })
+        } else {
+            json!(format!(
+                "{}{off} {text}",
+                if is_anchor { ">> " } else { "" }
+            ))
+        }
+    };
+    let head = json!({
+        "anchor": {"pattern_id": anchor.pattern_id, "at": fmt_t(anchor.ts, now, d)},
+        "note": if d.full() { None } else { Some("Offsets are from the anchor line, marked >>.") },
+    });
+    let build = |ls: &[crate::store::RawLine], short: Option<usize>, notes: &[String]| {
+        let mut v = head.clone();
+        v["lines"] = json!(
+            ls.iter()
+                .map(|l| {
+                    // The anchor line is never shortened further.
+                    render(l, if l.id == anchor.id { None } else { short })
+                })
+                .collect::<Vec<_>>()
+        );
+        if !notes.is_empty() {
+            v["trimmed"] = json!(notes.join(" "));
+        }
+        compact(v)
+    };
+
+    let mut ls = lines;
+    let mut notes: Vec<String> = vec![];
+    let mut short = None;
+    let mut v = build(&ls, short, &notes);
+    if json_len(&v) > max_chars {
+        short = Some(120);
+        notes.push("Lines shortened to fit max_chars.".into());
+        v = build(&ls, short, &notes);
+    }
+    let (mut cut_before, mut cut_after) = (0, 0);
+    while json_len(&v) > max_chars && ls.len() > 1 {
+        let pos = ls.iter().position(|l| l.id == anchor.id).unwrap_or(0);
+        // Drop the line farthest from the anchor, from the longer side.
+        if pos >= ls.len() - 1 - pos {
+            ls.remove(0);
+            cut_before += 1;
+        } else {
+            ls.pop();
+            cut_after += 1;
+        }
+        let mut n = notes.clone();
+        n.push(format!(
+            "{cut_before} earlier and {cut_after} later lines left out to fit max_chars."
+        ));
+        v = build(&ls, short, &n);
+    }
+    Ok(v)
+}

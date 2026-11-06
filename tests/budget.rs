@@ -3,8 +3,8 @@
 
 use serde_json::Value;
 use starlist::analysis::{
-    Detail, MIN_MAX_CHARS, Page, compact, compare_deploy, get_pattern, list_markers, list_patterns,
-    verify_fix, whats_new,
+    Detail, MIN_MAX_CHARS, Page, compact, compare_deploy, get_context, get_pattern, list_markers,
+    list_patterns, verify_fix, whats_new,
 };
 use starlist::pattern::{Event, parse_event};
 use starlist::redact::Redactor;
@@ -126,6 +126,19 @@ fn every_tool_stays_within_its_default_budget() {
                 verify_fix(&s, &id_of(&noisy_line(0)), "v1.1.0", None, d, NOW),
             ),
             ("list_markers", list_markers(&s, 100, max, NOW)),
+            (
+                "get_context",
+                get_context(
+                    &s,
+                    Some(&id_of(&noisy_line(1))),
+                    None,
+                    200,
+                    200,
+                    max,
+                    d,
+                    NOW,
+                ),
+            ),
         ];
         for (name, r) in checks {
             let v = r.unwrap();
