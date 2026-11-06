@@ -23,10 +23,6 @@ getrandom = "0.4"
 rmcp = { version = "3.9", features = ["client", "transport-streamable-http-client-reqwest"] }
 reqwest = { version = "0.13", default-features = false }
 
-[dev-dependencies]
-# The MCP client is only used by the example agent and the end-to-end test.
-rmcp = { version = "3.9", features = ["client", "transport-streamable-http-client-reqwest"] }
-
 [profile.release]
 opt-level = "s"
 lto = true
