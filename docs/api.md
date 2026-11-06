@@ -14,7 +14,7 @@ UI.
   pattern, request or route) or 500.
 - Query parameters that take a time accept what MCP does: a duration back from
   now (`30m`, `2h`, `1d`), an ISO time, or a marker name such as `v1.4.3`.
-- `service` is reserved for the hub and is `null` on a single collector.
+- `service` names the service on a hub, and is `null` on a single collector. See [On a hub](#on-a-hub).
 
 Until 1.0.0 fields may still change. From 1.0.0, `/api/v1` only gains fields.
 
@@ -319,3 +319,26 @@ es.addEventListener("alert", (e) => console.log(JSON.parse(e.data)));
 
 `EventSource` can't send an `Authorization` header, so with a token use
 `fetch` and read the stream yourself.
+
+## On a hub
+
+`starlist hub` serves the same routes for every service that pushes to it.
+
+- Add `service=NAME` to any route to ask one service. Answers then have
+  `"service": "NAME"`.
+- `service` can be left out when the hub has one service. It can also be left
+  out for routes under `/patterns/{id}`, which find the service holding that
+  pattern. Otherwise a route without it answers 400 and lists the services.
+- `GET /services` returns `{services: [{name, env, current_release, patterns, last_hour}]}`.
+- `GET /status` without `service` returns totals across services, with
+  `"hub": true` and a `services` list.
+- `GET /whats-new` without `service` merges every service's findings. Each
+  finding has `service`, errors come first, and `counts` are summed.
+- `GET /requests/{id}` without `service` follows the request through every
+  service. Each line has `service`, and `services` gives each one's
+  `events`, `first_offset_ms` and `last_offset_ms`. Order across services
+  follows each host's clock.
+- `/alerts/stream` answers 404; push alerts aren't available on a hub yet.
+
+Collectors push to `POST /hub/v1/push` with their own tokens, from
+`starlist hub-token SERVICE`. That route isn't part of this API.

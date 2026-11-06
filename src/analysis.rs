@@ -1483,26 +1483,113 @@ pub fn get_request(
             )
         });
     }
-    let capped = lines.len() as i64 > REQUEST_LINES;
-    let lines = &lines[..lines.len().min(REQUEST_LINES as usize)];
-    let start = lines[0].ts;
-    let end = lines[lines.len() - 1].ts;
-    let patterns: std::collections::HashSet<&str> =
-        lines.iter().map(|l| l.pattern_id.as_str()).collect();
+    let levels = pattern_levels(store, &lines)?;
+    let lines = lines
+        .into_iter()
+        .map(|l| {
+            let err = levels.get(&l.pattern_id).copied().unwrap_or(1) >= 3;
+            ReqLine {
+                service: None,
+                line: l,
+                error: err,
+            }
+        })
+        .collect();
+    request_timeline(&id, lines, max_chars, d, now)
+}
 
-    let render = |l: &crate::store::RawLine, short: Option<usize>| -> Value {
+/// Severity rank of each pattern in `lines`.
+pub(crate) fn pattern_levels(
+    store: &Store,
+    lines: &[crate::store::RawLine],
+) -> Result<std::collections::HashMap<String, u8>, String> {
+    let mut out = std::collections::HashMap::new();
+    for l in lines {
+        if !out.contains_key(&l.pattern_id) {
+            let rank = store
+                .pattern(&l.pattern_id)
+                .map_err(db)?
+                .map(|p| level_rank(p.level.as_deref()))
+                .unwrap_or(1);
+            out.insert(l.pattern_id.clone(), rank);
+        }
+    }
+    Ok(out)
+}
+
+/// One event of a request, with the service that logged it (on a hub).
+pub struct ReqLine {
+    pub service: Option<String>,
+    pub line: crate::store::RawLine,
+    /// ERROR or worse; kept when the answer has to be shortened.
+    pub error: bool,
+}
+
+/// A request's events in time order, shortened to `max_chars` by dropping
+/// events from the middle. Each service's first and last events and the
+/// errors are kept longest.
+pub fn request_timeline(
+    id: &str,
+    mut lines: Vec<ReqLine>,
+    max_chars: usize,
+    d: Detail,
+    now: f64,
+) -> AResult {
+    lines.sort_by(|a, b| a.line.ts.total_cmp(&b.line.ts));
+    let capped = lines.len() as i64 > REQUEST_LINES;
+    lines.truncate(REQUEST_LINES as usize);
+    if lines.is_empty() {
+        return Err(format!("No events for request '{id}'."));
+    }
+    let start = lines[0].line.ts;
+    let end = lines[lines.len() - 1].line.ts;
+    let patterns: std::collections::HashSet<&str> =
+        lines.iter().map(|l| l.line.pattern_id.as_str()).collect();
+
+    // Per service: where its events start and end relative to the request.
+    let mut services: Vec<(&str, usize, f64, f64)> = vec![];
+    let mut keep_long = vec![false; lines.len()];
+    for (i, l) in lines.iter().enumerate() {
+        keep_long[i] |= l.error;
+        let Some(svc) = l.service.as_deref() else {
+            continue;
+        };
+        match services.iter_mut().find(|s| s.0 == svc) {
+            Some(s) => {
+                s.1 += 1;
+                s.3 = l.line.ts;
+            }
+            None => services.push((svc, 1, l.line.ts, l.line.ts)),
+        }
+    }
+    for (i, l) in lines.iter().enumerate() {
+        let first = i == 0 || !lines[..i].iter().any(|o| o.service == l.service);
+        let last = !lines[i + 1..].iter().any(|o| o.service == l.service);
+        keep_long[i] |= first || last;
+    }
+    let multi = services.len() > 1;
+
+    let render = |l: &ReqLine, short: Option<usize>| -> Value {
         let limit = short.unwrap_or(if d.full() { 2000 } else { 400 });
-        let off = offset(l.ts - start);
+        let off = offset(l.line.ts - start);
         if d.full() {
-            json!({"at": fmt_time(l.ts, now), "offset": off, "pattern_id": l.pattern_id, "text": truncate(&l.text, limit)})
+            let mut v = json!({"at": fmt_time(l.line.ts, now), "offset": off, "pattern_id": l.line.pattern_id, "text": truncate(&l.line.text, limit)});
+            if let Some(s) = &l.service {
+                v["service"] = json!(s);
+            }
+            v
         } else {
+            let svc = match (&l.service, multi) {
+                (Some(s), true) => format!("[{s}] "),
+                _ => String::new(),
+            };
             json!(format!(
-                "{off} {}",
-                truncate(&trim_trace(&l.text, 10), limit)
+                "{off} {svc}{}",
+                truncate(&trim_trace(&l.line.text, 10), limit)
             ))
         }
     };
-    let head = json!({
+    let mut head = json!({
         "request_id": id,
         "started": fmt_t(start, now, d),
         "duration": fmt_duration(end - start),
@@ -1510,6 +1597,21 @@ pub fn get_request(
         "patterns": patterns.len(),
         "note": if capped { Some(format!("Only the first {REQUEST_LINES} events are shown.")) } else { None },
     });
+    if multi {
+        head["services"] = json!(
+            services
+                .iter()
+                .map(|(s, n, a, b)| format!(
+                    "{s}: {n} events, {} to {}",
+                    offset(a - start),
+                    offset(b - start)
+                ))
+                .collect::<Vec<_>>()
+        );
+        head["clocks"] = json!(
+            "Events are ordered by each host's clock, so order across services is only as good as their clock sync."
+        );
+    }
     let build = |keep: &[usize], short: Option<usize>, notes: &[String]| {
         let mut v = head.clone();
         let mut out = vec![];
@@ -1537,15 +1639,24 @@ pub fn get_request(
         notes.push("Lines shortened to fit max_chars.".into());
         v = build(&keep, short, &notes);
     }
-    // Keep how the request started and how it ended; drop from the middle.
-    while json_len(&v) > max_chars && keep.len() > 2 {
-        keep.remove(keep.len() / 2);
-        let mut n = notes.clone();
-        n.push(format!(
-            "{} middle events left out to fit max_chars.",
-            lines.len() - keep.len()
-        ));
-        v = build(&keep, short, &n);
+    // Drop from the middle: first ordinary events, then the ones kept longest,
+    // always leaving how the request started and ended.
+    for long in [false, true] {
+        while json_len(&v) > max_chars && keep.len() > 2 {
+            let candidates: Vec<usize> = (1..keep.len() - 1)
+                .filter(|&k| keep_long[keep[k]] == long)
+                .collect();
+            let Some(&k) = candidates.get(candidates.len() / 2) else {
+                break;
+            };
+            keep.remove(k);
+            let mut n = notes.clone();
+            n.push(format!(
+                "{} middle events left out to fit max_chars.",
+                lines.len() - keep.len()
+            ));
+            v = build(&keep, short, &n);
+        }
     }
     Ok(v)
 }

@@ -194,6 +194,8 @@ pub struct Event {
     pub request_id: Option<String>,
     /// Numeric fields read from the line (`--metric`).
     pub metrics: Vec<(String, f64)>,
+    /// Keep this event out of the raw buffer (sent by a collector with `--no-raw`).
+    pub no_raw: bool,
 }
 
 fn detect_level(message: &str) -> Option<&'static str> {
@@ -361,6 +363,7 @@ pub fn parse_event_with(
         location,
         request_id,
         metrics: vec![],
+        no_raw: false,
     }
 }
 

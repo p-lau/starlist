@@ -211,6 +211,11 @@ impl LogServer {
         }
     }
 
+    /// The tools, as listed to clients.
+    pub fn new_tools() -> Vec<rmcp::model::Tool> {
+        Self::tool_router().list_all()
+    }
+
     /// Let clients subscribe to the whats_new resource and get alerts.
     pub fn with_alerts(mut self, alerts: Option<Arc<Alerts>>) -> Self {
         self.alerts = alerts;

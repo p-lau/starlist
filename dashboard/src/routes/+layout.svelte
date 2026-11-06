@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import { page } from '$app/state';
-	import { get, session, setToken, startLive } from '#lib/api.svelte.ts';
+	import { get, session, setService, setToken, startLive } from '#lib/api.svelte.ts';
 	import { ago } from '#lib/format.ts';
 	import type { Status } from '#lib/types.ts';
 	import { onMount } from 'svelte';
@@ -11,6 +11,12 @@
 	let tokenInput = $state('');
 
 	onMount(startLive);
+
+	// A link can name the service, like a pattern from a request on a hub.
+	$effect(() => {
+		const s = page.url.searchParams.get('service');
+		if (s && session.services.includes(s)) setService(s);
+	});
 
 	$effect(() => {
 		void session.tick;
@@ -40,6 +46,16 @@
 			{/each}
 		</nav>
 		<div class="state">
+			{#if session.services.length}
+				<select
+					class="svc"
+					aria-label="Service"
+					value={session.service}
+					onchange={(e) => setService(e.currentTarget.value)}
+				>
+					{#each session.services as s (s)}<option value={s}>{s}</option>{/each}
+				</select>
+			{/if}
 			{#if status?.current_release}
 				<span class="release" title="Live since {status.current_release.at}">{status.current_release.name}</span>
 			{/if}
@@ -86,7 +102,7 @@
 </main>
 
 <footer class="faint">
-	{#if status}starlist {status.version} · {status.patterns} patterns{#if status.raw.oldest} · raw lines since {ago(status.raw.oldest)}{/if}{/if}
+	{#if status}starlist {status.version} · {status.patterns} patterns{#if status.raw?.oldest}{' · '}raw lines since {ago(status.raw.oldest)}{/if}{/if}
 </footer>
 
 <style>
@@ -146,6 +162,11 @@
 		gap: 10px;
 		font-size: 0.82rem;
 	}
+	.svc {
+		max-width: 160px;
+		padding: 3px 6px;
+		font-size: 0.82rem;
+	}
 	.release {
 		font-family: var(--mono);
 		padding: 2px 8px;
@@ -198,6 +219,18 @@
 	@media (max-width: 560px) {
 		header .inner {
 			gap: 10px;
+		}
+		/* On a hub the service picker needs the room: give it its own row. */
+		header .inner:has(.svc) {
+			flex-wrap: wrap;
+			height: auto;
+			padding-top: 10px;
+			padding-bottom: 10px;
+			row-gap: 6px;
+		}
+		header .inner:has(.svc) .state {
+			flex: 1 0 100%;
+			margin-left: 0;
 		}
 		.brand {
 			font-size: 0;

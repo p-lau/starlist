@@ -30,6 +30,8 @@ const REQUEST_LINES: i64 = 2000;
 pub struct ApiState {
     pub store: Arc<Store>,
     pub alerts: Option<Arc<Alerts>>,
+    /// The service this store holds, on a hub.
+    pub service: Option<String>,
 }
 
 /// The `/api/v1` routes. Auth, Host checks and CORS are added by `http::router`.
@@ -251,7 +253,7 @@ async fn status(State(s): State<ApiState>) -> ApiResult {
         Ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
             "now": iso(now),
-            "service": Value::Null,
+            "service": s.service,
             "env": store.meta("env").map_err(analysis::db)?,
             "current_release": cx.rel.latest().map(|(t, n)| json!({"name": n, "at": iso(t)})),
             "patterns": store.pattern_count().map_err(analysis::db)?,
@@ -695,7 +697,7 @@ async fn request(State(s): State<ApiState>, Path(id): Path<String>) -> ApiResult
         let end = lines[lines.len() - 1].ts;
         Ok(json!({
             "request_id": id,
-            "service": Value::Null,
+            "service": s.service,
             "started": iso(start),
             "duration_ms": ((end - start) * 1000.0).round(),
             "events": lines.len(),

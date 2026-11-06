@@ -12,7 +12,7 @@ use rmcp::transport::streamable_http_server::{
 use std::sync::Arc;
 
 /// Compare without leaking how many leading bytes matched.
-fn same(a: &[u8], b: &[u8]) -> bool {
+pub fn same_secret(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
@@ -25,7 +25,7 @@ async fn require_bearer(State(token): State<Arc<String>>, req: Request, next: Ne
             v.strip_prefix("Bearer ")
                 .or_else(|| v.strip_prefix("bearer "))
         })
-        .is_some_and(|t| same(t.trim().as_bytes(), token.as_bytes()));
+        .is_some_and(|t| same_secret(t.trim().as_bytes(), token.as_bytes()));
     if ok {
         return next.run(req).await;
     }
@@ -86,27 +86,11 @@ pub fn router(
 /// - API writes need a same-origin or allowed `Origin`, so another site can't
 ///   make a visitor's browser change anything.
 pub fn app(store: Arc<Store>, cfg: HttpConfig) -> axum::Router {
-    let mut config = StreamableHttpServerConfig::default();
-    if !cfg.allowed_hosts.is_empty() {
-        config = config.with_allowed_hosts(cfg.allowed_hosts.clone());
-    } else if cfg.token.is_some() {
-        config = config.disable_allowed_hosts();
-    }
     let alerts = cfg.alerts.clone();
     let mcp_store = store.clone();
-    let service: StreamableHttpService<LogServer, LocalSessionManager> = StreamableHttpService::new(
-        move || Ok(LogServer::new(mcp_store.clone()).with_alerts(alerts.clone())),
-        Default::default(),
-        config,
-    );
-    let token = cfg.token.clone().map(Arc::new);
-    let mut mcp = axum::Router::new().nest_service("/mcp", service);
-    if let Some(t) = &token {
-        mcp = mcp.layer(middleware::from_fn_with_state(t.clone(), require_bearer));
-    }
-    if !cfg.api && !cfg.prometheus {
-        return mcp;
-    }
+    let mcp = mcp_service(&cfg, move || {
+        Ok(LogServer::new(mcp_store.clone()).with_alerts(alerts.clone()))
+    });
     let mut guarded = axum::Router::new();
     if cfg.api {
         guarded = guarded.nest(
@@ -114,6 +98,7 @@ pub fn app(store: Arc<Store>, cfg: HttpConfig) -> axum::Router {
             crate::api::routes(crate::api::ApiState {
                 store: store.clone(),
                 alerts: cfg.alerts.clone(),
+                service: None,
             }),
         );
     }
@@ -123,8 +108,58 @@ pub fn app(store: Arc<Store>, cfg: HttpConfig) -> axum::Router {
             axum::routing::get(move || prometheus(store.clone())),
         );
     }
-    if let Some(t) = &token {
-        guarded = guarded.layer(middleware::from_fn_with_state(t.clone(), require_bearer));
+    assemble(mcp, guarded, &cfg)
+}
+
+/// A hub: the same MCP tools, API and dashboard over every service that
+/// pushes to it, plus `/hub/v1/push` for collectors (with their own tokens).
+pub fn hub_app(hub: Arc<crate::hub::Hub>, cfg: HttpConfig) -> axum::Router {
+    let mcp_hub = hub.clone();
+    let mcp = mcp_service(&cfg, move || {
+        Ok(crate::hub::HubServer::new(mcp_hub.clone()))
+    });
+    let mut guarded = axum::Router::new();
+    if cfg.api {
+        guarded = guarded.nest("/api/v1", crate::hub::api_routes(hub.clone()));
+    }
+    assemble(mcp, guarded, &cfg).merge(crate::hub::push_routes(hub))
+}
+
+/// `/mcp`, behind the token when there is one.
+fn mcp_service<S, F>(cfg: &HttpConfig, factory: F) -> axum::Router
+where
+    S: rmcp::ServerHandler + Send + 'static,
+    F: Fn() -> Result<S, std::io::Error> + Send + Sync + 'static,
+{
+    let mut config = StreamableHttpServerConfig::default();
+    if !cfg.allowed_hosts.is_empty() {
+        config = config.with_allowed_hosts(cfg.allowed_hosts.clone());
+    } else if cfg.token.is_some() {
+        config = config.disable_allowed_hosts();
+    }
+    let service: StreamableHttpService<S, LocalSessionManager> =
+        StreamableHttpService::new(factory, Default::default(), config);
+    let mut mcp = axum::Router::new().nest_service("/mcp", service);
+    if let Some(t) = &cfg.token {
+        mcp = mcp.layer(middleware::from_fn_with_state(
+            Arc::new(t.clone()),
+            require_bearer,
+        ));
+    }
+    mcp
+}
+
+/// Put the API (and `/metrics`) behind the token, Host and Origin checks,
+/// next to `/mcp`, with the dashboard as the fallback.
+fn assemble(mcp: axum::Router, mut guarded: axum::Router, cfg: &HttpConfig) -> axum::Router {
+    if !cfg.api && !cfg.prometheus {
+        return mcp;
+    }
+    if let Some(t) = &cfg.token {
+        guarded = guarded.layer(middleware::from_fn_with_state(
+            Arc::new(t.clone()),
+            require_bearer,
+        ));
     }
     let guard = Arc::new(Guard {
         token: cfg.token.is_some(),

@@ -85,13 +85,36 @@ Each pattern costs about 45 bytes for each hour it occurs in, so a pattern seen 
 - `--prometheus` serves `http://127.0.0.1:7341/metrics` for a Prometheus scraper: events per level, patterns per level and issue state, the percentiles of each `--metric` field over the last hour or so, and the database size. It has the same token and Host checks as the API.
 - `starlist export --since 30d --db starlist.db > starlist.ndjson` writes patterns, hourly counts, hourly field percentiles and markers as one JSON object per line, for a warehouse, a spreadsheet or a backup.
 
+### Hub: many services in one place
+
+For more than one app, run a hub, the ground station, and point collectors at it. Every collector keeps working on its own: it still serves its own MCP, API and dashboard, and pushes a copy of what it records.
+
+```sh
+# On the hub host
+starlist hub-token api --dir /var/lib/starlist-hub      # prints a push token for "api"
+starlist hub-token pricing --dir /var/lib/starlist-hub
+starlist hub --dir /var/lib/starlist-hub --http 0.0.0.0:7341
+
+# Next to each app (replicas share one service name)
+STARLIST_HUB_TOKEN=... starlist serve --file app.log \
+  --hub https://hub.internal:7341 --service api --env production
+```
+
+- **What is pushed:** the events a collector records (already redacted and fingerprinted), its markers and its pattern merges. Nothing is pulled from collectors. Each push token can only write its own service and can't read anything; reading the hub uses the hub's own token, as on a collector.
+- **Replicas** of a service add up in one place, because pattern IDs are the same on every host. A deploy reported by every replica is recorded once.
+- **Outages:** a collector queues what it records in its own database and sends it in batches. While the hub is unreachable it keeps retrying and catches up afterwards. The queue is limited to `--hub-buffer` (default 200MB); beyond that the oldest batches are dropped and counted. A batch that is retried is applied only once.
+- **Asking the hub:** the same MCP tools, API and dashboard, with a `service` argument (a picker in the dashboard). `list_services` lists them, and `whats_new` without a service covers every service.
+- **Requests across services:** `get_request` (and `GET /api/v1/requests/{id}`) without a service follows one request through every service in time order, tagged by service, with each service's first and last offset. Order across hosts is only as good as their clocks, and the answer says so. To fit the size limit, it keeps each service's first and last events and the errors longest.
+- **Raw lines** at the hub are capped per service by `--raw-size`, and `--no-raw` keeps none. A collector run with `--no-raw` sends no lines for the hub's buffer either.
+- The hub has no TLS of its own: put it behind a reverse proxy with HTTPS. A collector warns when it pushes to plain `http://` beyond localhost.
+
 ### Security, privacy and time zones
 
 - On localhost (the default) no token is needed, and only loopback `Host` headers are accepted, which blocks DNS-rebinding tricks from a browser. The API also refuses writes from other sites' pages.
 - When listening beyond localhost (`--http 0.0.0.0:7341`), a bearer token is required. Pass `--token` or set `STARLIST_TOKEN`. If you don't, one is generated and saved next to the database as `<db>.token` (owner-only permissions). Agents send it as `Authorization: Bearer <token>`, e.g. `claude mcp add --transport http logs http://host:7341/mcp --header "Authorization: Bearer $(cat starlist.token)"`.
-- Request IDs are read from a W3C `traceparent` and fields like `trace_id`, `request_id`, `x-request-id` and `correlation_id` (any spelling, in JSON or `key=value` text). Add your own with `--request-key order_ref`. They're kept out of patterns, and an ID that looks like a secret is ignored. See [docs/design/requests-across-services.md](docs/design/requests-across-services.md) for how this will work across services with the hub.
+- Request IDs are read from a W3C `traceparent` and fields like `trace_id`, `request_id`, `x-request-id` and `correlation_id` (any spelling, in JSON or `key=value` text). Add your own with `--request-key order_ref`. They're kept out of patterns, and an ID that looks like a secret is ignored. When an event has both, the trace ID wins, since it follows a request across services.
 - Raw lines: to answer `get_context` and `get_request`, starlist keeps the most recent events in the database, redacted the same way as samples, up to `--raw-size` (default 20MB; oldest lines are dropped first). Redaction catches common secrets and personal data, but it can't know every sensitive value your app logs, so this buffer holds more of your log text than the pattern summaries do. If that's a concern, add `--redact` rules or run with `--no-raw`, which stores no raw lines and deletes any already kept.
-- `--env production` (or `STARLIST_ENV`) labels what this collector watches; it shows in the release view and the API, and will tell environments apart at the hub.
+- `--env production` (or `STARLIST_ENV`) labels what this collector watches; it shows in the release view, the API and the hub.
 - Log timestamps without a zone are read as UTC. If your app logs local time, pass `--log-tz +02:00` (or `-0800`, `UTC`). Timestamps that carry a zone are never shifted.
 
 ## Demo
@@ -111,4 +134,4 @@ cargo run --release --example ask -- http://127.0.0.1:7341/mcp verify_fix '{"pat
 
 - Lines without a timestamp get the time they were read.
 - No TLS of its own: put it behind a reverse proxy (Caddy, nginx) or an SSH tunnel when it leaves the machine.
-- No hub yet for many apps; collectors would push events to one optional hub.
+- A hub has no push alerts or Prometheus endpoint of its own yet; each collector still has both.

@@ -5,17 +5,24 @@
 	// Raw log lines; `anchor` is highlighted, `offsets` shows time from the first line.
 	let { lines, anchor = null, offsets = false }: { lines: Line[]; anchor?: number | null; offsets?: boolean } =
 		$props();
+	// On a hub, a request's lines come from several services.
+	const multi = $derived(lines.some((l) => l.service));
 </script>
 
 <ol class="lines">
-	{#each lines as l (l.id)}
-		<li class:anchor={l.id === anchor}>
+	{#each lines as l ((l.service ?? '') + l.id)}
+		<li class:anchor={l.id === anchor} class:multi>
 			<span class="t faint mono">
 				{offsets && l.offset_ms !== undefined
 					? `+${duration(l.offset_ms)}`
 					: new Date(l.at).toLocaleTimeString(undefined, { hour12: false })}
 			</span>
-			<a class="p faint mono" href="/patterns/{l.pattern_id}" title="Pattern {l.pattern_id}">#</a>
+			{#if multi}<span class="svc mono" title="Service">{l.service}</span>{/if}
+			<a
+				class="p faint mono"
+				href="/patterns/{l.pattern_id}{l.service ? `?service=${encodeURIComponent(l.service)}` : ''}"
+				title="Pattern {l.pattern_id}">#</a
+			>
 			<pre>{l.text}</pre>
 		</li>
 	{/each}
@@ -37,6 +44,17 @@
 		padding: 3px 10px;
 		border-top: 1px solid var(--line);
 		align-items: baseline;
+	}
+	li.multi {
+		grid-template-columns: 76px minmax(48px, max-content) 14px minmax(0, 1fr);
+	}
+	.svc {
+		font-size: 0.72rem;
+		color: var(--info);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 110px;
 	}
 	li:first-child {
 		border-top: 0;

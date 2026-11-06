@@ -184,7 +184,9 @@ across services. Design for requests: [requests-across-services.md](requests-acr
   parameter on every route and a service filter in the UI. `get_request` on the
   hub returns one timeline across services.
 - Collectors keep working on their own when the hub is down, and catch up
-  within their retention when it returns.
+  within their retention when it returns. (As built, the limit is the outbox
+  size, `--hub-buffer`, rather than the retention: the collector queues what it
+  records, not its stored counts.)
 
 The `service` field is reserved in the API from v0.8.0 so clients written
 against a collector work against the hub.

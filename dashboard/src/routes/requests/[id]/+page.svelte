@@ -32,6 +32,13 @@
 				{trace.events} events over {duration(trace.duration_ms)}, starting {when(trace.started)}.
 				{#if trace.truncated}Only the first {trace.events} are shown.{/if}
 			</p>
+			{#if trace.services && trace.services.length > 1}
+				<p class="muted">
+					Across {trace.services.length} services:
+					{trace.services.map((s) => `${s.service} (${s.events}, +${duration(s.first_offset_ms)} to +${duration(s.last_offset_ms)})`).join(', ')}.
+					Order across services follows each host's clock.
+				</p>
+			{/if}
 		{/if}
 	</div>
 	{#if trace}

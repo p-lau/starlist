@@ -173,6 +173,8 @@ export interface Line {
 	pattern_id: string;
 	text: string;
 	offset_ms?: number;
+	/** The service that logged it, in a request followed across services on a hub. */
+	service?: string;
 }
 
 export interface Context {
@@ -188,6 +190,8 @@ export interface RequestTrace {
 	events: number;
 	truncated: boolean;
 	lines: Line[];
+	/** On a hub: each service's part of the request. */
+	services?: { service: string; events: number; first_offset_ms: number; last_offset_ms: number }[];
 }
 
 export interface Release {

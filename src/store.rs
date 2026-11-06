@@ -66,6 +66,57 @@ pub struct StateRow {
 pub struct Store {
     conn: Mutex<Connection>,
     raw: Mutex<RawBuffer>,
+    /// Set when pushing to a hub: what gets recorded is also queued to send.
+    outbox: Mutex<Option<Outbox>>,
+}
+
+struct Outbox {
+    /// Most bytes of queued JSON; the oldest entries are dropped beyond it.
+    cap: i64,
+    /// Bytes queued, counted on first write.
+    bytes: Option<i64>,
+    /// Send events without raw text for the hub's buffer.
+    no_raw: bool,
+}
+
+/// Queue an item for the hub in the current transaction.
+fn queue(tx: &rusqlite::Connection, ob: &mut Outbox, item: &crate::push::Item) -> R<()> {
+    let body = serde_json::to_string(item).unwrap_or_default();
+    if ob.bytes.is_none() {
+        ob.bytes = Some(tx.query_row(
+            "SELECT COALESCE(SUM(length(CAST(body AS BLOB))), 0) FROM outbox",
+            [],
+            |r| r.get(0),
+        )?);
+    }
+    tx.prepare_cached("INSERT INTO outbox(body) VALUES (?1)")?
+        .execute([&body])?;
+    let bytes = ob.bytes.get_or_insert(0);
+    *bytes += body.len() as i64;
+    if *bytes > ob.cap {
+        // Drop the oldest entries until 90% of the cap is used.
+        let target = *bytes - ob.cap * 9 / 10;
+        let mut st =
+            tx.prepare_cached("SELECT seq, length(CAST(body AS BLOB)) FROM outbox ORDER BY seq")?;
+        let mut rows = st.query([])?;
+        let (mut freed, mut upto, mut n) = (0i64, 0i64, 0i64);
+        while freed < target
+            && let Some(r) = rows.next()?
+        {
+            upto = r.get(0)?;
+            freed += r.get::<_, i64>(1)?;
+            n += 1;
+        }
+        drop(rows);
+        tx.execute("DELETE FROM outbox WHERE seq <= ?1", [upto])?;
+        tx.execute(
+            "INSERT INTO meta(key, value) VALUES ('hub_dropped', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + ?1",
+            [n],
+        )?;
+        *bytes -= freed;
+    }
+    Ok(())
 }
 
 /// Default size of the raw-line buffer: the text of recent events, kept so an
@@ -168,6 +219,8 @@ impl Store {
                 bins TEXT NOT NULL,
                 PRIMARY KEY(pattern_id, field, hour)) WITHOUT ROWID;
              CREATE INDEX IF NOT EXISTS metric_hour ON metric_hourly(field, hour);
+             -- What a collector still has to push to its hub.
+             CREATE TABLE IF NOT EXISTS outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL);
              -- Recent 10-second counts and older hourly ones, read as one table.
              CREATE TEMP VIEW IF NOT EXISTS allc AS
                 SELECT pattern_id, bucket, n FROM counts
@@ -183,7 +236,66 @@ impl Store {
                 cap: Some(DEFAULT_RAW_BYTES),
                 bytes: None,
             }),
+            outbox: Mutex::new(None),
         })
+    }
+
+    /// Queue everything recorded from now on for a hub, keeping at most
+    /// `cap` bytes queued. `no_raw` sends events without raw text for the
+    /// hub's buffer.
+    pub fn enable_outbox(&self, cap: i64, no_raw: bool) {
+        *self.outbox.lock().unwrap_or_else(|e| e.into_inner()) = Some(Outbox {
+            cap: cap.max(1 << 20),
+            bytes: None,
+            no_raw,
+        });
+    }
+
+    /// The oldest queued items, up to about `max_bytes`: (seq, JSON).
+    pub fn outbox_batch(&self, max_bytes: usize) -> R<Vec<(i64, String)>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached("SELECT seq, body FROM outbox ORDER BY seq LIMIT 2000")?;
+        let mut rows = st.query([])?;
+        let (mut out, mut size) = (vec![], 0usize);
+        while let Some(r) = rows.next()? {
+            let body: String = r.get(1)?;
+            if !out.is_empty() && size + body.len() > max_bytes {
+                break;
+            }
+            size += body.len();
+            out.push((r.get(0)?, body));
+        }
+        Ok(out)
+    }
+
+    /// The hub applied everything up to `seq`.
+    pub fn outbox_ack(&self, seq: i64) -> R<()> {
+        let conn = self.conn();
+        let freed: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(length(CAST(body AS BLOB))), 0) FROM outbox WHERE seq <= ?1",
+            [seq],
+            |r| r.get(0),
+        )?;
+        conn.execute("DELETE FROM outbox WHERE seq <= ?1", [seq])?;
+        if let Some(ob) = self
+            .outbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            && let Some(b) = ob.bytes.as_mut()
+        {
+            *b = (*b - freed).max(0);
+        }
+        Ok(())
+    }
+
+    /// Items waiting to be pushed, and their size in bytes.
+    pub fn outbox_len(&self) -> R<(i64, i64)> {
+        self.conn().query_row(
+            "SELECT COUNT(*), COALESCE(SUM(length(CAST(body AS BLOB))), 0) FROM outbox",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
     }
 
     /// Set the raw-line buffer size in bytes, or turn it off with `None`,
@@ -311,7 +423,7 @@ impl Store {
                 if let Some(l) = &e.location {
                     up_loc.execute(params![pid, l, ts])?;
                 }
-                if raw.cap.is_some() {
+                if raw.cap.is_some() && !e.no_raw {
                     let text = crate::pattern::truncate(&e.body, RAW_EVENT_CHARS);
                     ins_raw.execute(params![ts, pid, text, e.request_id])?;
                     *raw.bytes.get_or_insert(0) += text.len() as i64;
@@ -360,6 +472,21 @@ impl Store {
                     raw.bytes = Some(bytes - freed);
                 }
             }
+        }
+        if let Some(ob) = self
+            .outbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            let no_raw = ob.no_raw || raw.cap.is_none();
+            let item = crate::push::Item::Events {
+                events: events
+                    .iter()
+                    .map(|e| crate::push::WireEvent::from_event(e, no_raw))
+                    .collect(),
+            };
+            queue(&tx, ob, &item)?;
         }
         tx.commit()
     }
@@ -655,6 +782,19 @@ impl Store {
                (SELECT id FROM samples WHERE pattern_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2)",
             params![c, SAMPLES_PER_PATTERN],
         )?;
+        if let Some(ob) = self
+            .outbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            let item = crate::push::Item::Merge {
+                canonical: op.canonical.clone(),
+                template: op.template.clone(),
+                aliases: op.aliases.clone(),
+            };
+            queue(&tx, ob, &item)?;
+        }
         tx.commit()
     }
 
@@ -902,11 +1042,41 @@ impl Store {
     }
 
     pub fn add_marker(&self, name: &str, ts: f64, kind: &str, note: Option<&str>) -> R<()> {
-        self.conn().execute(
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO markers(name, ts, kind, note) VALUES (?1, ?2, ?3, ?4)",
             params![name, ts, kind, note],
         )?;
-        Ok(())
+        if let Some(ob) = self
+            .outbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            let item = crate::push::Item::Marker {
+                name: name.to_string(),
+                at: ts,
+                kind: kind.to_string(),
+                note: note.map(str::to_string),
+            };
+            queue(&tx, ob, &item)?;
+        }
+        tx.commit()
+    }
+
+    /// Add a marker unless one with this name, kind and time exists (a hub
+    /// hears about one deploy from every replica).
+    pub fn add_marker_once(&self, name: &str, ts: f64, kind: &str, note: Option<&str>) -> R<bool> {
+        let exists: bool = self.conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM markers WHERE name = ?1 AND kind = ?2 AND abs(ts - ?3) < 0.001)",
+            params![name, kind, ts],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            self.add_marker(name, ts, kind, note)?;
+        }
+        Ok(!exists)
     }
 
     /// Record that release `name` went live at `ts`, unless it was already
