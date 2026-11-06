@@ -2,7 +2,7 @@
 
 Does an agent fix a production bug with fewer tokens when it reads logs through starlist instead of the raw log file? This benchmark runs the same debugging tasks both ways with a real coding agent and grades each fix with a check the agent never sees.
 
-**Short answer (Sonnet 5.5, 210 runs, about $10):** it depends on whether the bug needs the logs at all.
+**Short answer (Sonnet 5.5, 255 runs, about $12):** it depends on whether the bug needs the logs at all.
 
 - **When the code alone gives the bug away** (v1), starlist makes no real difference. The agent finds the bug by reading the code, and log reads are 1 to 3% of its tokens.
 - **When only the logs can explain the failure** (v2), starlist fixes as many bugs as raw logs with 32% fewer tokens and half the cost on a 17 MB log. On a 300 MB log it takes 2.7x fewer tokens and 2.9x less cost. Without logs the agent fixed 2 of 12.
@@ -35,7 +35,7 @@ Version 2.3.4 runs for 25 hours, then 2.4.0 is deployed and runs for the last 45
 | shipping-weight | A new grams-to-kg helper divides by a million | New WARN on every quote: the carrier rejects the weight and the flat rate is used. No errors |
 | receipt-giftcard | The gift card receipt line adds a `Decimal` to a `str` | New `TypeError` under the same message as old SMTP failures |
 | cache-config | The cache TTL setting was renamed; catalog reads the old name and gets 0 | Cache hit rate drops to 0 and slow queries jump. No errors |
-| stock-boundary | The stock check became `stock > qty` | Out-of-stock rejections rise about 1.5x; the INFO line shows `requested=2 available=2` |
+| stock-boundary | The stock check became `stock > qty` | Only the INFO line `requested=2 available=2`; out-of-stock rejections rise late in the day in every scenario, so their rate says nothing |
 
 `--no-hint` replaces the symptom with "An alert fired after the latest release, but nobody knows yet what is wrong."
 
@@ -66,6 +66,9 @@ All runs used Sonnet 5.5 with 3 runs per scenario. The table shows totals over e
 | v1 | large, no symptom | starlist | 15/15 | 1,555k | ≈22k | 17.1k | 138 | $0.75 |
 | v1 | large, no symptom | starlist after fixes | 15/15 | 1,323k | ≈12k | 13.3k | 117 | $0.67 |
 | v1 | none, no symptom | none | 15/15 | 858k | 0 | 16.0k | 138 | $0.54 |
+| v1 | large, no symptom | raw, re-run | 15/15 | 1,068k | ≈18k | 22.0k | 140 | $0.75 |
+| v1 | large, no symptom | starlist with `diagnose` | 15/15 | 1,192k | ≈11k | 12.6k | 101 | $0.69 |
+| v1 | large, no symptom | starlist with `diagnose`, `--tools core` | 15/15 | 1,121k | ≈11k | 13.5k | 105 | $0.62 |
 | v2 | small | raw | 12/12 | 1,416k | ≈47k | 23.4k | 141 | $0.98 |
 | v2 | small | starlist | 12/12 | 960k | ≈8k | 12.2k | 95 | $0.47 |
 | v2 | small | none | **2/12** | 1,089k | 0 | 25.8k | 164 | $0.74 |
@@ -90,7 +93,16 @@ The benchmark found these issues, all fixed on the `starlist-fixes` branch:
 - **`whats_new` used a fixed last hour.** It now compares everything since the latest deploy when one went out in the last 6 hours.
 - **The baseline counted hours with no logs.** It now starts at the first log line, so a window as long as the history no longer reports everything as new and "volume 352x its baseline".
 
-After the fixes, starlist's v1 runs used 8 to 15% fewer tokens. The no-symptom v1 case is still worse than raw logs (1,323k vs 981k tokens), and `whats_new` still doesn't flag a 1.5x rise like the one in stock-boundary. A finer spike test, such as rate-based significance or comparing the same hour of the previous day, is left for later.
+After the fixes, starlist's v1 runs used 8 to 15% fewer tokens. The no-symptom v1 case was still worse than raw logs (1,323k vs 981k tokens).
+
+### The no-symptom case, after `diagnose`
+
+The `diagnose` branch adds one call that returns the likely causes with their deploy, code location, samples and the lines of a request, plus a slow-rise test and `--tools core`. The last three v1 rows of the table re-ran v1 on the large log with no symptom, raw logs included, since the agent had changed since the first run.
+
+- **One call is usually enough.** In 12 of 15 runs the agent called only `diagnose`, then read and fixed the code. Turns dropped from 140 to about 105 and output tokens by 40%.
+- **Cost is now lower than raw logs, tokens about even.** With every tool, 1,192k tokens and $0.69 against raw's 1,068k and $0.75; with `--tools core`, 1,121k and $0.62. Without stock-boundary, `--tools core` used 19% fewer tokens than raw (710k vs 880k) and 35% less cost.
+- **stock-boundary has no signal in the logs.** Re-checking it showed the "1.5x rise" was not caused by the bug: out-of-stock rejections climb by the same amount late in the day in every scenario. The only trace of the bug is `requested=2 available=2` inside an INFO line. A rise test that ignores this natural swing (see `diagnose.rs`) correctly stays quiet, and the agent has to search, which costs starlist about 2.2x raw here (411k vs 188k). Per-turn cost is the reason: with no answer from the logs, every extra turn pays for starlist's tool definitions.
+- **The per-turn cost of the tools matters most when logs don't help.** Peak context was about 2k tokens higher with every tool offered; `--tools core` halves the definitions.
 
 ### Limits
 
@@ -117,6 +129,7 @@ python3 run.py --large --no-hint --repeats 3                # v1, 300 MB logs, n
 python3 run.py --arm none --repeats 3                       # v1 control: no logs
 python3 run.py --suite v2 --arm raw --arm starlist --arm none --repeats 3
 python3 run.py --suite v2 --large --repeats 3           # a few minutes per run: 300 MB simulated and ingested
+python3 run.py --large --no-hint --arm starlist --tools core --repeats 3   # a smaller tool set
 python3 report.py results/<file>.jsonl                    # several files are compared side by side
 ```
 
@@ -126,6 +139,7 @@ Options:
 - `--model`
 - `--parallel`
 - `--starlist PATH` (another build)
+- `--tools all|core|NAMES` (passed to `starlist mcp`)
 - `--keep` (keep logs and databases in `--work`, default `/tmp/starlist-bench`)
 
 To see a scenario's logs without an agent, run `python3 v1/simulate.py --scenario coupon-percent --out app.log` (or `v2/simulate.py`).
