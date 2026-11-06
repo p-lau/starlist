@@ -51,6 +51,8 @@ pub fn routes(state: ApiState) -> Router {
         .route("/markers", get(markers).post(add_marker))
         .route("/alerts", get(latest_alert))
         .route("/alerts/stream", get(alert_stream))
+        .route("/fields", get(fields))
+        .route("/fields/{name}", get(field_series))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "No such API route.") })
         .with_state(state)
 }
@@ -503,6 +505,10 @@ async fn pattern(State(s): State<ApiState>, Path(id): Path<String>) -> ApiResult
                 .count(&row.id, now - 86400.0, now)
                 .map_err(analysis::db)?
         );
+        v["fields"] = json!(
+            crate::metrics::summaries(store, Some(&row.id), now - 86400.0, now)
+                .map_err(analysis::db)?
+        );
         v["samples"] = json!(
             store
                 .samples(&row.id, 5)
@@ -900,6 +906,121 @@ async fn release(State(s): State<ApiState>, Path(name): Path<String>) -> ApiResu
             "new": r.new.iter().map(|p| pattern_json(p, &cx)).collect::<Vec<_>>(),
             "regressed": with_time(&r.regressed, "regressed_at"),
             "resolved": with_time(&r.resolved, "resolved_at"),
+        }))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct FieldsQ {
+    since: Option<String>,
+    until: Option<String>,
+    pattern_id: Option<String>,
+    step: Option<String>,
+}
+
+/// The pattern a query names, resolved through merges.
+fn pattern_arg(store: &Store, p: Option<&str>) -> Result<Option<String>, String> {
+    match p.map(str::trim).filter(|p| !p.is_empty()) {
+        None => Ok(None),
+        Some(p) => Ok(Some(
+            store
+                .pattern(p)
+                .map_err(analysis::db)?
+                .ok_or_else(|| format!("Unknown pattern_id '{p}'."))?
+                .id,
+        )),
+    }
+}
+
+async fn fields(State(s): State<ApiState>, q: Result<Query<FieldsQ>, QueryRejection>) -> ApiResult {
+    let Query(q) = q?;
+    blocking(move || {
+        let store = &s.store;
+        let now = analysis::now();
+        let hi = time_or(store, q.until.as_deref(), "now", now)?;
+        let lo = time_or(store, q.since.as_deref(), "24h", now)?;
+        let pid = pattern_arg(store, q.pattern_id.as_deref())?;
+        Ok(json!({
+            "from": iso(lo),
+            "to": iso(hi),
+            "pattern_id": pid,
+            "fields": crate::metrics::summaries(store, pid.as_deref(), lo, hi).map_err(analysis::db)?,
+        }))
+    })
+    .await
+}
+
+async fn field_series(
+    State(s): State<ApiState>,
+    Path(name): Path<String>,
+    q: Result<Query<FieldsQ>, QueryRejection>,
+) -> ApiResult {
+    let Query(q) = q?;
+    blocking(move || {
+        let store = &s.store;
+        let now = analysis::now();
+        let hi = time_or(store, q.until.as_deref(), "now", now)?;
+        let lo = time_or(store, q.since.as_deref(), "24h", now)?;
+        if lo >= hi {
+            return Err("'since' must be before 'until'.".into());
+        }
+        let pid = pattern_arg(store, q.pattern_id.as_deref())?;
+        // Fields are stored per hour, so a step is a whole number of hours.
+        let step = match q.step.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            None => nice_step(hi - lo, 100.0),
+            Some(st) => st
+                .parse::<f64>()
+                .ok()
+                .or_else(|| analysis::parse_duration(st))
+                .filter(|x| *x > 0.0)
+                .ok_or_else(|| {
+                    format!("step must be seconds or a duration like '6h', got '{st}'")
+                })?,
+        };
+        let step = ((step / 3600.0).ceil() * 3600.0).max(3600.0);
+        let lo = (lo / step).floor() * step;
+        let n = ((hi - lo) / step).ceil().max(1.0) as usize;
+        if n > 5000 {
+            return Err(format!(
+                "That would be {n} points; use a larger step (at most 5000 points)."
+            ));
+        }
+        let mut slots = vec![crate::metrics::Hist::default(); n];
+        let mut total = crate::metrics::Hist::default();
+        for (hour, h) in store
+            .metric_hours(&name, pid.as_deref(), lo, hi)
+            .map_err(analysis::db)?
+        {
+            let i = ((hour as f64 * 3600.0 - lo) / step).floor();
+            if i >= 0.0 && (i as usize) < n {
+                slots[i as usize].merge(&h);
+            }
+            total.merge(&h);
+        }
+        let points: Vec<Value> = slots
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                json!({
+                    "at": iso(lo + i as f64 * step),
+                    "count": h.n,
+                    "mean": h.mean(),
+                    "p50": h.quantile(0.5),
+                    "p95": h.quantile(0.95),
+                    "p99": h.quantile(0.99),
+                    "max": (h.n > 0).then_some(h.max),
+                })
+            })
+            .collect();
+        Ok(json!({
+            "field": name,
+            "pattern_id": pid,
+            "from": iso(lo),
+            "to": iso(hi),
+            "step_seconds": step,
+            "summary": total.summary(&name),
+            "points": points,
         }))
     })
     .await

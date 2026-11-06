@@ -1245,6 +1245,19 @@ pub fn get_pattern(
     v["count_last_hour"] = json!(store.count(&row.id, now - 3600.0, now).map_err(db)?);
     v["count_last_24h"] = json!(store.count(&row.id, day, now).map_err(db)?);
     v["hourly_last_24h"] = json!(store.histogram(&row.id, day, now, 3600.0).map_err(db)?);
+    let fields: Vec<String> = crate::metrics::summaries(store, Some(&row.id), day, now)
+        .map_err(db)?
+        .iter()
+        .map(|f| {
+            format!(
+                "{}: p50 {}, p95 {}, p99 {}, max {} over {} events",
+                f.field, f.p50, f.p95, f.p99, f.max, f.count
+            )
+        })
+        .collect();
+    if !fields.is_empty() {
+        v["fields_last_24h"] = json!(fields);
+    }
     v["markers_last_24h"] = json!(markers_between(store, day, now, now, d)?);
     let n = samples.unwrap_or(if d.full() { 3 } else { 1 }).clamp(1, 5);
     v["samples"] = json!(

@@ -38,7 +38,8 @@ Every answer also has a hard size limit, however noisy the log: 8,000 characters
 3. **Pattern**: masks numbers, IDs, UUIDs, hex, quoted strings and timestamps; the pattern ID is a hash of that template, so it is the same across restarts and hosts. The exception type is part of the pattern (`... | KeyError`).
 4. **Merge**: when patterns differ in just one word (a username, a hostname without digits) and that word has taken 5 different values, they are merged into one pattern with `<*>` there (`user=<*>` keeps the key). The oldest pattern's ID stays, and the merged IDs keep resolving to it, so IDs an agent already holds still work. Five values is high enough that status words like `started` / `failed` stay separate. Tune with `--merge-after N`, or `0` to turn it off.
 5. **Group by rule** (optional): `--group 'connection (reset|refused) by (?P<name>\w+)'` puts every matching line into one pattern per `name` value, for errors that rule-based masking splits apart.
-6. **Store**: SQLite (WAL) with per-10s counts, 5 recent samples per pattern, and markers. Counts kept 7 days by default.
+6. **Store**: SQLite (WAL) with per-10s counts, 5 recent samples per pattern, and markers. After 7 days (`--retention`) counts are folded into hourly counts, which are kept for 400 days (`--history`), so a month-over-month question still has an answer.
+7. **Numbers** (optional): `--metric duration_ms` (repeatable) reads that field from each line, in `duration_ms=532`, `latency: 0.53` or JSON, and keeps an hourly histogram per pattern, so p50, p95 and p99 survive for months without the lines. Percentiles are within about 9%; count, mean, min and max are exact.
 
 ## Run it
 
@@ -76,6 +77,13 @@ The same process serves a plain JSON API at `http://127.0.0.1:7341/api/v1`, for 
 ```sh
 curl -s 'http://127.0.0.1:7341/api/v1/whats-new?window=1h&min_level=WARN'
 ```
+
+### History, Prometheus and export
+
+Each pattern costs about 45 bytes for each hour it occurs in, so a pattern seen every hour of a year takes about 400 KB, and most patterns are quiet most hours. Each `--metric` field adds about 200 to 800 bytes per pattern per hour it appears in. (Measured on 50 patterns over 30 days: 1.6 MB of hourly counts, 2 MB of histograms for 10 patterns with one field.)
+
+- `--prometheus` serves `http://127.0.0.1:7341/metrics` for a Prometheus scraper: events per level, patterns per level and issue state, the percentiles of each `--metric` field over the last hour or so, and the database size. It has the same token and Host checks as the API.
+- `starlist export --since 30d --db starlist.db > starlist.ndjson` writes patterns, hourly counts, hourly field percentiles and markers as one JSON object per line, for a warehouse, a spreadsheet or a backup.
 
 ### Security, privacy and time zones
 

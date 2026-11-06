@@ -50,6 +50,8 @@ pub struct HttpConfig {
     pub cors_origins: Vec<String>,
     /// Serve the dashboard at `/` (needs the API).
     pub dashboard: bool,
+    /// Serve Prometheus metrics at `/metrics`.
+    pub prometheus: bool,
 }
 
 /// The `/mcp` endpoint only (and the API, which is on by default).
@@ -68,11 +70,13 @@ pub fn router(
             api: true,
             cors_origins: vec![],
             dashboard: false,
+            prometheus: false,
         },
     )
 }
 
-/// The HTTP server: `/mcp` and, unless turned off, `/api/v1` and the dashboard at `/`.
+/// The HTTP server: `/mcp` and, unless turned off, `/api/v1` and the dashboard at
+/// `/`, plus `/metrics` for Prometheus when asked for.
 ///
 /// - With a token, every request needs `Authorization: Bearer <token>`. The Host
 ///   check is then only applied if `allowed_hosts` is given, since a browser on a
@@ -100,15 +104,27 @@ pub fn app(store: Arc<Store>, cfg: HttpConfig) -> axum::Router {
     if let Some(t) = &token {
         mcp = mcp.layer(middleware::from_fn_with_state(t.clone(), require_bearer));
     }
-    if !cfg.api {
+    if !cfg.api && !cfg.prometheus {
         return mcp;
     }
-    let mut api = crate::api::routes(crate::api::ApiState {
-        store,
-        alerts: cfg.alerts.clone(),
-    });
+    let mut guarded = axum::Router::new();
+    if cfg.api {
+        guarded = guarded.nest(
+            "/api/v1",
+            crate::api::routes(crate::api::ApiState {
+                store: store.clone(),
+                alerts: cfg.alerts.clone(),
+            }),
+        );
+    }
+    if cfg.prometheus {
+        guarded = guarded.route(
+            "/metrics",
+            axum::routing::get(move || prometheus(store.clone())),
+        );
+    }
     if let Some(t) = &token {
-        api = api.layer(middleware::from_fn_with_state(t.clone(), require_bearer));
+        guarded = guarded.layer(middleware::from_fn_with_state(t.clone(), require_bearer));
     }
     let guard = Arc::new(Guard {
         token: cfg.token.is_some(),
@@ -121,12 +137,27 @@ pub fn app(store: Arc<Store>, cfg: HttpConfig) -> axum::Router {
     });
     // The guard is outside the token check so CORS preflights, which carry no
     // credentials, get an answer.
-    let api = api.layer(middleware::from_fn_with_state(guard, guard_api));
-    let router = mcp.nest("/api/v1", api);
-    if cfg.dashboard {
+    let router = mcp.merge(guarded.layer(middleware::from_fn_with_state(guard, guard_api)));
+    if cfg.api && cfg.dashboard {
         router.fallback(crate::dashboard::serve)
     } else {
         router
+    }
+}
+
+async fn prometheus(store: Arc<Store>) -> Response {
+    let now = crate::analysis::now();
+    match tokio::task::spawn_blocking(move || crate::prometheus::render(&store, now)).await {
+        Ok(Ok(text)) => (
+            [(
+                header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            text,
+        )
+            .into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 

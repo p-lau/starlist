@@ -90,10 +90,42 @@ export interface PatternList {
 	patterns: (Pattern & { count: number; trend?: number[] })[];
 }
 
+/** Percentiles of a number read from log lines (`--metric`). */
+export interface FieldSummary {
+	field: string;
+	count: number;
+	mean: number;
+	p50: number;
+	p95: number;
+	p99: number;
+	min: number;
+	max: number;
+}
+
+export interface FieldSeries {
+	field: string;
+	pattern_id: string | null;
+	from: string;
+	to: string;
+	step_seconds: number;
+	summary: FieldSummary | null;
+	points: {
+		at: string;
+		count: number;
+		mean: number | null;
+		p50: number | null;
+		p95: number | null;
+		p99: number | null;
+		max: number | null;
+	}[];
+}
+
 export interface PatternDetail extends Pattern {
 	locations: { location: string; count: number }[];
 	count_last_hour: number;
 	count_last_24h: number;
+	/** Fields read from its lines over the last 24 hours. */
+	fields: FieldSummary[];
 	samples: Sample[];
 	merged_from?: string;
 }

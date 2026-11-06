@@ -1,7 +1,11 @@
 <script lang="ts">
 	// A tiny bar trend for a table row. The row's numbers carry the values;
 	// the title gives the peak.
-	let { counts, level = 'info' }: { counts: number[]; level?: string } = $props();
+	let {
+		counts,
+		level = 'info',
+		label = 'per step'
+	}: { counts: number[]; level?: string; label?: string } = $props();
 	const max = $derived(Math.max(1, ...counts));
 	const w = 96;
 	const h = 22;
@@ -13,9 +17,9 @@
 	width={w}
 	height={h}
 	role="img"
-	aria-label="Trend, peak {max} per step"
+	aria-label="Trend, peak {max} {label}"
 >
-	<title>Peak {max} per step</title>
+	<title>Peak {max} {label}</title>
 	<line x1="0" y1={h - 0.5} x2={w} y2={h - 0.5} class="base" />
 	{#each counts as c, i (i)}
 		{#if c > 0}

@@ -325,7 +325,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "One pattern: template, exception, counts, 24h hourly counts, redacted samples with app stack frames.",
+        description = "One pattern: template, exception, issue state, counts, 24h hourly counts, percentiles of numeric fields read from its lines (with --metric), redacted samples with app stack frames.",
         annotations(read_only_hint = true)
     )]
     fn get_pattern(&self, Parameters(a): Parameters<GetPatternArgs>) -> Result<String, String> {

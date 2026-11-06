@@ -33,6 +33,7 @@ The API has the same protection as `/mcp`:
   with `--cors-origin http://localhost:5173` (repeatable). Preflights are
   answered without a token; the actual requests still need it.
 - `--no-api` serves MCP only.
+- `--prometheus` adds `/metrics` (Prometheus text format) with the same checks.
 
 ```sh
 curl -s http://127.0.0.1:7341/api/v1/status
@@ -171,6 +172,9 @@ The pattern plus `locations` (`[{location, count}]`), `count_last_hour`,
 `count_last_24h` and up to 5 `samples` (`[{at, text}]`, newest first). An ID
 that was merged into another pattern resolves to it, with `merged_from` set.
 
+With `--metric`, it also has `fields`: each field read from its lines over the
+last 24 hours, as in `GET /fields`.
+
 #### `GET /patterns/{id}/verify?since=v1.4.3`
 
 The `verify_fix` verdict. `since` is required; `before` is optional.
@@ -270,6 +274,31 @@ the merged pattern.
 
 The previous release's error rate is measured over at most as long as this one
 has been live, so a release an hour old isn't compared with a week.
+
+### Fields
+
+Numbers read from log lines with `--metric duration_ms`. They are kept per
+hour, so times are read to the hour.
+
+- `GET /fields?since=24h&pattern_id=...` summarises each field:
+  `{from, to, pattern_id, fields: [{field, count, mean, p50, p95, p99, min, max}]}`,
+  most used first. Percentiles are within about 9%; the rest are exact.
+- `GET /fields/{name}` is one field over time. It takes `since` (default `24h`),
+  `until`, `pattern_id` and `step` (whole hours, default about 100 points).
+
+```json
+{
+  "field": "duration_ms",
+  "pattern_id": null,
+  "from": "2026-10-30T00:00:00.000Z",
+  "to": "2026-11-06T12:00:00.000Z",
+  "step_seconds": 86400,
+  "summary": {"field": "duration_ms", "count": 3584, "mean": 132.2, "p50": 103.1, "p95": 317.9, "p99": 583.1, "min": 18, "max": 1845},
+  "points": [{"at": "...", "count": 512, "mean": 113.4, "p50": 94.5, "p95": 245.1, "p99": 490.3, "max": 1059}]
+}
+```
+
+A point with no values has `count` 0 and `null` for the rest.
 
 ### Markers
 

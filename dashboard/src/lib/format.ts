@@ -58,3 +58,10 @@ export function duration(ms: number): string {
 	if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
 	return `${Math.round(ms / 60_000)} min`;
 }
+
+const sf = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 3 });
+
+/** A number to three significant digits, for estimates like percentiles. */
+export function approx(n: number | null | undefined): string {
+	return n === null || n === undefined ? '' : sf.format(n);
+}

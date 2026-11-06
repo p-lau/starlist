@@ -36,6 +36,8 @@ pub struct Pipeline {
     request_keys: Option<crate::request::RequestKeys>,
     /// Lines matching one of these regexes all go to one pattern per rule.
     groups: Vec<Regex>,
+    /// Numeric fields read from each event, kept as hourly histograms.
+    metrics: Option<crate::metrics::Fields>,
 }
 
 impl Pipeline {
@@ -71,6 +73,7 @@ impl Pipeline {
             source_roots: vec![],
             request_keys: None,
             groups: vec![],
+            metrics: None,
         }
     }
 
@@ -79,6 +82,12 @@ impl Pipeline {
     /// one (so one rule can make a few patterns), or by the rule itself.
     pub fn with_groups(mut self, rules: Vec<Regex>) -> Self {
         self.groups = rules;
+        self
+    }
+
+    /// Read these numeric fields (like `duration_ms`) from each event.
+    pub fn with_metrics(mut self, fields: crate::metrics::Fields) -> Self {
+        self.metrics = (!fields.is_empty()).then_some(fields);
         self
     }
 
@@ -120,6 +129,11 @@ impl Pipeline {
         }) {
             e.template = format!("{} group: {label}", e.level.unwrap_or("INFO"));
             e.pattern_id = crate::pattern::pattern_id(&e.template);
+        }
+        if let Some(f) = &self.metrics {
+            // The line as written: JSON lines are reduced to their message
+            // above. Only the named numbers are kept.
+            e.metrics = f.extract(text.lines().next().unwrap_or_default());
         }
         if !self.source_roots.is_empty()
             && let Some(l) = e.location.take()
@@ -338,11 +352,13 @@ pub fn read_stdin(pipeline: &Pipeline, tee: bool) {
     feeder.idle(true);
 }
 
-/// Background thread that drops counts older than the retention period.
-pub fn spawn_pruner(store: Arc<Store>, retention_secs: f64) {
+/// Background thread that folds counts older than the retention period into
+/// hourly counts, and drops hourly counts and metrics older than `history_secs`.
+pub fn spawn_pruner(store: Arc<Store>, retention_secs: f64, history_secs: f64) {
     thread::spawn(move || {
         loop {
-            let _ = store.prune(crate::analysis::now() - retention_secs);
+            let now = crate::analysis::now();
+            let _ = store.rollup(now - retention_secs, Some(now - history_secs));
             thread::sleep(Duration::from_secs(3600));
         }
     });

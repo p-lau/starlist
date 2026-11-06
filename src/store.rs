@@ -155,6 +155,24 @@ impl Store {
                 note TEXT) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;",
         )?;
+        // Added in 0.11: hourly rollups of old counts, and numeric fields.
+        conn.execute_batch(
+            "-- `bucket` is the hour's first 10-second bucket, so it reads like `counts`.
+             CREATE TABLE IF NOT EXISTS hourly(
+                pattern_id TEXT NOT NULL, bucket INTEGER NOT NULL, n INTEGER NOT NULL,
+                PRIMARY KEY(pattern_id, bucket)) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS hourly_bucket ON hourly(bucket);
+             CREATE TABLE IF NOT EXISTS metric_hourly(
+                pattern_id TEXT NOT NULL, field TEXT NOT NULL, hour INTEGER NOT NULL,
+                n INTEGER NOT NULL, sum REAL NOT NULL, min REAL NOT NULL, max REAL NOT NULL,
+                bins TEXT NOT NULL,
+                PRIMARY KEY(pattern_id, field, hour)) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS metric_hour ON metric_hourly(field, hour);
+             -- Recent 10-second counts and older hourly ones, read as one table.
+             CREATE TEMP VIEW IF NOT EXISTS allc AS
+                SELECT pattern_id, bucket, n FROM counts
+                UNION ALL SELECT pattern_id, bucket, n FROM hourly;",
+        )?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS raw_req ON raw(request_id, ts) WHERE request_id IS NOT NULL;
              CREATE INDEX IF NOT EXISTS raw_pid_req ON raw(pattern_id, ts) WHERE request_id IS NOT NULL;",
@@ -179,7 +197,54 @@ impl Store {
         }
         Ok(())
     }
+}
 
+/// A histogram from columns n, sum, min, max, bins starting at `i`.
+fn hist_at(r: &rusqlite::Row, i: usize) -> R<crate::metrics::Hist> {
+    Ok(crate::metrics::Hist::from_parts(
+        r.get::<_, i64>(i)? as u64,
+        r.get(i + 1)?,
+        r.get(i + 2)?,
+        r.get(i + 3)?,
+        &r.get::<_, String>(i + 4)?,
+    ))
+}
+
+/// Add a histogram to the stored one for (pattern, field, hour).
+fn add_hist(
+    tx: &rusqlite::Transaction,
+    pid: &str,
+    field: &str,
+    hour: i64,
+    mut h: crate::metrics::Hist,
+) -> R<()> {
+    let old = tx
+        .prepare_cached(
+            "SELECT n, sum, min, max, bins FROM metric_hourly WHERE pattern_id = ?1 AND field = ?2 AND hour = ?3",
+        )?
+        .query_row(params![pid, field, hour], |r| hist_at(r, 0))
+        .optional()?;
+    if let Some(o) = old {
+        h.merge(&o);
+    }
+    tx.prepare_cached(
+        "INSERT OR REPLACE INTO metric_hourly(pattern_id, field, hour, n, sum, min, max, bins)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?
+    .execute(params![
+        pid,
+        field,
+        hour,
+        h.n as i64,
+        h.sum,
+        h.min,
+        h.max,
+        h.bins_text()
+    ])?;
+    Ok(())
+}
+
+impl Store {
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -257,6 +322,22 @@ impl Store {
                     set_sample.execute(params![pid, ts])?;
                     prune.execute(params![pid, SAMPLES_PER_PATTERN])?;
                 }
+            }
+            // Numeric fields: one histogram per pattern, field and hour.
+            let mut hists: std::collections::HashMap<(String, String, i64), crate::metrics::Hist> =
+                Default::default();
+            for e in events.iter().filter(|e| !e.metrics.is_empty()) {
+                let ts = e.ts.unwrap_or_default();
+                let pid = aliases.get(&e.pattern_id).unwrap_or(&e.pattern_id);
+                for (f, v) in &e.metrics {
+                    hists
+                        .entry((pid.clone(), f.clone(), (ts / 3600.0).floor() as i64))
+                        .or_default()
+                        .add(*v);
+                }
+            }
+            for ((pid, f, hour), h) in hists {
+                add_hist(&tx, &pid, &f, hour, h)?;
             }
             // Over the cap: drop the oldest lines until 90% of it is used.
             if let (Some(cap), Some(bytes)) = (raw.cap, raw.bytes)
@@ -371,13 +452,97 @@ impl Store {
             })
     }
 
-    /// Drop counts and markers older than `before_ts`. Patterns are kept so that
-    /// "first seen" stays accurate.
+    /// Fold counts older than `before_ts` into hourly counts. Patterns are kept
+    /// so that "first seen" stays accurate.
     pub fn prune(&self, before_ts: f64) -> R<usize> {
+        self.rollup(before_ts, None)
+    }
+
+    /// Fold 10-second counts older than `before_ts` into hourly counts, then
+    /// drop hourly counts and metrics older than `history_before`.
+    /// Returns the number of 10-second rows folded.
+    pub fn rollup(&self, before_ts: f64, history_before: Option<f64>) -> R<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let b = bucket_of(before_ts);
+        tx.execute(
+            "INSERT INTO hourly(pattern_id, bucket, n)
+             SELECT pattern_id, bucket / 360 * 360, SUM(n) FROM counts WHERE bucket < ?1 GROUP BY 1, 2
+             ON CONFLICT(pattern_id, bucket) DO UPDATE SET n = n + excluded.n",
+            [b],
+        )?;
+        let folded = tx.execute("DELETE FROM counts WHERE bucket < ?1", [b])?;
+        if let Some(h) = history_before {
+            let hour = (h / 3600.0).floor() as i64;
+            tx.execute("DELETE FROM hourly WHERE bucket < ?1", [hour * 360])?;
+            tx.execute("DELETE FROM metric_hourly WHERE hour < ?1", [hour])?;
+        }
+        tx.commit()?;
+        Ok(folded)
+    }
+
+    /// Histogram of `field` per hour from `lo` to `hi`, for one pattern or all.
+    pub fn metric_hours(
+        &self,
+        field: &str,
+        pattern_id: Option<&str>,
+        lo: f64,
+        hi: f64,
+    ) -> R<Vec<(i64, crate::metrics::Hist)>> {
         let conn = self.conn();
-        conn.execute(
-            "DELETE FROM counts WHERE bucket < ?1",
-            [bucket_of(before_ts)],
+        let mut st = conn.prepare_cached(
+            "SELECT hour, n, sum, min, max, bins FROM metric_hourly
+             WHERE field = ?1 AND (?2 IS NULL OR pattern_id = ?2) AND hour >= ?3 AND hour <= ?4
+             ORDER BY hour",
+        )?;
+        let rows = st.query_map(
+            params![
+                field,
+                pattern_id,
+                (lo / 3600.0).floor() as i64,
+                (hi / 3600.0).floor() as i64
+            ],
+            |r| Ok((r.get::<_, i64>(0)?, hist_at(r, 1)?)),
+        )?;
+        // One entry per hour, patterns combined.
+        let mut out: Vec<(i64, crate::metrics::Hist)> = vec![];
+        for row in rows {
+            let (h, hist) = row?;
+            match out.last_mut() {
+                Some((lh, acc)) if *lh == h => acc.merge(&hist),
+                _ => out.push((h, hist)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fields recorded for a pattern (or any), most used first.
+    pub fn metric_fields(&self, pattern_id: Option<&str>) -> R<Vec<String>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT field FROM metric_hourly WHERE ?1 IS NULL OR pattern_id = ?1
+             GROUP BY field ORDER BY SUM(n) DESC",
+        )?;
+        let rows = st.query_map(params![pattern_id], |r| r.get(0))?;
+        rows.collect()
+    }
+
+    /// Per-level totals since the database began, for counters.
+    pub fn level_totals(&self) -> R<Vec<(String, i64, i64)>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT COALESCE(level, 'INFO'), SUM(total), COUNT(*) FROM patterns GROUP BY 1",
+        )?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect()
+    }
+
+    /// Database file size in bytes.
+    pub fn size_bytes(&self) -> R<i64> {
+        self.conn().query_row(
+            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+            [],
+            |r| r.get(0),
         )
     }
 
@@ -434,6 +599,23 @@ impl Store {
             )?;
             tx.execute("DELETE FROM counts WHERE pattern_id = ?1", [a])?;
             tx.execute(
+                "INSERT INTO hourly(pattern_id, bucket, n) SELECT ?1, bucket, n FROM hourly WHERE pattern_id = ?2 AND true
+                 ON CONFLICT(pattern_id, bucket) DO UPDATE SET n = n + excluded.n",
+                params![c, a],
+            )?;
+            tx.execute("DELETE FROM hourly WHERE pattern_id = ?1", [a])?;
+            let moved: Vec<(String, i64, crate::metrics::Hist)> = {
+                let mut st = tx.prepare_cached(
+                    "SELECT field, hour, n, sum, min, max, bins FROM metric_hourly WHERE pattern_id = ?1",
+                )?;
+                st.query_map([a], |r| Ok((r.get(0)?, r.get(1)?, hist_at(r, 2)?)))?
+                    .collect::<R<_>>()?
+            };
+            for (f, hour, h) in moved {
+                add_hist(&tx, c, &f, hour, h)?;
+            }
+            tx.execute("DELETE FROM metric_hourly WHERE pattern_id = ?1", [a])?;
+            tx.execute(
                 "INSERT INTO locations(pattern_id, location, n, last_seen)
                  SELECT ?1, location, n, last_seen FROM locations WHERE pattern_id = ?2 AND true
                  ON CONFLICT(pattern_id, location) DO UPDATE SET
@@ -486,7 +668,7 @@ impl Store {
             "SELECT {PATTERN_COLS},
                     SUM(CASE WHEN c.bucket < ?2 THEN c.n ELSE 0 END),
                     SUM(CASE WHEN c.bucket > ?2 THEN c.n ELSE 0 END)
-             FROM counts c JOIN patterns p ON p.id = c.pattern_id
+             FROM allc c JOIN patterns p ON p.id = c.pattern_id
              WHERE c.bucket >= ?1 AND c.bucket <= ?3
              GROUP BY c.pattern_id"
         ))?;
@@ -502,7 +684,7 @@ impl Store {
 
     pub fn count(&self, pattern_id: &str, lo: f64, hi: f64) -> R<i64> {
         self.conn().query_row(
-            "SELECT COALESCE(SUM(n), 0) FROM counts WHERE pattern_id = ?1 AND bucket >= ?2 AND bucket <= ?3",
+            "SELECT COALESCE(SUM(n), 0) FROM allc WHERE pattern_id = ?1 AND bucket >= ?2 AND bucket <= ?3",
             params![pattern_id, bucket_of(lo), bucket_of(hi)],
             |r| r.get(0),
         )
@@ -513,7 +695,7 @@ impl Store {
         self.conn().query_row(
             "SELECT COALESCE(SUM(CASE WHEN bucket < ?2 THEN n ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN bucket > ?2 THEN n ELSE 0 END), 0)
-             FROM counts WHERE bucket >= ?1 AND bucket <= ?3",
+             FROM allc WHERE bucket >= ?1 AND bucket <= ?3",
             params![bucket_of(lo), bucket_of(split), bucket_of(hi)],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -525,7 +707,7 @@ impl Store {
         let mut out = vec![0i64; slots];
         let conn = self.conn();
         let mut st = conn.prepare_cached(
-            "SELECT bucket, n FROM counts WHERE pattern_id = ?1 AND bucket >= ?2 AND bucket <= ?3",
+            "SELECT bucket, n FROM allc WHERE pattern_id = ?1 AND bucket >= ?2 AND bucket <= ?3",
         )?;
         let rows = st.query_map(params![pattern_id, bucket_of(lo), bucket_of(hi)], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
@@ -547,7 +729,7 @@ impl Store {
         let conn = self.conn();
         let mut st = conn.prepare_cached(
             "SELECT COALESCE(p.level, 'INFO'), c.bucket, SUM(c.n)
-             FROM counts c JOIN patterns p ON p.id = c.pattern_id
+             FROM allc c JOIN patterns p ON p.id = c.pattern_id
              WHERE c.bucket >= ?1 AND c.bucket <= ?2
              GROUP BY 1, c.bucket",
         )?;
@@ -611,11 +793,59 @@ impl Store {
     /// Start of the first 10-second bucket after `ts` in which the pattern occurred.
     pub fn first_after(&self, pattern_id: &str, ts: f64) -> R<Option<f64>> {
         let b: Option<i64> = self.conn().query_row(
-            "SELECT MIN(bucket) FROM counts WHERE pattern_id = ?1 AND bucket > ?2",
+            "SELECT MIN(bucket) FROM allc WHERE pattern_id = ?1 AND bucket > ?2",
             params![pattern_id, bucket_of(ts)],
             |r| r.get(0),
         )?;
         Ok(b.map(|b| b as f64 * BUCKET_SECS))
+    }
+
+    /// Hourly counts from `lo` on, per pattern, recent 10-second counts
+    /// included, ordered by hour.
+    pub fn hourly_counts(&self, lo: f64, mut f: impl FnMut(&str, i64, i64)) -> R<()> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT pattern_id, bucket / 360, SUM(n) FROM allc WHERE bucket >= ?1
+             GROUP BY 2, 1 ORDER BY 2, 1",
+        )?;
+        let mut rows = st.query(params![bucket_of(lo) / 360 * 360])?;
+        while let Some(r) = rows.next()? {
+            f(&r.get::<_, String>(0)?, r.get(1)?, r.get(2)?);
+        }
+        Ok(())
+    }
+
+    /// Hourly field histograms from `lo` on: (pattern, field, hour, histogram).
+    pub fn metric_rows(
+        &self,
+        lo: f64,
+        mut f: impl FnMut(&str, &str, i64, &crate::metrics::Hist),
+    ) -> R<()> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT pattern_id, field, hour, n, sum, min, max, bins FROM metric_hourly
+             WHERE hour >= ?1 ORDER BY hour, pattern_id, field",
+        )?;
+        let mut rows = st.query(params![(lo / 3600.0).floor() as i64])?;
+        while let Some(r) = rows.next()? {
+            f(
+                &r.get::<_, String>(0)?,
+                &r.get::<_, String>(1)?,
+                r.get(2)?,
+                &hist_at(r, 3)?,
+            );
+        }
+        Ok(())
+    }
+
+    /// Patterns seen at or after `lo`, oldest first.
+    pub fn patterns_seen_since(&self, lo: f64) -> R<Vec<PatternRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(&format!(
+            "SELECT {PATTERN_COLS} FROM patterns p WHERE p.last_seen >= ?1 ORDER BY p.first_seen"
+        ))?;
+        let rows = st.query_map(params![lo], |r| row_to_pattern(r, 0))?;
+        rows.collect()
     }
 
     /// Patterns first seen in [lo, hi), oldest first.

@@ -5,9 +5,10 @@
 	import LevelBadge from '#lib/LevelBadge.svelte';
 	import LevelChart from '#lib/LevelChart.svelte';
 	import Lines from '#lib/Lines.svelte';
+	import Sparkline from '#lib/Sparkline.svelte';
 	import Load from '#lib/Load.svelte';
-	import { ago, num, when } from '#lib/format.ts';
-	import type { Context, Marker, PatternDetail, Timeline, Verify } from '#lib/types.ts';
+	import { ago, approx, num, when } from '#lib/format.ts';
+	import type { Context, FieldSeries, Marker, PatternDetail, Timeline, Verify } from '#lib/types.ts';
 
 	const id = $derived(page.params.id ?? '');
 	let p: PatternDetail | null = $state(null);
@@ -15,6 +16,22 @@
 	let markers: Marker[] = $state([]);
 	let error: string | null = $state(null);
 	let range = $state('24h');
+
+	// p95 per 6 hours over a week, per field.
+	let trends: Record<string, number[]> = $state({});
+	$effect(() => {
+		const fields = p?.fields.map((f) => f.field) ?? [];
+		const pid = p?.id;
+		if (!pid || !fields.length) return;
+		Promise.all(
+			fields.map((f) =>
+				get<FieldSeries>(`/fields/${encodeURIComponent(f)}`, { pattern_id: pid, since: '7d', step: '6h' })
+			)
+		).then(
+			(all) => (trends = Object.fromEntries(all.map((s) => [s.field, s.points.map((x) => x.p95 ?? 0)]))),
+			() => (trends = {})
+		);
+	});
 
 	let ctx: Context | null = $state(null);
 	let ctxError: string | null = $state(null);
@@ -184,6 +201,41 @@
 			{/if}
 		</section>
 
+		{#if p.fields?.length}
+			<section class="card">
+				<h2>Numbers in its lines, last 24h</h2>
+				<div class="scroll">
+					<table>
+						<thead>
+							<tr>
+								<th>Field</th>
+								<th class="num">Count</th>
+								<th class="num">p50</th>
+								<th class="num">p95</th>
+								<th class="num">p99</th>
+								<th class="num">Max</th>
+								<th>p95, 7 days</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each p.fields as f (f.field)}
+								<tr>
+									<td class="mono">{f.field}</td>
+									<td class="num">{num(f.count)}</td>
+									<td class="num">{approx(f.p50)}</td>
+									<td class="num">{approx(f.p95)}</td>
+									<td class="num">{approx(f.p99)}</td>
+									<td class="num">{num(f.max)}</td>
+									<td>{#if trends[f.field]}<Sparkline counts={trends[f.field]} label="p95 in 6 hours" />{/if}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+				<p class="faint small">Percentiles are within about 9%; count and max are exact.</p>
+			</section>
+		{/if}
+
 		{#if p.locations.length > 1}
 			<section class="card">
 				<h2>Raised from</h2>
@@ -280,5 +332,8 @@
 	.small {
 		font-size: 0.78rem;
 		margin-bottom: 4px;
+	}
+	.scroll {
+		overflow-x: auto;
 	}
 </style>

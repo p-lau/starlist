@@ -60,6 +60,11 @@ impl States {
         })
     }
 
+    /// Patterns that have a stored state.
+    pub fn ids(&self) -> impl Iterator<Item = &String> {
+        self.rows.keys()
+    }
+
     pub fn row(&self, pattern_id: &str) -> Option<&StateRow> {
         self.rows.get(pattern_id)
     }

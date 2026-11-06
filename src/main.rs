@@ -54,6 +54,15 @@ enum Cmd {
         #[command(flatten)]
         opts: PipelineArgs,
     },
+    /// Write patterns, hourly counts, field percentiles and markers as
+    /// newline-delimited JSON to stdout.
+    Export {
+        /// How far back: a duration ("30d"), an ISO time or a marker name.
+        #[arg(long, default_value = "30d")]
+        since: String,
+        #[arg(long, default_value = "starlist.db")]
+        db: PathBuf,
+    },
     /// Record a named marker (for example a deploy) at the current time.
     Mark {
         name: String,
@@ -137,6 +146,10 @@ struct PipelineArgs {
     /// group if it has one (repeatable). Checked against the redacted first line.
     #[arg(long = "group")]
     groups: Vec<String>,
+    /// Numeric field to keep percentiles of, like "duration_ms" or "latency"
+    /// (repeatable). Read from `key=1.5`, `key: 1.5` and JSON.
+    #[arg(long = "metric")]
+    metrics: Vec<String>,
     /// Merge patterns that differ in one word once it has taken this many values (0 turns merging off).
     #[arg(long, default_value_t = starlist::merge::DEFAULT_THRESHOLD)]
     merge_after: usize,
@@ -156,9 +169,12 @@ struct SourceArgs {
     /// Read files from the beginning instead of only new lines.
     #[arg(long)]
     from_start: bool,
-    /// How long to keep counts, like "7d".
+    /// How long to keep 10-second counts, like "7d". Older counts are kept per hour.
     #[arg(long, default_value = "7d")]
     retention: String,
+    /// How long to keep hourly counts and metrics, like "400d".
+    #[arg(long, default_value = "400d")]
+    history: String,
     /// Version of the app being watched, recorded as a deploy marker at startup
     /// (when it differs from the release already live).
     #[arg(long, env = "STARLIST_VERSION")]
@@ -196,6 +212,9 @@ struct McpArgs {
     /// Don't serve the dashboard at http://ADDR/.
     #[arg(long)]
     no_dashboard: bool,
+    /// Serve Prometheus metrics at http://ADDR/metrics (same token as the API).
+    #[arg(long)]
+    prometheus: bool,
 }
 
 fn parse_size(s: &str) -> Result<i64, String> {
@@ -294,7 +313,10 @@ fn pipeline(opts: &PipelineArgs, store: Arc<Store>) -> Result<Pipeline> {
             .with_log_tz(opts.log_tz.unwrap_or(0))
             .with_source_roots(opts.source_roots.clone())
             .with_request_keys(&opts.request_keys)
-            .with_groups(groups),
+            .with_groups(groups)
+            .with_metrics(
+                starlist::metrics::Fields::new(&opts.metrics).context("bad --metric name")?,
+            ),
     )
 }
 
@@ -308,7 +330,10 @@ fn start_collection(
     }
     let retention =
         starlist::analysis::parse_duration(&src.retention).context("bad --retention")?;
-    collector::spawn_pruner(store.clone(), retention);
+    let history = starlist::analysis::parse_duration(&src.history)
+        .context("bad --history")?
+        .max(retention);
+    collector::spawn_pruner(store.clone(), retention, history);
     if let Some(v) = src
         .app_version
         .as_deref()
@@ -363,6 +388,7 @@ async fn run_mcp(
             api,
             cors_origins: mcp.cors_origins.clone(),
             dashboard: api && !mcp.no_dashboard,
+            prometheus: mcp.prometheus,
         },
     );
     let listener = tokio::net::TcpListener::bind(&mcp.http)
@@ -380,6 +406,9 @@ async fn run_mcp(
             };
             eprintln!("starlist: dashboard http://{addr}/{note}");
         }
+    }
+    if mcp.prometheus {
+        eprintln!("starlist: Prometheus metrics http://{addr}/metrics");
     }
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
@@ -430,6 +459,17 @@ async fn main() -> Result<()> {
                 collector::tail_file(&p, f.clone(), true, true, &stop);
                 eprintln!("starlist: imported {}", f.display());
             }
+            Ok(())
+        }
+        Cmd::Export { since, db } => {
+            let store = open_store(&db)?;
+            let now = starlist::analysis::now();
+            let (lo, _) = starlist::analysis::resolve_time(&store, &since, now)
+                .map_err(anyhow::Error::msg)?;
+            let stdout = std::io::stdout();
+            let mut out = std::io::BufWriter::new(stdout.lock());
+            let n = starlist::export::write(&store, lo, &mut out).map_err(anyhow::Error::msg)?;
+            eprintln!("starlist: exported {n} lines");
             Ok(())
         }
         Cmd::Mark {
