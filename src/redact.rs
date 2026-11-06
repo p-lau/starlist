@@ -6,7 +6,8 @@ use regex::{Captures, Regex};
 use std::sync::LazyLock;
 
 static PRIVATE_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----").unwrap()
+    Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
+        .unwrap()
 });
 static JWT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").unwrap());
@@ -54,7 +55,10 @@ pub struct Redactor {
 
 impl Default for Redactor {
     fn default() -> Self {
-        Self { redact_ips: true, extra: vec![] }
+        Self {
+            redact_ips: true,
+            extra: vec![],
+        }
     }
 }
 
@@ -112,7 +116,9 @@ mod tests {
     #[test]
     fn redacts_json_style_and_api_keys() {
         let r = Redactor::default();
-        let out = r.redact(r#"{"api_key": "sk-proj-AAAAAAAAAAAAAAAAAAAAAAAA", "aws": "AKIAIOSFODNN7EXAMPLE"}"#);
+        let out = r.redact(
+            r#"{"api_key": "sk-proj-AAAAAAAAAAAAAAAAAAAAAAAA", "aws": "AKIAIOSFODNN7EXAMPLE"}"#,
+        );
         assert!(!out.contains("sk-proj"), "{out}");
         assert!(!out.contains("AKIAIOSFODNN7EXAMPLE"), "{out}");
     }
@@ -120,9 +126,15 @@ mod tests {
     #[test]
     fn cards_only_when_luhn_valid() {
         let r = Redactor::default();
-        assert!(r.redact("card 4111 1111 1111 1111 charged").contains("<CARD>"));
+        assert!(
+            r.redact("card 4111 1111 1111 1111 charged")
+                .contains("<CARD>")
+        );
         // An order number that is not a valid card number stays.
-        assert!(r.redact("order 1234567890123 shipped").contains("1234567890123"));
+        assert!(
+            r.redact("order 1234567890123 shipped")
+                .contains("1234567890123")
+        );
     }
 
     #[test]

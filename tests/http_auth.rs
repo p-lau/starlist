@@ -39,7 +39,10 @@ async fn rejects_missing_or_wrong_token() {
     let url = serve(Some(TOKEN)).await;
     assert_eq!(post_status(&url, None).await, 401);
     assert_eq!(post_status(&url, Some("Bearer nope")).await, 401);
-    assert_eq!(post_status(&url, Some(&format!("Basic {TOKEN}"))).await, 401);
+    assert_eq!(
+        post_status(&url, Some(&format!("Basic {TOKEN}"))).await,
+        401
+    );
 }
 
 #[tokio::test]
@@ -50,7 +53,9 @@ async fn mcp_client_with_token_works() {
     );
     let client = ClientConfig::default().serve(transport).await.unwrap();
     let r = client
-        .call_tool(CallToolRequestParams::new("list_markers").with_arguments(serde_json::Map::new()))
+        .call_tool(
+            CallToolRequestParams::new("list_markers").with_arguments(serde_json::Map::new()),
+        )
         .await
         .unwrap();
     assert_ne!(r.is_error, Some(true));
@@ -65,7 +70,10 @@ async fn no_token_needed_on_localhost_by_default() {
 
 #[test]
 fn generated_tokens_are_long_and_random() {
-    let (a, b) = (starlist::http::generate_token().unwrap(), starlist::http::generate_token().unwrap());
+    let (a, b) = (
+        starlist::http::generate_token().unwrap(),
+        starlist::http::generate_token().unwrap(),
+    );
     assert_eq!(a.len(), 64);
     assert_ne!(a, b);
 }

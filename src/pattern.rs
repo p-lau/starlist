@@ -40,7 +40,8 @@ static TS_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
 static LEVEL_KV: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\b(?:level|lvl|severity)[=:]\s*"?([A-Za-z]+)"#).unwrap());
 static LEVEL_WORD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|SEVERE|CRITICAL|FATAL|PANIC)\b").unwrap()
+    Regex::new(r"\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|SEVERE|CRITICAL|FATAL|PANIC)\b")
+        .unwrap()
 });
 static CONTINUATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -53,10 +54,12 @@ static EXC_TYPE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static MASK_UUID: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b").unwrap()
+    Regex::new(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+        .unwrap()
 });
 static MASK_TS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?").unwrap()
+    Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
+        .unwrap()
 });
 static MASK_DQ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*""#).unwrap());
 static MASK_HEX: LazyLock<Regex> =
@@ -70,7 +73,8 @@ static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 const MAX_TEMPLATE_CHARS: usize = 400;
 const MAX_EVENT_LINES: usize = 200;
 
-static HAS_ZONE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:[Zz]|[+-]\d{2}:?\d{2})$").unwrap());
+static HAS_ZONE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:[Zz]|[+-]\d{2}:?\d{2})$").unwrap());
 
 /// Whether a timestamp string carries its own zone ("Z" or an offset).
 pub fn has_zone(raw: &str) -> bool {
@@ -92,9 +96,14 @@ pub fn parse_utc_offset(s: &str) -> Option<i32> {
     if digits.is_empty() || digits.len() > 4 || !digits.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    let (h, m) = if digits.len() <= 2 { (digits.parse::<i32>().ok()?, 0) } else {
+    let (h, m) = if digits.len() <= 2 {
+        (digits.parse::<i32>().ok()?, 0)
+    } else {
         let split = digits.len() - 2;
-        (digits[..split].parse::<i32>().ok()?, digits[split..].parse::<i32>().ok()?)
+        (
+            digits[..split].parse::<i32>().ok()?,
+            digits[split..].parse::<i32>().ok()?,
+        )
     };
     (h <= 14 && m < 60).then_some(sign * (h * 3600 + m * 60))
 }
@@ -114,7 +123,9 @@ pub fn parse_timestamp(raw: &str) -> Option<f64> {
     let bytes = s.as_bytes();
     if bytes.len() > 5 {
         let tail = &s[s.len() - 5..];
-        if (tail.starts_with('+') || tail.starts_with('-')) && tail[1..].chars().all(|c| c.is_ascii_digit()) {
+        if (tail.starts_with('+') || tail.starts_with('-'))
+            && tail[1..].chars().all(|c| c.is_ascii_digit())
+        {
             s.insert(s.len() - 2, ':');
         }
     }
@@ -145,14 +156,21 @@ pub fn mask(message: &str) -> String {
     let s = MASK_DQ.replace_all(&s, "\"<STR>\"");
     let s = MASK_HEX.replace_all(&s, "<HEX>");
     let s = MASK_TOKEN.replace_all(&s, |c: &Captures| {
-        if NUMBER.is_match(&c[0]) { "<NUM>" } else { "<ID>" }.to_string()
+        if NUMBER.is_match(&c[0]) {
+            "<NUM>"
+        } else {
+            "<ID>"
+        }
+        .to_string()
     });
     let s = SPACES.replace_all(s.trim(), " ");
     truncate_chars(&s, MAX_TEMPLATE_CHARS)
 }
 
 pub fn pattern_id(template: &str) -> String {
-    let hex = sha1_smol::Sha1::from(template.as_bytes()).digest().to_string();
+    let hex = sha1_smol::Sha1::from(template.as_bytes())
+        .digest()
+        .to_string();
     format!("p{}", &hex[..10])
 }
 
@@ -175,10 +193,13 @@ pub struct Event {
 fn detect_level(message: &str) -> Option<&'static str> {
     let prefix: String = message.chars().take(100).collect();
     if let Some(c) = LEVEL_KV.captures(&prefix)
-        && let Some(l) = normalize_level(&c[1]) {
-            return Some(l);
-        }
-    LEVEL_WORD.captures(&prefix).and_then(|c| normalize_level(&c[1]))
+        && let Some(l) = normalize_level(&c[1])
+    {
+        return Some(l);
+    }
+    LEVEL_WORD
+        .captures(&prefix)
+        .and_then(|c| normalize_level(&c[1]))
 }
 
 fn exception_type<'a>(lines: impl Iterator<Item = &'a str>) -> Option<String> {
@@ -246,8 +267,20 @@ pub fn parse_event(
             Ok(v) if v.is_object() => {
                 let level = json_str(&v, &["level", "severity", "levelname", "lvl", "log.level"])
                     .and_then(|l| normalize_level(&l));
-                let msg = json_str(&v, &["message", "msg", "event", "text"]).unwrap_or_else(|| first.to_string());
-                let exc = json_str(&v, &["exception", "exc_info", "stack", "stack_trace", "stacktrace", "error", "err"]);
+                let msg = json_str(&v, &["message", "msg", "event", "text"])
+                    .unwrap_or_else(|| first.to_string());
+                let exc = json_str(
+                    &v,
+                    &[
+                        "exception",
+                        "exc_info",
+                        "stack",
+                        "stack_trace",
+                        "stacktrace",
+                        "error",
+                        "err",
+                    ],
+                );
                 let msg = format!("{} {}", level.unwrap_or("-"), msg);
                 (json_ts(&v), level, msg, exc)
             }
@@ -284,7 +317,16 @@ pub fn parse_event(
         template = format!("{template} | {e}");
     }
     let pattern_id = pattern_id(&template);
-    Event { ts, ts_naive, level, head, body, template, pattern_id, exc_type }
+    Event {
+        ts,
+        ts_naive,
+        level,
+        head,
+        body,
+        template,
+        pattern_id,
+        exc_type,
+    }
 }
 
 /// Groups physical lines into log events, so a stack trace stays attached to
@@ -365,7 +407,9 @@ mod tests {
 
     #[test]
     fn masks_uuids_quotes_and_hosts() {
-        let t = mask(r#"user "alice smith" req 3f2b1c9e-1d2a-4c3b-9a8f-0b1c2d3e4f5a on db-3.internal took 12.5ms"#);
+        let t = mask(
+            r#"user "alice smith" req 3f2b1c9e-1d2a-4c3b-9a8f-0b1c2d3e4f5a on db-3.internal took 12.5ms"#,
+        );
         assert_eq!(t, r#"user "<STR>" req <UUID> on <ID> took <NUM>"#);
     }
 
@@ -410,12 +454,17 @@ mod tests {
             events.extend(asm.feed(l));
         }
         assert_eq!(events.len(), 1);
-        assert_eq!(ev(&events[0]).exc_type.as_deref(), Some("java.io.IOException"));
+        assert_eq!(
+            ev(&events[0]).exc_type.as_deref(),
+            Some("java.io.IOException")
+        );
     }
 
     #[test]
     fn parses_json_lines() {
-        let e = ev(r#"{"ts":"2026-11-06T10:00:00Z","level":"error","msg":"db timeout after 3000ms","user":"x@example.com"}"#);
+        let e = ev(
+            r#"{"ts":"2026-11-06T10:00:00Z","level":"error","msg":"db timeout after 3000ms","user":"x@example.com"}"#,
+        );
         assert_eq!(e.level, Some("ERROR"));
         assert_eq!(e.template, "ERROR db timeout after <NUM>");
         assert!((e.ts.unwrap() - 1793959200.0).abs() < 1.0);

@@ -23,7 +23,12 @@ fn iso(ts: f64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{ms:03}Z", s / 3600, s % 3600 / 60, s % 60)
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{ms:03}Z",
+        s / 3600,
+        s % 3600 / 60,
+        s % 60
+    )
 }
 
 struct Rng(u64);
@@ -41,7 +46,10 @@ impl Rng {
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| "demo.log".into());
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
     let start = now - 26.0 * 3600.0;
     let bad_deploy = now - 50.0 * 60.0;
     let fix_deploy = now - 15.0 * 60.0;
@@ -49,16 +57,31 @@ fn main() {
     let mut out = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
     let users = ["alice@example.com", "bob@example.org", "chen@example.net"];
 
-    writeln!(out, "{} INFO Starting checkout-service version 1.4.1 on port 8080", iso(start)).unwrap();
+    writeln!(
+        out,
+        "{} INFO Starting checkout-service version 1.4.1 on port 8080",
+        iso(start)
+    )
+    .unwrap();
     let mut t = start + 1.0;
     let (mut v142, mut v143) = (false, false);
     while t < now {
         if !v142 && t >= bad_deploy {
-            writeln!(out, "{} INFO Starting checkout-service version 1.4.2 on port 8080", iso(t)).unwrap();
+            writeln!(
+                out,
+                "{} INFO Starting checkout-service version 1.4.2 on port 8080",
+                iso(t)
+            )
+            .unwrap();
             v142 = true;
         }
         if !v143 && t >= fix_deploy {
-            writeln!(out, "{} INFO Starting checkout-service version 1.4.3 on port 8080", iso(t)).unwrap();
+            writeln!(
+                out,
+                "{} INFO Starting checkout-service version 1.4.3 on port 8080",
+                iso(t)
+            )
+            .unwrap();
             v143 = true;
         }
         let buggy = v142 && !v143;
@@ -79,7 +102,11 @@ fn main() {
         }
         .unwrap();
         // Busier during the bad deploy because clients retry.
-        t += if buggy { 2.0 + r.below(4) as f64 } else { 10.0 + r.below(40) as f64 };
+        t += if buggy {
+            2.0 + r.below(4) as f64
+        } else {
+            10.0 + r.below(40) as f64
+        };
     }
     eprintln!("wrote {path}");
 }

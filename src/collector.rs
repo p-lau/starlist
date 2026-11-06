@@ -9,8 +9,8 @@ use regex::Regex;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -34,19 +34,35 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn new(store: Arc<Store>, redactor: Redactor, marker_re: Option<Regex>) -> Self {
-        Self::with_merging(store, redactor, marker_re, Some(crate::merge::DEFAULT_THRESHOLD))
+        Self::with_merging(
+            store,
+            redactor,
+            marker_re,
+            Some(crate::merge::DEFAULT_THRESHOLD),
+        )
     }
 
     /// `merge_after`: merge patterns differing in one word once that word has
     /// taken this many values; `None` turns merging off.
-    pub fn with_merging(store: Arc<Store>, redactor: Redactor, marker_re: Option<Regex>, merge_after: Option<usize>) -> Self {
+    pub fn with_merging(
+        store: Arc<Store>,
+        redactor: Redactor,
+        marker_re: Option<Regex>,
+        merge_after: Option<usize>,
+    ) -> Self {
         let merger = merge_after.map(|t| {
             Mutex::new(Merger::load(t, &store).unwrap_or_else(|e| {
                 eprintln!("starlist: could not load patterns for merging: {e}");
                 Merger::new(t)
             }))
         });
-        Self { store, redactor, marker_re, merger, log_tz: 0 }
+        Self {
+            store,
+            redactor,
+            marker_re,
+            merger,
+            log_tz: 0,
+        }
     }
 
     /// Read zone-less log timestamps as this offset from UTC (seconds east).
@@ -78,7 +94,12 @@ impl Pipeline {
             for e in events.iter_mut() {
                 if let Some(op) = m.resolve(e) {
                     match self.store.merge_patterns(&op) {
-                        Ok(()) => eprintln!("starlist: merged {} patterns into {}: {}", op.aliases.len(), op.canonical, op.template),
+                        Ok(()) => eprintln!(
+                            "starlist: merged {} patterns into {}: {}",
+                            op.aliases.len(),
+                            op.canonical,
+                            op.template
+                        ),
                         Err(err) => eprintln!("starlist: merge failed: {err}"),
                     }
                 }
@@ -97,7 +118,10 @@ impl Pipeline {
             for e in &events {
                 if let Some(name) = re.captures(&e.head).and_then(|c| c.name("name")) {
                     let name = format!("v{}", name.as_str().trim_start_matches('v'));
-                    if let Ok(true) = self.store.add_marker_if_absent(&name, e.ts.unwrap(), "deploy") {
+                    if let Ok(true) =
+                        self.store
+                            .add_marker_if_absent(&name, e.ts.unwrap(), "deploy")
+                    {
                         eprintln!("starlist: deploy marker {name}");
                     }
                 }
@@ -116,7 +140,12 @@ struct Feeder<'a> {
 
 impl<'a> Feeder<'a> {
     fn new(pipeline: &'a Pipeline) -> Self {
-        Self { pipeline, asm: Assembler::default(), batch: vec![], last_line: Instant::now() }
+        Self {
+            pipeline,
+            asm: Assembler::default(),
+            batch: vec![],
+            last_line: Instant::now(),
+        }
     }
     fn line(&mut self, l: &str) {
         self.last_line = Instant::now();
@@ -153,7 +182,13 @@ fn file_id(_: &std::fs::Metadata) -> u64 {
 
 /// Follow a file like `tail -F`: survives the file not existing yet, rotation and truncation.
 /// With `once`, reads what is there and returns (for backfilling).
-pub fn tail_file(pipeline: &Pipeline, path: PathBuf, from_start: bool, once: bool, stop: &AtomicBool) {
+pub fn tail_file(
+    pipeline: &Pipeline,
+    path: PathBuf,
+    from_start: bool,
+    once: bool,
+    stop: &AtomicBool,
+) {
     let mut feeder = Feeder::new(pipeline);
     let mut first_open = true;
     'outer: while !stop.load(Ordering::Relaxed) {

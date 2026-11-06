@@ -1,17 +1,21 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use regex::Regex;
+use rmcp::ServiceExt;
 use starlist::collector::{self, DEFAULT_MARKER_REGEX, Pipeline};
 use starlist::redact::Redactor;
 use starlist::server::LogServer;
 use starlist::store::Store;
-use regex::Regex;
-use rmcp::ServiceExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 #[derive(Parser)]
-#[command(name = "starlist", version, about = "Watches your app's logs and serves distilled, redacted summaries to AI agents over MCP.")]
+#[command(
+    name = "starlist",
+    version,
+    about = "Watches your app's logs and serves distilled, redacted summaries to AI agents over MCP."
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -122,13 +126,17 @@ struct McpArgs {
 }
 
 fn parse_tz(s: &str) -> Result<i32, String> {
-    starlist::pattern::parse_utc_offset(s).ok_or_else(|| format!("'{s}' is not a UTC offset; use e.g. UTC, +02:00 or -0800"))
+    starlist::pattern::parse_utc_offset(s)
+        .ok_or_else(|| format!("'{s}' is not a UTC offset; use e.g. UTC, +02:00 or -0800"))
 }
 
 fn is_loopback(addr: &str) -> bool {
     match addr.parse::<std::net::SocketAddr>() {
         Ok(a) => a.ip().is_loopback(),
-        Err(_) => addr.split(':').next().is_some_and(|h| h.eq_ignore_ascii_case("localhost")),
+        Err(_) => addr
+            .split(':')
+            .next()
+            .is_some_and(|h| h.eq_ignore_ascii_case("localhost")),
     }
 }
 
@@ -154,32 +162,51 @@ fn resolve_token(mcp: &McpArgs, db: &Path) -> Result<Option<String>> {
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
     use std::io::Write;
-    opts.open(&path).and_then(|mut f| f.write_all(t.as_bytes())).with_context(|| format!("writing {}", path.display()))?;
-    eprintln!("starlist: listening beyond localhost, so a bearer token is required. Generated one in {}", path.display());
+    opts.open(&path)
+        .and_then(|mut f| f.write_all(t.as_bytes()))
+        .with_context(|| format!("writing {}", path.display()))?;
+    eprintln!(
+        "starlist: listening beyond localhost, so a bearer token is required. Generated one in {}",
+        path.display()
+    );
     Ok(Some(t))
 }
 
 fn open_store(db: &PathBuf) -> Result<Arc<Store>> {
-    Ok(Arc::new(Store::open(db).with_context(|| format!("opening {}", db.display()))?))
+    Ok(Arc::new(
+        Store::open(db).with_context(|| format!("opening {}", db.display()))?,
+    ))
 }
 
 fn pipeline(opts: &PipelineArgs, store: Arc<Store>) -> Result<Pipeline> {
-    let extra = opts.redact.iter().map(|r| Regex::new(r)).collect::<Result<Vec<_>, _>>().context("bad --redact regex")?;
+    let extra = opts
+        .redact
+        .iter()
+        .map(|r| Regex::new(r))
+        .collect::<Result<Vec<_>, _>>()
+        .context("bad --redact regex")?;
     let marker = if opts.no_auto_markers {
         None
     } else {
         Some(Regex::new(&opts.marker_regex).context("bad --marker-regex")?)
     };
     let merge = (opts.merge_after > 0).then_some(opts.merge_after);
-    Ok(Pipeline::with_merging(store, Redactor::new(!opts.keep_ips, extra), marker, merge).with_log_tz(opts.log_tz.unwrap_or(0)))
+    Ok(
+        Pipeline::with_merging(store, Redactor::new(!opts.keep_ips, extra), marker, merge)
+            .with_log_tz(opts.log_tz.unwrap_or(0)),
+    )
 }
 
 /// Start collection threads. Returns a handle that finishes when stdin closes (if reading stdin).
-fn start_collection(src: &SourceArgs, store: Arc<Store>) -> Result<Option<std::thread::JoinHandle<()>>> {
+fn start_collection(
+    src: &SourceArgs,
+    store: Arc<Store>,
+) -> Result<Option<std::thread::JoinHandle<()>>> {
     if src.files.is_empty() && !src.stdin {
         bail!("nothing to collect: pass --file PATH and/or --stdin");
     }
-    let retention = starlist::analysis::parse_duration(&src.retention).context("bad --retention")?;
+    let retention =
+        starlist::analysis::parse_duration(&src.retention).context("bad --retention")?;
     collector::spawn_pruner(store.clone(), retention);
     let p = Arc::new(pipeline(&src.opts, store)?);
     static STOP: AtomicBool = AtomicBool::new(false);
@@ -190,7 +217,9 @@ fn start_collection(src: &SourceArgs, store: Arc<Store>) -> Result<Option<std::t
     }
     if src.stdin {
         let (p, tee) = (p.clone(), src.tee);
-        return Ok(Some(std::thread::spawn(move || collector::read_stdin(&p, tee))));
+        return Ok(Some(std::thread::spawn(move || {
+            collector::read_stdin(&p, tee)
+        })));
     }
     Ok(None)
 }
@@ -198,15 +227,26 @@ fn start_collection(src: &SourceArgs, store: Arc<Store>) -> Result<Option<std::t
 async fn run_mcp(store: Arc<Store>, mcp: &McpArgs, db: &Path) -> Result<()> {
     if mcp.stdio {
         eprintln!("starlist: serving MCP over stdio");
-        let svc = LogServer::new(store).serve(rmcp::transport::stdio()).await?;
+        let svc = LogServer::new(store)
+            .serve(rmcp::transport::stdio())
+            .await?;
         svc.waiting().await?;
         return Ok(());
     }
     let token = resolve_token(mcp, db)?;
     let router = starlist::http::router(store, token, mcp.allowed_hosts.clone());
-    let listener = tokio::net::TcpListener::bind(&mcp.http).await.with_context(|| format!("binding {}", mcp.http))?;
-    eprintln!("starlist: MCP endpoint http://{}/mcp", listener.local_addr()?);
-    axum::serve(listener, router).with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; }).await?;
+    let listener = tokio::net::TcpListener::bind(&mcp.http)
+        .await
+        .with_context(|| format!("binding {}", mcp.http))?;
+    eprintln!(
+        "starlist: MCP endpoint http://{}/mcp",
+        listener.local_addr()?
+    );
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
     Ok(())
 }
 
@@ -216,7 +256,9 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Serve { src, mcp } => {
             if mcp.stdio && src.stdin {
-                bail!("--stdin can't be combined with --stdio (both use standard input); use HTTP or --file");
+                bail!(
+                    "--stdin can't be combined with --stdio (both use standard input); use HTTP or --file"
+                );
             }
             let store = open_store(&src.opts.db)?;
             start_collection(&src, store.clone())?;
@@ -225,8 +267,12 @@ async fn main() -> Result<()> {
         Cmd::Collect { src } => {
             let store = open_store(&src.opts.db)?;
             match start_collection(&src, store)? {
-                Some(h) => { let _ = tokio::task::spawn_blocking(move || h.join()).await; }
-                None => { let _ = tokio::signal::ctrl_c().await; }
+                Some(h) => {
+                    let _ = tokio::task::spawn_blocking(move || h.join()).await;
+                }
+                None => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
             }
             Ok(())
         }
@@ -243,8 +289,14 @@ async fn main() -> Result<()> {
         }
         Cmd::Mark { name, note, at, db } => {
             let store = open_store(&db)?;
-            let v = starlist::analysis::add_marker(&store, &name, note.as_deref(), at.as_deref(), starlist::analysis::now())
-                .map_err(anyhow::Error::msg)?;
+            let v = starlist::analysis::add_marker(
+                &store,
+                &name,
+                note.as_deref(),
+                at.as_deref(),
+                starlist::analysis::now(),
+            )
+            .map_err(anyhow::Error::msg)?;
             println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())
         }
