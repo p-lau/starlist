@@ -496,6 +496,7 @@ fn pattern_brief(row: &PatternRow, rel: &Releases, now: f64, d: Detail) -> Value
         "first_seen": if d.full() { Some(fmt_t(row.first_seen, now, d)) } else { None },
         "first_release": rel.at(row.first_seen),
         "location": row.location,
+        "example_request": row.example_request,
         "last_seen": fmt_t(row.last_seen, now, d),
     })
 }
@@ -1174,6 +1175,100 @@ pub fn get_context(
             "{cut_before} earlier and {cut_after} later lines left out to fit max_chars."
         ));
         v = build(&ls, short, &n);
+    }
+    Ok(v)
+}
+
+/// Most events returned for one request before the budget applies.
+const REQUEST_LINES: i64 = 500;
+
+/// The events of one request in order, from the raw buffer.
+pub fn get_request(
+    store: &Store,
+    request_id: &str,
+    max_chars: usize,
+    d: Detail,
+    now: f64,
+) -> AResult {
+    let id = crate::request::normalize_query(request_id);
+    if id.is_empty() {
+        return Err("Pass a request_id, e.g. the example_request of a finding.".into());
+    }
+    let lines = store.request_lines(&id, REQUEST_LINES + 1).map_err(db)?;
+    if lines.is_empty() {
+        let (n, oldest) = store.raw_span().map_err(db)?;
+        return Err(if n == 0 {
+            "No raw lines are stored, so requests can't be followed. starlist keeps recent lines unless it runs with --no-raw.".into()
+        } else {
+            format!(
+                "No events for request '{id}'. The raw buffer goes back to {}; IDs come from trace_id, request_id, traceparent and similar fields (add more with --request-key).",
+                fmt_time(oldest.unwrap_or(now), now)
+            )
+        });
+    }
+    let capped = lines.len() as i64 > REQUEST_LINES;
+    let lines = &lines[..lines.len().min(REQUEST_LINES as usize)];
+    let start = lines[0].ts;
+    let end = lines[lines.len() - 1].ts;
+    let patterns: std::collections::HashSet<&str> =
+        lines.iter().map(|l| l.pattern_id.as_str()).collect();
+
+    let render = |l: &crate::store::RawLine, short: Option<usize>| -> Value {
+        let limit = short.unwrap_or(if d.full() { 2000 } else { 400 });
+        let off = offset(l.ts - start);
+        if d.full() {
+            json!({"at": fmt_time(l.ts, now), "offset": off, "pattern_id": l.pattern_id, "text": truncate(&l.text, limit)})
+        } else {
+            json!(format!(
+                "{off} {}",
+                truncate(&trim_trace(&l.text, 10), limit)
+            ))
+        }
+    };
+    let head = json!({
+        "request_id": id,
+        "started": fmt_t(start, now, d),
+        "duration": fmt_duration(end - start),
+        "events": lines.len(),
+        "patterns": patterns.len(),
+        "note": if capped { Some(format!("Only the first {REQUEST_LINES} events are shown.")) } else { None },
+    });
+    let build = |keep: &[usize], short: Option<usize>, notes: &[String]| {
+        let mut v = head.clone();
+        let mut out = vec![];
+        for (n, &i) in keep.iter().enumerate() {
+            if n > 0 && i != keep[n - 1] + 1 {
+                out.push(json!(format!(
+                    "… {} events left out …",
+                    i - keep[n - 1] - 1
+                )));
+            }
+            out.push(render(&lines[i], short));
+        }
+        v["lines"] = json!(out);
+        if !notes.is_empty() {
+            v["trimmed"] = json!(notes.join(" "));
+        }
+        compact(v)
+    };
+    let mut keep: Vec<usize> = (0..lines.len()).collect();
+    let mut notes: Vec<String> = vec![];
+    let mut short = None;
+    let mut v = build(&keep, short, &notes);
+    if json_len(&v) > max_chars {
+        short = Some(160);
+        notes.push("Lines shortened to fit max_chars.".into());
+        v = build(&keep, short, &notes);
+    }
+    // Keep how the request started and how it ended; drop from the middle.
+    while json_len(&v) > max_chars && keep.len() > 2 {
+        keep.remove(keep.len() / 2);
+        let mut n = notes.clone();
+        n.push(format!(
+            "{} middle events left out to fit max_chars.",
+            lines.len() - keep.len()
+        ));
+        v = build(&keep, short, &n);
     }
     Ok(v)
 }

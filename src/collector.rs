@@ -2,7 +2,7 @@
 //! events, redacts, and records them in the store.
 
 use crate::merge::Merger;
-use crate::pattern::{Assembler, Event, parse_event};
+use crate::pattern::{Assembler, Event, parse_event, parse_event_with};
 use crate::redact::Redactor;
 use crate::store::Store;
 use regex::Regex;
@@ -32,6 +32,8 @@ pub struct Pipeline {
     log_tz: i32,
     /// Path prefixes stripped from code locations so they match the repository.
     source_roots: Vec<String>,
+    /// Extra keys that hold a request ID, beyond the defaults.
+    request_keys: Option<crate::request::RequestKeys>,
 }
 
 impl Pipeline {
@@ -65,7 +67,14 @@ impl Pipeline {
             merger,
             log_tz: 0,
             source_roots: vec![],
+            request_keys: None,
         }
+    }
+
+    /// Also read request IDs from these keys (any spelling), like "order_ref".
+    pub fn with_request_keys(mut self, keys: &[String]) -> Self {
+        self.request_keys = (!keys.is_empty()).then(|| crate::request::RequestKeys::new(keys));
+        self
     }
 
     /// Strip these path prefixes (like `/app`) from code locations.
@@ -81,7 +90,10 @@ impl Pipeline {
     }
 
     pub fn parse(&self, text: &str, now: f64) -> Event {
-        let mut e = parse_event(text, &self.redactor, None, None);
+        let mut e = match &self.request_keys {
+            Some(k) => parse_event_with(text, &self.redactor, None, None, k),
+            None => parse_event(text, &self.redactor, None, None),
+        };
         if e.ts_naive
             && let Some(t) = e.ts.as_mut()
         {

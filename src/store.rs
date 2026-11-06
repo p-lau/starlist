@@ -26,6 +26,8 @@ pub struct PatternRow {
     pub total: i64,
     /// The most frequent code location of this pattern's events.
     pub location: Option<String>,
+    /// The latest request (still in the raw buffer) that logged this pattern.
+    pub example_request: Option<String>,
 }
 
 /// A pattern with its counts before and after a split time.
@@ -83,11 +85,13 @@ fn row_to_pattern(r: &rusqlite::Row, off: usize) -> R<PatternRow> {
         last_seen: r.get(off + 5)?,
         total: r.get(off + 6)?,
         location: r.get(off + 7)?,
+        example_request: r.get(off + 8)?,
     })
 }
 
 const PATTERN_COLS: &str = "p.id, p.template, p.level, p.exc_type, p.first_seen, p.last_seen, p.total,
-     (SELECT l.location FROM locations l WHERE l.pattern_id = p.id ORDER BY l.n DESC, l.last_seen DESC LIMIT 1)";
+     (SELECT l.location FROM locations l WHERE l.pattern_id = p.id ORDER BY l.n DESC, l.last_seen DESC LIMIT 1),
+     (SELECT r.request_id FROM raw r WHERE r.pattern_id = p.id AND r.request_id IS NOT NULL ORDER BY r.ts DESC LIMIT 1)";
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> R<Self> {
@@ -118,6 +122,17 @@ impl Store {
                 id INTEGER PRIMARY KEY, ts REAL NOT NULL, pattern_id TEXT NOT NULL, text TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS raw_ts ON raw(ts, id);
              CREATE INDEX IF NOT EXISTS raw_pid ON raw(pattern_id, ts);",
+        )?;
+        // Added in 0.6: the request ID of each raw line.
+        let has_req: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('raw') WHERE name = 'request_id'")?
+            .exists([])?;
+        if !has_req {
+            conn.execute_batch("ALTER TABLE raw ADD COLUMN request_id TEXT;")?;
+        }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS raw_req ON raw(request_id, ts) WHERE request_id IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS raw_pid_req ON raw(pattern_id, ts) WHERE request_id IS NOT NULL;",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -160,8 +175,9 @@ impl Store {
         }
         let tx = conn.transaction()?;
         {
-            let mut ins_raw =
-                tx.prepare_cached("INSERT INTO raw(ts, pattern_id, text) VALUES (?1, ?2, ?3)")?;
+            let mut ins_raw = tx.prepare_cached(
+                "INSERT INTO raw(ts, pattern_id, text, request_id) VALUES (?1, ?2, ?3, ?4)",
+            )?;
             let mut up_pattern = tx.prepare_cached(
                 "INSERT INTO patterns(id, template, level, exc_type, first_seen, last_seen, total)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1)
@@ -200,7 +216,7 @@ impl Store {
                 }
                 if raw.cap.is_some() {
                     let text = crate::pattern::truncate(&e.body, RAW_EVENT_CHARS);
-                    ins_raw.execute(params![ts, e.pattern_id, text])?;
+                    ins_raw.execute(params![ts, e.pattern_id, text, e.request_id])?;
                     *raw.bytes.get_or_insert(0) += text.len() as i64;
                 }
                 let last: Option<f64> = last_sample.query_row([&e.pattern_id], |r| r.get(0))?;
@@ -296,6 +312,23 @@ impl Store {
             lines.push(l?);
         }
         Ok(lines)
+    }
+
+    /// The events of one request in order, at most `limit`.
+    pub fn request_lines(&self, request_id: &str, limit: i64) -> R<Vec<RawLine>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT id, ts, pattern_id, text FROM raw WHERE request_id = ?1 ORDER BY ts, id LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![request_id, limit], |r| {
+            Ok(RawLine {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                pattern_id: r.get(2)?,
+                text: r.get(3)?,
+            })
+        })?;
+        rows.collect()
     }
 
     /// Number of raw lines stored and the oldest one's time.
@@ -427,8 +460,8 @@ impl Store {
         let rows = st.query_map(params![lo_b, split_b, hi_b], |r| {
             Ok(SplitStat {
                 row: row_to_pattern(r, 0)?,
-                before: r.get(8)?,
-                after: r.get(9)?,
+                before: r.get(9)?,
+                after: r.get(10)?,
             })
         })?;
         rows.collect()

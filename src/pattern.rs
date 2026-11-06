@@ -190,6 +190,8 @@ pub struct Event {
     pub exc_type: Option<String>,
     /// Top app frame of the stack trace, `file:line in function`.
     pub location: Option<String>,
+    /// Request or trace ID, found before masking.
+    pub request_id: Option<String>,
 }
 
 fn detect_level(message: &str) -> Option<&'static str> {
@@ -260,6 +262,23 @@ pub fn parse_event(
     ts_hint: Option<f64>,
     level_hint: Option<&str>,
 ) -> Event {
+    parse_event_with(
+        text,
+        redactor,
+        ts_hint,
+        level_hint,
+        crate::request::default_keys(),
+    )
+}
+
+/// `parse_event` with a custom set of request ID keys.
+pub fn parse_event_with(
+    text: &str,
+    redactor: &Redactor,
+    ts_hint: Option<f64>,
+    level_hint: Option<&str>,
+    request_keys: &crate::request::RequestKeys,
+) -> Event {
     let mut lines = text.lines();
     let first = lines.next().unwrap_or("").trim_end();
     let rest: Vec<&str> = lines.collect();
@@ -314,7 +333,15 @@ pub fn parse_event(
 
     let head = redactor.redact(&message);
     let body = redactor.redact(&body_lines.join("\n"));
-    let mut template = mask(&head);
+    // An ID that redaction would change is treated as a secret, not a request ID.
+    let request_id = request_keys
+        .find(text)
+        .filter(|id| redactor.redact(id) == *id);
+    // Keep request IDs out of the template, whatever they look like.
+    let mut template = match &request_id {
+        Some(id) => mask(&head.replace(id.as_str(), "<REQ>")),
+        None => mask(&head),
+    };
     if let Some(e) = &exc_type {
         template = format!("{template} | {e}");
     }
@@ -330,6 +357,7 @@ pub fn parse_event(
         pattern_id,
         exc_type,
         location,
+        request_id,
     }
 }
 
