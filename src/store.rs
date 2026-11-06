@@ -82,7 +82,8 @@ impl Store {
              CREATE INDEX IF NOT EXISTS samples_pid ON samples(pattern_id, ts);
              CREATE TABLE IF NOT EXISTS markers(
                 id INTEGER PRIMARY KEY, name TEXT NOT NULL, ts REAL NOT NULL, kind TEXT NOT NULL, note TEXT);
-             CREATE INDEX IF NOT EXISTS markers_name ON markers(name);",
+             CREATE INDEX IF NOT EXISTS markers_name ON markers(name);
+             CREATE TABLE IF NOT EXISTS aliases(alias TEXT PRIMARY KEY, canonical TEXT NOT NULL) WITHOUT ROWID;",
         )?;
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -144,12 +145,68 @@ impl Store {
         conn.execute("DELETE FROM counts WHERE bucket < ?1", [bucket_of(before_ts)])
     }
 
+    /// Look up a pattern by ID. IDs of patterns that were merged into another
+    /// resolve to the pattern they were merged into.
     pub fn pattern(&self, id: &str) -> R<Option<PatternRow>> {
-        self.conn()
-            .query_row(&format!("SELECT {PATTERN_COLS} FROM patterns p WHERE p.id = ?1"), [id], |r| {
-                row_to_pattern(r, 0)
-            })
-            .optional()
+        let conn = self.conn();
+        let id: String = conn
+            .query_row("SELECT canonical FROM aliases WHERE alias = ?1", [id], |r| r.get(0))
+            .optional()?
+            .unwrap_or_else(|| id.to_string());
+        conn.query_row(&format!("SELECT {PATTERN_COLS} FROM patterns p WHERE p.id = ?1"), [&id], |r| {
+            row_to_pattern(r, 0)
+        })
+        .optional()
+    }
+
+    pub fn aliases(&self) -> R<std::collections::HashMap<String, String>> {
+        let conn = self.conn();
+        let mut st = conn.prepare("SELECT alias, canonical FROM aliases")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// All patterns' IDs and templates, oldest first.
+    pub fn pattern_templates(&self) -> R<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut st = conn.prepare("SELECT id, template FROM patterns ORDER BY first_seen, id")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// Fold the alias patterns into the canonical one: counts, samples and
+    /// totals move over, and the alias IDs keep resolving to the canonical ID.
+    pub fn merge_patterns(&self, op: &crate::merge::MergeOp) -> R<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let c = &op.canonical;
+        tx.execute("UPDATE patterns SET template = ?2 WHERE id = ?1", params![c, op.template])?;
+        for a in &op.aliases {
+            tx.execute(
+                "INSERT INTO counts(pattern_id, bucket, n) SELECT ?1, bucket, n FROM counts WHERE pattern_id = ?2 AND true
+                 ON CONFLICT(pattern_id, bucket) DO UPDATE SET n = n + excluded.n",
+                params![c, a],
+            )?;
+            tx.execute("DELETE FROM counts WHERE pattern_id = ?1", [a])?;
+            tx.execute("UPDATE samples SET pattern_id = ?1 WHERE pattern_id = ?2", params![c, a])?;
+            tx.execute(
+                "UPDATE patterns SET
+                   first_seen = MIN(first_seen, COALESCE((SELECT first_seen FROM patterns WHERE id = ?2), first_seen)),
+                   last_seen = MAX(last_seen, COALESCE((SELECT last_seen FROM patterns WHERE id = ?2), last_seen)),
+                   total = total + COALESCE((SELECT total FROM patterns WHERE id = ?2), 0)
+                 WHERE id = ?1",
+                params![c, a],
+            )?;
+            tx.execute("DELETE FROM patterns WHERE id = ?1", [a])?;
+            tx.execute("UPDATE aliases SET canonical = ?1 WHERE canonical = ?2", params![c, a])?;
+            tx.execute("INSERT OR REPLACE INTO aliases(alias, canonical) VALUES (?1, ?2)", params![a, c])?;
+        }
+        tx.execute(
+            "DELETE FROM samples WHERE pattern_id = ?1 AND id NOT IN
+               (SELECT id FROM samples WHERE pattern_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2)",
+            params![c, SAMPLES_PER_PATTERN],
+        )?;
+        tx.commit()
     }
 
     /// Per-pattern counts in [lo, split) and [split, hi]. The 10-second bucket
