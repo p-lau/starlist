@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rmcp = { version = "3.9", features = ["server", "macros", "transport-io", "transport-streamable-http-server", "client", "transport-streamable-http-client-reqwest", "transport-child-process"] }
+rmcp = { version = "3.9", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -16,6 +16,10 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 clap = { version = "4", features = ["derive"] }
 axum = "0.8"
 anyhow = "1"
+
+[dev-dependencies]
+# The MCP client is only used by the example agent and the end-to-end test.
+rmcp = { version = "3.9", features = ["client", "transport-streamable-http-client-reqwest"] }
 
 [profile.release]
 opt-level = "s"
