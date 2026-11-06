@@ -14,6 +14,7 @@ use std::sync::Arc;
 const INSTRUCTIONS: &str = "\
 Distilled, redacted view of one app's logs. Lines are grouped into patterns with stable IDs.
 Flow: whats_new -> get_pattern -> ship a fix -> add_marker (deploys are also auto-detected) -> verify_fix(pattern_id, since=marker).
+Patterns show first_release, the deploy live when they first appeared.
 Times: '30m', '2h', ISO time, or marker name. Output is brief by default; pass detail='full' for more.";
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -44,8 +45,8 @@ pub struct VerifyFixArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CompareDeployArgs {
-    /// The deploy or change point: a marker name, an ISO time, or a duration back from now.
-    pub at: String,
+    /// The deploy or change point: a marker name, an ISO time, or a duration back from now. Default: the latest deploy.
+    pub at: Option<String>,
     /// How far before the split to compare against, like "2h". Default: as long as the time since the split, at least 1h.
     pub before: Option<String>,
     /// Maximum findings to return. Default 10.
@@ -85,6 +86,8 @@ pub struct AddMarkerArgs {
     pub note: Option<String>,
     /// When it happened, if not now: ISO time or a duration back from now.
     pub at: Option<String>,
+    /// True if this is a release going live; patterns first seen after it are attributed to it.
+    pub deploy: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -157,7 +160,7 @@ impl LogServer {
     ) -> Result<String, String> {
         out(analysis::compare_deploy(
             &self.store,
-            &a.at,
+            a.at.as_deref(),
             a.before.as_deref(),
             a.limit.unwrap_or(10).clamp(1, 50),
             detail(&a.detail)?,
@@ -209,6 +212,7 @@ impl LogServer {
             &a.name,
             a.note.as_deref(),
             a.at.as_deref(),
+            a.deploy.unwrap_or(false),
             analysis::now(),
         ))
     }

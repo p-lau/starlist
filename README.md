@@ -14,9 +14,11 @@ Release build: ~5 MB static binary, ~11 MB memory while serving.
 |---|---|
 | `whats_new` | What appeared for the first time, came back, spiked, or went quiet in the last window vs. a baseline. Spikes are judged against overall traffic, so a busy hour alone isn't flagged. Errors first. |
 | `verify_fix` | Did this error stop after the fix? Verdicts: `fixed`, `reduced`, `still_occurring`, `worse`, `too_early` (with minutes to wait), `appeared_after`, `not_active_before`. Warns when traffic dropped too much to tell. |
-| `compare_deploy` | Everything that changed around a deploy: new patterns (likely regressions), increased, stopped, decreased. |
+| `compare_deploy` | Everything that changed around a deploy (the latest one by default): new patterns (likely regressions), increased, stopped, decreased. |
 | `list_patterns` / `get_pattern` | Find patterns by text or level; counts, hourly histogram, redacted samples with stack traces. |
 | `add_marker` / `list_markers` | Name a point in time ("fix-currency"). Deploys are also detected from lines like `Starting api version 1.4.2`. |
+
+Every pattern carries `first_release`: the deploy that was live when it first appeared, so one `whats_new` call answers "which deploy started this error?".
 
 Times accept `30m`, `2h`, an ISO time, or a marker name.
 
@@ -41,8 +43,10 @@ npm start | ./target/release/starlist serve --stdin --tee
 # Or let the agent launch it over stdio (reads the DB a collector writes)
 ./target/release/starlist collect --file app.log &
 ./target/release/starlist mcp --stdio
-# Mark a deploy from a script
-./target/release/starlist mark v1.4.3 --note "fix currency KeyError"
+# Record the release without a log line: at startup...
+STARLIST_VERSION=v1.4.3 ./target/release/starlist serve --file app.log
+# ...or from a deploy script
+./target/release/starlist mark v1.4.3 --deploy --note "fix currency KeyError"
 ```
 
 Claude Code: `claude mcp add --transport http logs http://127.0.0.1:7341/mcp`

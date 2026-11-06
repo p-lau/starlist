@@ -56,6 +56,9 @@ enum Cmd {
         /// When it happened, if not now: ISO time or duration back from now ("5m").
         #[arg(long)]
         at: Option<String>,
+        /// Mark a release going live; patterns first seen after it are attributed to it.
+        #[arg(long)]
+        deploy: bool,
         #[arg(long, default_value = "starlist.db")]
         db: PathBuf,
     },
@@ -103,6 +106,10 @@ struct SourceArgs {
     /// How long to keep counts, like "7d".
     #[arg(long, default_value = "7d")]
     retention: String,
+    /// Version of the app being watched, recorded as a deploy marker at startup
+    /// (when it differs from the release already live).
+    #[arg(long, env = "STARLIST_VERSION")]
+    app_version: Option<String>,
     #[command(flatten)]
     opts: PipelineArgs,
 }
@@ -208,6 +215,15 @@ fn start_collection(
     let retention =
         starlist::analysis::parse_duration(&src.retention).context("bad --retention")?;
     collector::spawn_pruner(store.clone(), retention);
+    if let Some(v) = src
+        .app_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        && store.add_deploy(v, starlist::analysis::now(), None)?
+    {
+        eprintln!("starlist: deploy marker {v}");
+    }
     let p = Arc::new(pipeline(&src.opts, store)?);
     static STOP: AtomicBool = AtomicBool::new(false);
     for f in &src.files {
@@ -287,13 +303,20 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Mark { name, note, at, db } => {
+        Cmd::Mark {
+            name,
+            note,
+            at,
+            deploy,
+            db,
+        } => {
             let store = open_store(&db)?;
             let v = starlist::analysis::add_marker(
                 &store,
                 &name,
                 note.as_deref(),
                 at.as_deref(),
+                deploy,
                 starlist::analysis::now(),
             )
             .map_err(anyhow::Error::msg)?;

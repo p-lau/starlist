@@ -276,12 +276,33 @@ fn latest_sample(store: &Store, id: &str, d: Detail) -> Option<String> {
         .map(|(_, t)| sample_text(&t, d))
 }
 
-fn pattern_brief(row: &PatternRow, now: f64, d: Detail) -> Value {
+/// Deploy markers in time order, to tell which release was live at a given time.
+pub struct Releases(Vec<(f64, String)>);
+
+impl Releases {
+    pub fn load(store: &Store) -> Result<Self, String> {
+        Ok(Self(store.deploys().map_err(db)?))
+    }
+
+    /// The release live at `ts`: the latest deploy at or before it.
+    /// None when `ts` is before the first recorded deploy.
+    pub fn at(&self, ts: f64) -> Option<&str> {
+        let i = self.0.partition_point(|(t, _)| *t <= ts);
+        i.checked_sub(1).map(|i| self.0[i].1.as_str())
+    }
+
+    pub fn latest(&self) -> Option<(f64, &str)> {
+        self.0.last().map(|(t, n)| (*t, n.as_str()))
+    }
+}
+
+fn pattern_brief(row: &PatternRow, rel: &Releases, now: f64, d: Detail) -> Value {
     json!({
         "pattern_id": row.id,
         "level": row.level,
         "template": truncate(&row.template, TEMPLATE_CHARS),
         "first_seen": if d.full() { Some(fmt_t(row.first_seen, now, d)) } else { None },
+        "first_release": rel.at(row.first_seen),
         "last_seen": fmt_t(row.last_seen, now, d),
     })
 }
@@ -326,6 +347,7 @@ pub fn whats_new(
     let split = now - w;
     let lo = split - b;
     let stats = store.split_counts(lo, split, now).map_err(db)?;
+    let rel = Releases::load(store)?;
     let events_in_window: i64 = stats.iter().map(|s| s.after).sum();
     let events_in_baseline: i64 = stats.iter().map(|s| s.before).sum();
     // When the whole app gets busier, every pattern rises with it. Judge spikes
@@ -378,7 +400,7 @@ pub fn whats_new(
             continue;
         };
         tally[order as usize] += 1;
-        let mut v = pattern_brief(row, now, d);
+        let mut v = pattern_brief(row, &rel, now, d);
         v["kind"] = json!(kind);
         if !note.is_empty() {
             v["note"] = json!(note);
@@ -437,6 +459,7 @@ pub fn whats_new(
         } else {
             json!({"note": traffic_note})
         },
+        "current_release": rel.latest().map(|(_, n)| n),
         "markers_in_window": markers_between(store, split, now, now, d)?,
         "findings": findings,
         "more_not_shown": if more > 0 { Some(more) } else { None },
@@ -595,13 +618,22 @@ pub fn verify_fix(
 /// Fleet-wide before/after diff around a deploy or other point in time.
 pub fn compare_deploy(
     store: &Store,
-    at: &str,
+    at: Option<&str>,
     before: Option<&str>,
     limit: usize,
     d: Detail,
     now: f64,
 ) -> AResult {
-    let (split, marker) = resolve_time(store, at, now)?;
+    let rel = Releases::load(store)?;
+    let (split, marker) = match at {
+        Some(at) => resolve_time(store, at, now)?,
+        None => match rel.latest() {
+            Some((t, n)) => (t, Some(n.to_string())),
+            None => {
+                return Err("No deploy markers yet. Pass 'at' (a marker name, ISO time or duration), or record deploys with `starlist mark --deploy NAME` or STARLIST_VERSION.".into());
+            }
+        },
+    };
     if split >= now {
         return Err("'at' is in the future.".into());
     }
@@ -638,7 +670,7 @@ pub fn compare_deploy(
             continue;
         };
         tally[order as usize] += 1;
-        let mut v = pattern_brief(row, now, d);
+        let mut v = pattern_brief(row, &rel, now, d);
         v["kind"] = json!(kind);
         if d.full() {
             v["before"] = json!({"count": b, "per_hour": per_hour(b, span)});
@@ -705,11 +737,12 @@ pub fn list_patterns(
         )
     });
     let total = stats.len();
+    let rel = Releases::load(store)?;
     let items: Vec<Value> = stats
         .iter()
         .take(limit)
         .map(|s| {
-            let mut v = pattern_brief(&s.row, now, d);
+            let mut v = pattern_brief(&s.row, &rel, now, d);
             v["count"] = json!(s.before);
             v
         })
@@ -734,7 +767,7 @@ pub fn get_pattern(
         .map_err(db)?
         .ok_or_else(|| format!("Unknown pattern_id '{pattern_id}'."))?;
     let day = now - 86400.0;
-    let mut v = pattern_brief(&row, now, Detail::Full);
+    let mut v = pattern_brief(&row, &Releases::load(store)?, now, Detail::Full);
     v["template"] = json!(row.template);
     v["exception"] = json!(row.exc_type);
     v["total_seen"] = json!(row.total);
@@ -766,6 +799,7 @@ pub fn add_marker(
     name: &str,
     note: Option<&str>,
     at: Option<&str>,
+    deploy: bool,
     now: f64,
 ) -> AResult {
     let name = name.trim();
@@ -776,8 +810,13 @@ pub fn add_marker(
         Some(a) => resolve_time(store, a, now)?.0,
         None => now,
     };
-    store.add_marker(name, ts, "manual", note).map_err(db)?;
-    Ok(json!({"marker": name, "at": fmt_time(ts, now)}))
+    let kind = if deploy { "deploy" } else { "manual" };
+    if deploy {
+        store.add_deploy(name, ts, note).map_err(db)?;
+    } else {
+        store.add_marker(name, ts, kind, note).map_err(db)?;
+    }
+    Ok(json!({"marker": name, "kind": kind, "at": fmt_time(ts, now)}))
 }
 
 pub fn list_markers(store: &Store, limit: i64, now: f64) -> AResult {
