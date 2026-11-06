@@ -12,7 +12,8 @@ Release build: ~5 MB static binary, ~11 MB memory while serving.
 
 | Tool | What it answers |
 |---|---|
-| `whats_new` | What appeared for the first time, came back, spiked, or went quiet in the last window vs. a baseline. Spikes are judged against overall traffic, so a busy hour alone isn't flagged. Errors first. |
+| `diagnose` | Start here. The likely causes of what is wrong now, ranked, in one call: why each stands out, the deploy it started with, its code location, sample lines, and the lines of a request that hit the top one. With nothing new, the busiest warnings and errors. |
+| `whats_new` | Every pattern that appeared for the first time, came back, spiked, is slowly rising, or went quiet in the last window vs. a baseline. Spikes are judged against overall traffic, so a busy hour alone isn't flagged. A slow rise is a pattern whose share of the logs grew (over the window, or over the last 3 hours) by more than chance and more than it swung at any point in the day before. Errors first. |
 | `verify_fix` | Did this error stop after the fix? Verdicts: `fixed`, `reduced`, `still_occurring`, `worse`, `too_early` (with minutes to wait), `appeared_after`, `not_active_before`. Warns when traffic dropped too much to tell. |
 | `compare_deploy` | Everything that changed around a deploy (the latest one by default): new patterns (likely regressions), increased, stopped, decreased. |
 | `list_patterns` / `get_pattern` | Find patterns by text or level; counts, hourly histogram, redacted samples with stack traces. |
@@ -22,6 +23,8 @@ Release build: ~5 MB static binary, ~11 MB memory while serving.
 | `get_release` | A release's report card: new, regressed and resolved patterns, and its error rate against the previous release. |
 | `merge_patterns` | Merge patterns that are really one issue; the other IDs keep working. |
 | `add_marker` / `list_markers` | Name a point in time ("fix-currency"). Deploys are also detected from lines like `Starting api version 1.4.2`. |
+
+When to reach for starlist: if a stack trace or clear symptom already points at recent code, reading the code is usually cheaper. starlist pays off when the symptom is unknown, nothing was deployed, the codebase is large, or the cause may be outside the code (an upstream service, data, config, clients), and it's cheaper than reading raw log files whenever logs are needed. The MCP instructions tell agents the same.
 
 Every pattern carries `first_release`: the deploy that was live when it first appeared, so one `whats_new` call answers "which deploy started this error?". Patterns with a stack trace also carry `location`, the app's own frame closest to the failure (`shop/pricing.py:41 in price_cart`), for Python, Java/Kotlin, Node/TypeScript, Go and Rust panics; `get_pattern` lists every location a pattern was raised from, with counts. If the app runs from a different path than your checkout, say `/app` in a container, pass `--source-root /app` so paths match the repository.
 
@@ -103,7 +106,7 @@ STARLIST_HUB_TOKEN=... starlist serve --file app.log \
 - **What is pushed:** the events a collector records (already redacted and fingerprinted), its markers and its pattern merges. Nothing is pulled from collectors. Each push token can only write its own service and can't read anything; reading the hub uses the hub's own token, as on a collector.
 - **Replicas** of a service add up in one place, because pattern IDs are the same on every host. A deploy reported by every replica is recorded once.
 - **Outages:** a collector queues what it records in its own database and sends it in batches. While the hub is unreachable it keeps retrying and catches up afterwards. The queue is limited to `--hub-buffer` (default 200MB); beyond that the oldest batches are dropped and counted. A batch that is retried is applied only once.
-- **Asking the hub:** the same MCP tools, API and dashboard, with a `service` argument (a picker in the dashboard). `list_services` lists them, and `whats_new` without a service covers every service.
+- **Asking the hub:** the same MCP tools, API and dashboard, with a `service` argument (a picker in the dashboard). `list_services` lists them, and `whats_new` and `diagnose` without a service cover every service.
 - **Requests across services:** `get_request` (and `GET /api/v1/requests/{id}`) without a service follows one request through every service in time order, tagged by service, with each service's first and last offset. Order across hosts is only as good as their clocks, and the answer says so. To fit the size limit, it keeps each service's first and last events and the errors longest.
 - **Raw lines** at the hub are capped per service by `--raw-size`, and `--no-raw` keeps none. A collector run with `--no-raw` sends no lines for the hub's buffer either.
 - The hub has no TLS of its own: put it behind a reverse proxy with HTTPS. A collector warns when it pushes to plain `http://` beyond localhost.

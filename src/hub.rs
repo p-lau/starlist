@@ -650,8 +650,8 @@ fn enc(s: &str) -> String {
 
 const INSTRUCTIONS: &str = "\
 Distilled, redacted view of the logs of several services, pushed here by their collectors. Lines are grouped into patterns with stable IDs, per service.
-Every tool takes `service` (list_services names them). whats_new without it covers every service; get_request without it follows one request across all of them.
-Flow: whats_new -> get_pattern (get_context for surrounding lines, get_request for a request's path through the services) -> ship a fix -> verify_fix(pattern_id, since=marker, service).
+Every tool takes `service` (list_services names them). whats_new and diagnose without it cover every service; get_request without it follows one request across all of them.
+Flow: diagnose -> get_pattern (get_context for surrounding lines, get_request for a request's path through the services) -> ship a fix -> verify_fix(pattern_id, since=marker, service).
 Times: '30m', '2h', ISO time, or marker name. Output is brief by default; pass detail='full' for more.";
 
 /// MCP on a hub: the collector tools with a `service` argument, plus
@@ -676,7 +676,7 @@ impl HubServer {
                     .or_insert_with(|| json!({}));
                 if let Some(p) = props.as_object_mut() {
                     let desc = match t.name.as_ref() {
-                        "whats_new" => "Service to ask, from list_services. Leave it out to cover every service.",
+                        "whats_new" | "diagnose" => "Service to ask, from list_services. Leave it out to cover every service.",
                         "get_request" => "Service to ask. Leave it out to follow the request across every service.",
                         _ => "Service to ask, from list_services. Can be left out when there is one service, or when a pattern_id says which.",
                     };
@@ -831,7 +831,10 @@ impl ServerHandler for HubServer {
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
             return Ok(text_result(r));
         }
-        if service.is_none() && name == "whats_new" && self.hub.names().len() > 1 {
+        if service.is_none()
+            && matches!(name.as_str(), "whats_new" | "diagnose")
+            && self.hub.names().len() > 1
+        {
             // Each service answers within its share of the budget.
             let names = self.hub.names();
             let full = args.get("detail").and_then(|v| v.as_str()) == Some("full");

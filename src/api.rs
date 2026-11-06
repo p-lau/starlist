@@ -40,6 +40,7 @@ pub fn routes(state: ApiState) -> Router {
         .route("/status", get(status))
         .route("/timeline", get(timeline))
         .route("/whats-new", get(whats_new))
+        .route("/diagnose", get(diagnose))
         .route("/patterns", get(patterns))
         .route("/patterns/{id}", get(pattern))
         .route("/patterns/{id}/verify", get(verify))
@@ -335,6 +336,33 @@ async fn timeline(
 }
 
 #[derive(Deserialize)]
+struct DiagnoseQ {
+    window: Option<String>,
+    min_level: Option<String>,
+    limit: Option<usize>,
+}
+
+/// The same answer as the MCP `diagnose` tool, in full detail.
+async fn diagnose(
+    State(s): State<ApiState>,
+    q: Result<Query<DiagnoseQ>, QueryRejection>,
+) -> ApiResult {
+    let Query(q) = q?;
+    blocking(move || {
+        crate::diagnose::diagnose(
+            &s.store,
+            q.window.as_deref(),
+            q.min_level.as_deref(),
+            q.limit.unwrap_or(5).clamp(1, 20),
+            usize::MAX,
+            analysis::Detail::Full,
+            analysis::now(),
+        )
+    })
+    .await
+}
+
+#[derive(Deserialize)]
 struct WhatsNewQ {
     window: Option<String>,
     baseline: Option<String>,
@@ -384,7 +412,7 @@ async fn whats_new(
             "window": {"from": iso(data.window_from), "to": iso(now), "since_deploy": nw.deploy},
             "baseline": {"from": iso(data.baseline_from), "to": iso(data.window_from)},
             "summary": data.summary(),
-            "counts": {"new": t[0], "regressed": data.regressed, "returning": t[1], "spike": t[2], "gone_quiet": t[3]},
+            "counts": {"new": t[0], "regressed": data.regressed, "returning": t[1], "spike": t[2], "rising": t[4], "gone_quiet": t[3]},
             "traffic": {
                 "events_window": data.events_in_window,
                 "events_baseline": data.events_in_baseline,

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 pub type AResult = Result<Value, String>;
 
-const TEMPLATE_CHARS: usize = 240;
+pub(crate) const TEMPLATE_CHARS: usize = 240;
 const SAMPLE_CHARS: usize = 600;
 const BRIEF_SAMPLE_CHARS: usize = 400;
 /// In brief mode only the top findings carry a sample.
@@ -31,7 +31,7 @@ impl Detail {
             Some(o) => Err(format!("detail must be 'brief' or 'full', got '{o}'")),
         }
     }
-    fn full(self) -> bool {
+    pub(crate) fn full(self) -> bool {
         self == Detail::Full
     }
 }
@@ -383,7 +383,7 @@ pub fn fmt_time(ts: f64, now: f64) -> String {
 }
 
 /// Relative time only in brief mode ("52m ago"); ISO plus relative in full.
-fn fmt_t(ts: f64, now: f64, d: Detail) -> String {
+pub(crate) fn fmt_t(ts: f64, now: f64, d: Detail) -> String {
     if d.full() {
         return fmt_time(ts, now);
     }
@@ -404,7 +404,7 @@ fn count_str(count: i64, secs: f64) -> String {
     )
 }
 
-fn per_hour(count: i64, secs: f64) -> f64 {
+pub(crate) fn per_hour(count: i64, secs: f64) -> f64 {
     if secs <= 0.0 {
         0.0
     } else {
@@ -451,7 +451,7 @@ pub(crate) fn duration_arg(s: &str, what: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("{what} must be a duration like '1h' or '30m', got '{s}'"))
 }
 
-fn sample_text(text: &str, d: Detail) -> String {
+pub(crate) fn sample_text(text: &str, d: Detail) -> String {
     if d.full() {
         truncate(text, SAMPLE_CHARS)
     } else {
@@ -510,7 +510,7 @@ pub(crate) fn min_level_filter(min_level: Option<&str>) -> Result<u8, String> {
     }
 }
 
-fn markers_between(
+pub(crate) fn markers_between(
     store: &Store,
     lo: f64,
     hi: f64,
@@ -532,7 +532,7 @@ fn markers_between(
 #[derive(Debug, Clone)]
 pub struct Finding {
     pub row: PatternRow,
-    /// "new", "returning", "spike" or "gone_quiet".
+    /// "new", "regressed", "returning", "spike", "rising" or "gone_quiet".
     pub kind: &'static str,
     pub count_window: i64,
     pub count_baseline: i64,
@@ -556,8 +556,8 @@ pub struct WhatsNewData {
     pub traffic: f64,
     /// Patterns with events in the window.
     pub active: usize,
-    /// Findings per kind: new, returning, spike, gone_quiet.
-    pub tally: [usize; 4],
+    /// Findings per kind: new, returning, spike, gone_quiet, rising.
+    pub tally: [usize; 5],
     /// Resolved patterns that came back.
     pub regressed: usize,
     pub findings: Vec<Finding>,
@@ -577,8 +577,13 @@ impl WhatsNewData {
             } else {
                 String::new()
             };
+            let rising = if t[4] > 0 {
+                format!("{} rising, ", t[4])
+            } else {
+                String::new()
+            };
             format!(
-                "{} new, {regressed}{} returning, {} spiking, {} gone quiet. {} events across {} patterns in the window.",
+                "{} new, {regressed}{} returning, {} spiking, {rising}{} gone quiet. {} events across {} patterns in the window.",
                 t[0], t[1], t[2], t[3], self.events_in_window, self.active
             )
         }
@@ -611,9 +616,10 @@ pub fn whats_new_data(
 
     let states = crate::issues::States::load(store)?;
     let rel = Releases::load(store)?;
+    let rises = crate::diagnose::rises(store, w, now)?;
     // (group, level, kind order, count) for sorting; group 1 = good news, listed last.
     let mut found: Vec<((u8, u8, u8, i64), Finding)> = vec![];
-    let mut tally = [0usize; 4];
+    let mut tally = [0usize; 5];
     let mut regressed = 0;
     for SplitStat { row, before, after } in stats {
         let lvl = level_rank(row.level.as_deref());
@@ -660,6 +666,8 @@ pub fn whats_new_data(
                 format!("{x:.1}x its baseline rate.")
             };
             ("spike", 2, Some(note))
+        } else if let Some(r) = rises.get(&row.id) {
+            ("rising", 2, Some(r.note()))
         } else if after == 0 && (before as f64) * w / b >= 5.0 {
             (
                 "gone_quiet",
@@ -672,7 +680,7 @@ pub fn whats_new_data(
         } else {
             continue;
         };
-        tally[order as usize] += 1;
+        tally[if kind == "rising" { 4 } else { order as usize }] += 1;
         let group = u8::from(kind == "gone_quiet");
         found.push((
             (group, 4 - lvl, order, -after),
