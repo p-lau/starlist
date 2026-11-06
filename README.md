@@ -61,6 +61,10 @@ Agents don't have to poll. starlist exposes `whats_new` as the MCP resource `sta
 
 Without a connected agent, pass `--notify-url https://...` (or `STARLIST_NOTIFY_URL`) to `serve`, `collect` or `mcp`, and each alert is POSTed there as JSON (`summary`, `findings`). `--no-alerts` turns both off.
 
+### Dashboard
+
+`starlist serve` also serves a small dashboard at `http://127.0.0.1:7341/`: log volume by level with deploys marked, what's new, a searchable pattern list with trends, each pattern's samples, locations, surrounding lines and requests, a "did the fix work?" check, and what changed around each deploy. It's about 50 KB, loads nothing from elsewhere, and uses the same token as the API. Release builds include it; see [dashboard/README.md](dashboard/README.md) to build it yourself. `--no-dashboard` turns it off.
+
 ### JSON API for your own UI
 
 The same process serves a plain JSON API at `http://127.0.0.1:7341/api/v1`, for dashboards, scripts and custom UIs: status, event counts over time, `whats-new`, patterns, verify, compare, context lines, requests, markers, and a server-sent event stream of alerts. It returns data rather than agent summaries (ISO times, numbers, full samples) and has the same protection as `/mcp`. Calling it from a page on another origin needs `--cors-origin http://localhost:5173`; `--no-api` serves MCP only. See [docs/api.md](docs/api.md).

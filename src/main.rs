@@ -186,6 +186,9 @@ struct McpArgs {
     /// "http://localhost:5173" (repeatable). Off by default.
     #[arg(long = "cors-origin")]
     cors_origins: Vec<String>,
+    /// Don't serve the dashboard at http://ADDR/.
+    #[arg(long)]
+    no_dashboard: bool,
 }
 
 fn parse_size(s: &str) -> Result<i64, String> {
@@ -342,6 +345,7 @@ async fn run_mcp(
             alerts,
             api,
             cors_origins: mcp.cors_origins.clone(),
+            dashboard: api && !mcp.no_dashboard,
         },
     );
     let listener = tokio::net::TcpListener::bind(&mcp.http)
@@ -351,6 +355,14 @@ async fn run_mcp(
     eprintln!("starlist: MCP endpoint http://{addr}/mcp");
     if api {
         eprintln!("starlist: JSON API http://{addr}/api/v1");
+        if !mcp.no_dashboard {
+            let note = if starlist::dashboard::embedded() {
+                ""
+            } else {
+                " (not built into this binary; see dashboard/README.md)"
+            };
+            eprintln!("starlist: dashboard http://{addr}/{note}");
+        }
     }
     axum::serve(listener, router)
         .with_graceful_shutdown(async {

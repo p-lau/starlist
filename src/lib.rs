@@ -4,6 +4,7 @@ pub mod alerts;
 pub mod analysis;
 pub mod api;
 pub mod collector;
+pub mod dashboard;
 pub mod http;
 pub mod location;
 pub mod merge;

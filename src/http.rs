@@ -48,6 +48,8 @@ pub struct HttpConfig {
     pub api: bool,
     /// Origins allowed to call the API from a browser (CORS).
     pub cors_origins: Vec<String>,
+    /// Serve the dashboard at `/` (needs the API).
+    pub dashboard: bool,
 }
 
 /// The `/mcp` endpoint only (and the API, which is on by default).
@@ -65,11 +67,12 @@ pub fn router(
             alerts,
             api: true,
             cors_origins: vec![],
+            dashboard: false,
         },
     )
 }
 
-/// The HTTP server: `/mcp` and, unless turned off, `/api/v1`.
+/// The HTTP server: `/mcp` and, unless turned off, `/api/v1` and the dashboard at `/`.
 ///
 /// - With a token, every request needs `Authorization: Bearer <token>`. The Host
 ///   check is then only applied if `allowed_hosts` is given, since a browser on a
@@ -119,7 +122,12 @@ pub fn app(store: Arc<Store>, cfg: HttpConfig) -> axum::Router {
     // The guard is outside the token check so CORS preflights, which carry no
     // credentials, get an answer.
     let api = api.layer(middleware::from_fn_with_state(guard, guard_api));
-    mcp.nest("/api/v1", api)
+    let router = mcp.nest("/api/v1", api);
+    if cfg.dashboard {
+        router.fallback(crate::dashboard::serve)
+    } else {
+        router
+    }
 }
 
 struct Guard {
