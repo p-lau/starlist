@@ -55,6 +55,12 @@ STARLIST_VERSION=v1.4.3 ./target/release/starlist serve --file app.log
 
 Claude Code: `claude mcp add --transport http logs http://127.0.0.1:7341/mcp`
 
+### Alerts
+
+Agents don't have to poll. starlist exposes `whats_new` as the MCP resource `starlist://whats-new`; a client that subscribes gets `notifications/resources/updated` within seconds of a new, returning or spiking ERROR/FATAL pattern, then reads the resource (it includes `latest_alert`). One incident is one notification: patterns found together are gathered for 10 seconds, alerts are at least a minute apart, and a pattern isn't alerted again for 30 minutes.
+
+Without a connected agent, pass `--notify-url https://...` (or `STARLIST_NOTIFY_URL`) to `serve`, `collect` or `mcp`, and each alert is POSTed there as JSON (`summary`, `findings`). `--no-alerts` turns both off.
+
 ### Security, privacy and time zones
 
 - On localhost (the default) no token is needed, and only loopback `Host` headers are accepted, which blocks DNS-rebinding tricks from a browser.

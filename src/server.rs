@@ -1,15 +1,23 @@
 //! MCP surface: a handful of tools that answer from the local store.
 
+use crate::alerts::{Alerts, RESOURCE_URI};
 use crate::analysis::{self, AResult, Detail, Page};
 use crate::store::Store;
 use rmcp::{
-    ServerHandler,
+    ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{Implementation, ServerCapabilities, ServerConfig},
-    schemars, tool, tool_handler, tool_router,
+    model::{
+        Implementation, ListResourcesResult, PaginatedRequestParams, ReadResourceRequestParams,
+        ReadResourceResponse, ReadResourceResult, Resource, ResourceContents,
+        ResourceUpdatedNotificationParam, ServerCapabilities, ServerConfig, SubscribeRequestParams,
+        SubscriptionFilter, UnsubscribeRequestParams,
+    },
+    schemars,
+    service::{RequestContext, SubscriptionContext},
+    tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const INSTRUCTIONS: &str = "\
 Distilled, redacted view of one app's logs. Lines are grouped into patterns with stable IDs.
@@ -142,6 +150,9 @@ pub struct ListMarkersArgs {
 pub struct LogServer {
     store: Arc<Store>,
     tool_router: ToolRouter<Self>,
+    alerts: Option<Arc<Alerts>>,
+    /// Sessions that used the older `resources/subscribe`.
+    legacy_watch: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 fn out(r: AResult) -> Result<String, String> {
@@ -164,7 +175,33 @@ impl LogServer {
         Self {
             store,
             tool_router: Self::tool_router(),
+            alerts: None,
+            legacy_watch: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Let clients subscribe to the whats_new resource and get alerts.
+    pub fn with_alerts(mut self, alerts: Option<Arc<Alerts>>) -> Self {
+        self.alerts = alerts;
+        self
+    }
+
+    /// The resource body: whats_new for the last hour plus the latest alert.
+    fn whats_new_resource(&self) -> Result<String, String> {
+        let now = analysis::now();
+        let mut v = analysis::whats_new(
+            &self.store,
+            "1h",
+            "24h",
+            None,
+            &Page::first(10, Detail::Brief),
+            Detail::Brief,
+            now,
+        )?;
+        if let Some(a) = self.alerts.as_ref().and_then(|a| a.latest()) {
+            v["latest_alert"] = a.to_json(now);
+        }
+        out(Ok(v))
     }
 
     #[tool(
@@ -340,8 +377,159 @@ impl LogServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for LogServer {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        let caps = if self.alerts.is_some() {
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_resources_subscribe()
+                .build()
+        } else {
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build()
+        };
+        ServerConfig::new(caps)
             .with_server_info(Implementation::new("starlist", env!("CARGO_PKG_VERSION")))
             .with_instructions(INSTRUCTIONS)
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult::with_all_items(vec![
+            Resource::new(RESOURCE_URI, "whats_new")
+                .with_description(
+                    "whats_new for the last hour, plus the latest alert. Subscribe to hear about new or spiking errors within seconds.",
+                )
+                .with_mime_type("application/json"),
+        ]))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        if request.uri != RESOURCE_URI {
+            return Err(McpError::resource_not_found(
+                format!(
+                    "Unknown resource '{}'. The only resource is {RESOURCE_URI}.",
+                    request.uri
+                ),
+                None,
+            ));
+        }
+        let text = self
+            .whats_new_resource()
+            .map_err(|e| McpError::internal_error(e, None))?;
+        let mut contents = ResourceContents::text(text, RESOURCE_URI);
+        if let ResourceContents::TextResourceContents { mime_type, .. } = &mut contents {
+            *mime_type = Some("application/json".into());
+        }
+        Ok(ReadResourceResult::new(vec![contents]).into())
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        self.alerts.as_ref()?;
+        let wants = requested
+            .resource_subscriptions
+            .as_ref()
+            .is_some_and(|u| u.iter().any(|u| u == RESOURCE_URI));
+        Some(if wants {
+            SubscriptionFilter::builder()
+                .resource_subscription(RESOURCE_URI)
+                .build()
+        } else {
+            SubscriptionFilter::new()
+        })
+    }
+
+    async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
+        let subscribed = context
+            .accepted()
+            .resource_subscriptions
+            .as_ref()
+            .is_some_and(|u| u.iter().any(|u| u == RESOURCE_URI));
+        let Some(alerts) = self.alerts.as_ref().filter(|_| subscribed) else {
+            context.cancelled().await;
+            return Ok(());
+        };
+        let mut rx = alerts.subscribe();
+        loop {
+            tokio::select! {
+                _ = context.cancelled() => return Ok(()),
+                msg = rx.recv() => match msg {
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if context.sink().notify_resource_updated(RESOURCE_URI).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+                },
+            }
+        }
+    }
+
+    #[allow(deprecated)]
+    async fn subscribe(
+        &self,
+        request: SubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        let Some(alerts) = &self.alerts else {
+            return Err(McpError::invalid_request(
+                "Alerts are off for this server.",
+                None,
+            ));
+        };
+        if request.uri != RESOURCE_URI {
+            return Err(McpError::resource_not_found(
+                format!("Only {RESOURCE_URI} can be subscribed to."),
+                None,
+            ));
+        }
+        let mut rx = alerts.subscribe();
+        let peer = context.peer.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let p = ResourceUpdatedNotificationParam::new(RESOURCE_URI);
+                        if peer.notify_resource_updated(p).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+        let mut slot = self.legacy_watch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = slot.replace(task) {
+            old.abort();
+        }
+        Ok(())
+    }
+
+    #[allow(deprecated)]
+    async fn unsubscribe(
+        &self,
+        _request: UnsubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        if let Some(t) = self
+            .legacy_watch
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            t.abort();
+        }
+        Ok(())
     }
 }

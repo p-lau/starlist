@@ -1,5 +1,6 @@
 //! starlist: a log collector that distills an application's logs for AI agents over MCP.
 
+pub mod alerts;
 pub mod analysis;
 pub mod collector;
 pub mod http;

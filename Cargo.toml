@@ -17,6 +17,7 @@ clap = { version = "4", features = ["derive", "env"] }
 axum = "0.8"
 anyhow = "1"
 getrandom = "0.4"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 # The MCP client is only used by the example agent and the end-to-end test.

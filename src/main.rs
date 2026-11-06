@@ -29,11 +29,15 @@ enum Cmd {
         src: SourceArgs,
         #[command(flatten)]
         mcp: McpArgs,
+        #[command(flatten)]
+        alerts: AlertArgs,
     },
     /// Collect logs only; run `starlist mcp` separately against the same --db.
     Collect {
         #[command(flatten)]
         src: SourceArgs,
+        #[command(flatten)]
+        alerts: AlertArgs,
     },
     /// Serve MCP from an existing database without collecting.
     Mcp {
@@ -41,6 +45,8 @@ enum Cmd {
         db: PathBuf,
         #[command(flatten)]
         mcp: McpArgs,
+        #[command(flatten)]
+        alerts: AlertArgs,
     },
     /// Import existing log files from the beginning, then exit.
     Ingest {
@@ -62,6 +68,35 @@ enum Cmd {
         #[arg(long, default_value = "starlist.db")]
         db: PathBuf,
     },
+}
+
+#[derive(Args, Clone)]
+struct AlertArgs {
+    /// POST a JSON alert here when a new or spiking ERROR/FATAL pattern appears
+    /// (for setups without a connected agent).
+    #[arg(long, env = "STARLIST_NOTIFY_URL")]
+    notify_url: Option<String>,
+    /// Turn off alerts: no resource subscriptions and no webhook.
+    #[arg(long)]
+    no_alerts: bool,
+}
+
+impl AlertArgs {
+    /// Start the alert watcher if anything can receive alerts.
+    fn start(
+        &self,
+        store: &Arc<Store>,
+        serving_mcp: bool,
+    ) -> Option<Arc<starlist::alerts::Alerts>> {
+        if self.no_alerts || (!serving_mcp && self.notify_url.is_none()) {
+            return None;
+        }
+        let cfg = starlist::alerts::AlertConfig {
+            notify_url: self.notify_url.clone(),
+            ..Default::default()
+        };
+        Some(starlist::alerts::spawn_watcher(store.clone(), cfg))
+    }
 }
 
 #[derive(Args, Clone)]
@@ -275,17 +310,23 @@ fn start_collection(
     Ok(None)
 }
 
-async fn run_mcp(store: Arc<Store>, mcp: &McpArgs, db: &Path) -> Result<()> {
+async fn run_mcp(
+    store: Arc<Store>,
+    mcp: &McpArgs,
+    db: &Path,
+    alerts: Option<Arc<starlist::alerts::Alerts>>,
+) -> Result<()> {
     if mcp.stdio {
         eprintln!("starlist: serving MCP over stdio");
         let svc = LogServer::new(store)
+            .with_alerts(alerts)
             .serve(rmcp::transport::stdio())
             .await?;
         svc.waiting().await?;
         return Ok(());
     }
     let token = resolve_token(mcp, db)?;
-    let router = starlist::http::router(store, token, mcp.allowed_hosts.clone());
+    let router = starlist::http::router(store, token, mcp.allowed_hosts.clone(), alerts);
     let listener = tokio::net::TcpListener::bind(&mcp.http)
         .await
         .with_context(|| format!("binding {}", mcp.http))?;
@@ -305,7 +346,7 @@ async fn run_mcp(store: Arc<Store>, mcp: &McpArgs, db: &Path) -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Serve { src, mcp } => {
+        Cmd::Serve { src, mcp, alerts } => {
             if mcp.stdio && src.stdin {
                 bail!(
                     "--stdin can't be combined with --stdio (both use standard input); use HTTP or --file"
@@ -313,10 +354,12 @@ async fn main() -> Result<()> {
             }
             let store = open_store(&src.opts.db)?;
             start_collection(&src, store.clone())?;
-            run_mcp(store, &mcp, &src.opts.db).await
+            let alerts = alerts.start(&store, true);
+            run_mcp(store, &mcp, &src.opts.db, alerts).await
         }
-        Cmd::Collect { src } => {
+        Cmd::Collect { src, alerts } => {
             let store = open_store(&src.opts.db)?;
+            let _alerts = alerts.start(&store, false);
             match start_collection(&src, store)? {
                 Some(h) => {
                     let _ = tokio::task::spawn_blocking(move || h.join()).await;
@@ -327,7 +370,11 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Mcp { db, mcp } => run_mcp(open_store(&db)?, &mcp, &db).await,
+        Cmd::Mcp { db, mcp, alerts } => {
+            let store = open_store(&db)?;
+            let alerts = alerts.start(&store, true);
+            run_mcp(store, &mcp, &db, alerts).await
+        }
         Cmd::Ingest { files, opts } => {
             let store = open_store(&opts.db)?;
             let p = pipeline(&opts, store)?;

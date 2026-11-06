@@ -15,7 +15,7 @@ async fn serve(token: Option<&str>) -> String {
     let db = std::env::temp_dir().join(format!("starlist-auth-{}-{n}.db", std::process::id()));
     let _ = std::fs::remove_file(&db);
     let store = Arc::new(Store::open(&db).unwrap());
-    let router = starlist::http::router(store, token.map(str::to_string), vec![]);
+    let router = starlist::http::router(store, token.map(str::to_string), vec![], None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router).await });
