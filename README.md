@@ -27,7 +27,8 @@ Output is built for agent context. By default it's brief: compact JSON, relative
 1. **Collect**: follows files like `tail -F` (rotation-safe) or reads stdin; groups stack-trace lines with the log line that produced them.
 2. **Redact** before storing: emails, IPs, bearer tokens, JWTs, API keys (OpenAI, GitHub, Slack, Stripe, AWS), `password=`-style values, Luhn-valid card numbers, private keys, plus your own `--redact REGEX`.
 3. **Pattern**: masks numbers, IDs, UUIDs, hex, quoted strings and timestamps; the pattern ID is a hash of that template, so it is the same across restarts and hosts. The exception type is part of the pattern (`... | KeyError`).
-4. **Store**: SQLite (WAL) with per-10s counts, 5 recent samples per pattern, and markers. Counts kept 7 days by default.
+4. **Merge**: when patterns differ in just one word (a username, a hostname without digits) and that word has taken 5 different values, they are merged into one pattern with `<*>` there (`user=<*>` keeps the key). The oldest pattern's ID stays, and the merged IDs keep resolving to it, so IDs an agent already holds still work. Five values is high enough that status words like `started` / `failed` stay separate. Tune with `--merge-after N`, or `0` to turn it off.
+5. **Store**: SQLite (WAL) with per-10s counts, 5 recent samples per pattern, and markers. Counts kept 7 days by default.
 
 ## Run it
 
@@ -61,7 +62,6 @@ cargo run --release --example ask -- http://127.0.0.1:7341/mcp verify_fix '{"pat
 
 ## Known limits (prototype)
 
-- Masking is rule-based: variable words without digits (e.g. usernames) can split one pattern into several. A Drain-style clusterer would fix this but would make IDs less stable.
 - Timestamps without a timezone are read as UTC; lines without timestamps get the time they were read.
 - HTTP binds to localhost with no auth. Add tokens/TLS before exposing it.
 - No hub yet for many apps; collectors would push events to one optional hub.

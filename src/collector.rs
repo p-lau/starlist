@@ -1,6 +1,7 @@
 //! The always-on part: reads log lines from files or stdin, groups them into
 //! events, redacts, and records them in the store.
 
+use crate::merge::Merger;
 use crate::pattern::{Assembler, Event, parse_event};
 use crate::redact::Redactor;
 use crate::store::Store;
@@ -8,7 +9,7 @@ use regex::Regex;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,11 +27,24 @@ pub struct Pipeline {
     pub store: Arc<Store>,
     redactor: Redactor,
     marker_re: Option<Regex>,
+    merger: Option<Mutex<Merger>>,
 }
 
 impl Pipeline {
     pub fn new(store: Arc<Store>, redactor: Redactor, marker_re: Option<Regex>) -> Self {
-        Self { store, redactor, marker_re }
+        Self::with_merging(store, redactor, marker_re, Some(crate::merge::DEFAULT_THRESHOLD))
+    }
+
+    /// `merge_after`: merge patterns differing in one word once that word has
+    /// taken this many values; `None` turns merging off.
+    pub fn with_merging(store: Arc<Store>, redactor: Redactor, marker_re: Option<Regex>, merge_after: Option<usize>) -> Self {
+        let merger = merge_after.map(|t| {
+            Mutex::new(Merger::load(t, &store).unwrap_or_else(|e| {
+                eprintln!("starlist: could not load patterns for merging: {e}");
+                Merger::new(t)
+            }))
+        });
+        Self { store, redactor, marker_re, merger }
     }
 
     pub fn parse(&self, text: &str, now: f64) -> Event {
@@ -45,7 +59,24 @@ impl Pipeline {
             return;
         }
         let now = crate::analysis::now();
-        let events: Vec<Event> = texts.iter().map(|t| self.parse(t, now)).collect();
+        let mut events: Vec<Event> = texts.iter().map(|t| self.parse(t, now)).collect();
+        if let Some(m) = &self.merger {
+            let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
+            for e in events.iter_mut() {
+                if let Some(op) = m.resolve(e) {
+                    match self.store.merge_patterns(&op) {
+                        Ok(()) => eprintln!("starlist: merged {} patterns into {}: {}", op.aliases.len(), op.canonical, op.template),
+                        Err(err) => eprintln!("starlist: merge failed: {err}"),
+                    }
+                }
+            }
+            // Earlier events in this batch may belong to a pattern that was just merged.
+            for e in events.iter_mut() {
+                if let Some(c) = m.canonical_of(&e.pattern_id).map(str::to_string) {
+                    e.pattern_id = c;
+                }
+            }
+        }
         if let Err(e) = self.store.record(&events) {
             eprintln!("starlist: failed to record events: {e}");
         }

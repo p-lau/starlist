@@ -77,6 +77,9 @@ struct PipelineArgs {
     /// Turn off deploy detection from log lines.
     #[arg(long)]
     no_auto_markers: bool,
+    /// Merge patterns that differ in one word once it has taken this many values (0 turns merging off).
+    #[arg(long, default_value_t = starlist::merge::DEFAULT_THRESHOLD)]
+    merge_after: usize,
 }
 
 #[derive(Args, Clone)]
@@ -121,7 +124,8 @@ fn pipeline(opts: &PipelineArgs, store: Arc<Store>) -> Result<Pipeline> {
     } else {
         Some(Regex::new(&opts.marker_regex).context("bad --marker-regex")?)
     };
-    Ok(Pipeline::new(store, Redactor::new(!opts.keep_ips, extra), marker))
+    let merge = (opts.merge_after > 0).then_some(opts.merge_after);
+    Ok(Pipeline::with_merging(store, Redactor::new(!opts.keep_ips, extra), marker, merge))
 }
 
 /// Start collection threads. Returns a handle that finishes when stdin closes (if reading stdin).
