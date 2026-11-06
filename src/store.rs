@@ -506,6 +506,47 @@ impl Store {
         Ok(out)
     }
 
+    /// Event counts per level per `step` seconds from `lo` up to `hi`, oldest
+    /// first. Lines without a level are reported as INFO, as elsewhere.
+    pub fn level_series(&self, lo: f64, hi: f64, step: f64) -> R<Vec<(String, Vec<i64>)>> {
+        let slots = ((hi - lo) / step).ceil().max(1.0) as usize;
+        let mut out: Vec<(String, Vec<i64>)> = vec![];
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT COALESCE(p.level, 'INFO'), c.bucket, SUM(c.n)
+             FROM counts c JOIN patterns p ON p.id = c.pattern_id
+             WHERE c.bucket >= ?1 AND c.bucket <= ?2
+             GROUP BY 1, c.bucket",
+        )?;
+        let rows = st.query_map(params![bucket_of(lo), bucket_of(hi)], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (level, b, n) = row?;
+            let t = b as f64 * BUCKET_SECS;
+            let i = (((t - lo) / step).floor().max(0.0) as usize).min(slots - 1);
+            let k = match out.iter().position(|(l, _)| *l == level) {
+                Some(k) => k,
+                None => {
+                    out.push((level, vec![0; slots]));
+                    out.len() - 1
+                }
+            };
+            out[k].1[i] += n;
+        }
+        Ok(out)
+    }
+
+    /// Number of patterns (merged ones count once).
+    pub fn pattern_count(&self) -> R<i64> {
+        self.conn()
+            .query_row("SELECT COUNT(*) FROM patterns", [], |r| r.get(0))
+    }
+
     /// Code locations of a pattern's events, most frequent first.
     pub fn locations(&self, pattern_id: &str, limit: i64) -> R<Vec<(String, i64)>> {
         let conn = self.conn();

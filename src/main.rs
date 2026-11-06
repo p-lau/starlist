@@ -179,6 +179,13 @@ struct McpArgs {
     /// Host-header checks on when listening beyond localhost.
     #[arg(long = "allowed-host")]
     allowed_hosts: Vec<String>,
+    /// Don't serve the JSON API at /api/v1 (MCP only).
+    #[arg(long)]
+    no_api: bool,
+    /// Let a web UI on this origin call the API from a browser, like
+    /// "http://localhost:5173" (repeatable). Off by default.
+    #[arg(long = "cors-origin")]
+    cors_origins: Vec<String>,
 }
 
 fn parse_size(s: &str) -> Result<i64, String> {
@@ -326,14 +333,25 @@ async fn run_mcp(
         return Ok(());
     }
     let token = resolve_token(mcp, db)?;
-    let router = starlist::http::router(store, token, mcp.allowed_hosts.clone(), alerts);
+    let api = !mcp.no_api;
+    let router = starlist::http::app(
+        store,
+        starlist::http::HttpConfig {
+            token,
+            allowed_hosts: mcp.allowed_hosts.clone(),
+            alerts,
+            api,
+            cors_origins: mcp.cors_origins.clone(),
+        },
+    );
     let listener = tokio::net::TcpListener::bind(&mcp.http)
         .await
         .with_context(|| format!("binding {}", mcp.http))?;
-    eprintln!(
-        "starlist: MCP endpoint http://{}/mcp",
-        listener.local_addr()?
-    );
+    let addr = listener.local_addr()?;
+    eprintln!("starlist: MCP endpoint http://{addr}/mcp");
+    if api {
+        eprintln!("starlist: JSON API http://{addr}/api/v1");
+    }
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

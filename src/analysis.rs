@@ -324,7 +324,7 @@ fn fit_samples(mut v: Value, max_chars: usize) -> Value {
 /// How many occurrences we need to have expected before calling an absence meaningful.
 const MIN_EXPECTED: f64 = 3.0;
 
-fn db<E: std::fmt::Display>(e: E) -> String {
+pub(crate) fn db<E: std::fmt::Display>(e: E) -> String {
     format!("log store error: {e}")
 }
 
@@ -445,7 +445,7 @@ pub fn resolve_time(store: &Store, spec: &str, now: f64) -> Result<(f64, Option<
     }
 }
 
-fn duration_arg(s: &str, what: &str) -> Result<f64, String> {
+pub(crate) fn duration_arg(s: &str, what: &str) -> Result<f64, String> {
     parse_duration(s)
         .filter(|d| *d > 0.0)
         .ok_or_else(|| format!("{what} must be a duration like '1h' or '30m', got '{s}'"))
@@ -501,7 +501,7 @@ fn pattern_brief(row: &PatternRow, rel: &Releases, now: f64, d: Detail) -> Value
     })
 }
 
-fn min_level_filter(min_level: Option<&str>) -> Result<u8, String> {
+pub(crate) fn min_level_filter(min_level: Option<&str>) -> Result<u8, String> {
     match min_level {
         None => Ok(0),
         Some(l) => normalize_level(l)
@@ -528,6 +528,149 @@ fn markers_between(
         .collect())
 }
 
+/// One `whats_new` finding, before formatting.
+#[derive(Debug, Clone)]
+pub struct Finding {
+    pub row: PatternRow,
+    /// "new", "returning", "spike" or "gone_quiet".
+    pub kind: &'static str,
+    pub count_window: i64,
+    pub count_baseline: i64,
+    pub per_hour_window: f64,
+    pub per_hour_baseline: f64,
+    /// Why it was flagged, when the kind alone doesn't say.
+    pub note: Option<String>,
+}
+
+/// The result of `whats_new`, before formatting. Findings are sorted: errors
+/// and news first, patterns that went quiet last.
+#[derive(Debug, Clone)]
+pub struct WhatsNewData {
+    /// Start of the window; the baseline is [baseline_from, window_from).
+    pub window_from: f64,
+    pub baseline_from: f64,
+    pub now: f64,
+    pub events_in_window: i64,
+    pub events_in_baseline: i64,
+    /// Overall log volume in the window relative to the baseline.
+    pub traffic: f64,
+    /// Patterns with events in the window.
+    pub active: usize,
+    /// Findings per kind: new, returning, spike, gone_quiet.
+    pub tally: [usize; 4],
+    pub findings: Vec<Finding>,
+}
+
+impl WhatsNewData {
+    pub fn summary(&self) -> String {
+        if self.findings.is_empty() {
+            format!(
+                "Nothing new: {} events across {} known patterns, all within their usual rates.",
+                self.events_in_window, self.active
+            )
+        } else {
+            let t = self.tally;
+            format!(
+                "{} new, {} returning, {} spiking, {} gone quiet. {} events across {} patterns in the window.",
+                t[0], t[1], t[2], t[3], self.events_in_window, self.active
+            )
+        }
+    }
+}
+
+/// Classify patterns in the last `window` seconds against the `baseline` before it.
+pub fn whats_new_data(
+    store: &Store,
+    window: f64,
+    baseline: f64,
+    min_level: Option<&str>,
+    now: f64,
+) -> Result<WhatsNewData, String> {
+    let (w, b) = (window, baseline);
+    let min_rank = min_level_filter(min_level)?;
+    let split = now - w;
+    let lo = split - b;
+    let stats = store.split_counts(lo, split, now).map_err(db)?;
+    let events_in_window: i64 = stats.iter().map(|s| s.after).sum();
+    let events_in_baseline: i64 = stats.iter().map(|s| s.before).sum();
+    // When the whole app gets busier, every pattern rises with it. Judge spikes
+    // against overall volume so only patterns that grew faster than traffic show up.
+    let traffic = if events_in_baseline > 0 {
+        per_hour(events_in_window, w) / per_hour(events_in_baseline, b).max(0.001)
+    } else {
+        1.0
+    };
+    let active = stats.iter().filter(|s| s.after > 0).count();
+
+    // (group, level, kind order, count) for sorting; group 1 = good news, listed last.
+    let mut found: Vec<((u8, u8, u8, i64), Finding)> = vec![];
+    let mut tally = [0usize; 4];
+    for SplitStat { row, before, after } in stats {
+        let lvl = level_rank(row.level.as_deref());
+        if lvl < min_rank {
+            continue;
+        }
+        let (a_rate, b_rate) = (per_hour(after, w), per_hour(before, b));
+        let (kind, order, note) = if after > 0 && row.first_seen >= split {
+            ("new", 0u8, None)
+        } else if after > 0 && before == 0 {
+            (
+                "returning",
+                1,
+                Some(format!(
+                    "Back after a quiet baseline; first seen {}.",
+                    fmt_t(row.first_seen, now, Detail::Brief)
+                )),
+            )
+        } else if after >= 5 && before > 0 && a_rate >= 3.0 * b_rate * traffic.max(1.0) {
+            let x = a_rate / b_rate.max(0.001);
+            let note = if traffic > 1.2 {
+                format!("{x:.1}x its baseline rate, while overall log volume is {traffic:.1}x.")
+            } else {
+                format!("{x:.1}x its baseline rate.")
+            };
+            ("spike", 2, Some(note))
+        } else if after == 0 && (before as f64) * w / b >= 5.0 {
+            (
+                "gone_quiet",
+                3,
+                Some(format!(
+                    "Expected ~{:.0} in the window from its baseline rate, saw none.",
+                    before as f64 * w / b
+                )),
+            )
+        } else {
+            continue;
+        };
+        tally[order as usize] += 1;
+        let group = u8::from(kind == "gone_quiet");
+        found.push((
+            (group, 4 - lvl, order, -after),
+            Finding {
+                row,
+                kind,
+                count_window: after,
+                count_baseline: before,
+                per_hour_window: a_rate,
+                per_hour_baseline: b_rate,
+                note,
+            },
+        ));
+    }
+    found.sort_by_key(|a| a.0);
+    Ok(WhatsNewData {
+        window_from: split,
+        baseline_from: lo,
+        now,
+        events_in_window,
+        events_in_baseline,
+        traffic,
+        active,
+        tally,
+        findings: found.into_iter().map(|(_, f)| f).collect(),
+    })
+}
+
 /// What changed in the last `window` compared with the `baseline` before it.
 pub fn whats_new(
     store: &Store,
@@ -540,105 +683,47 @@ pub fn whats_new(
 ) -> AResult {
     let w = duration_arg(window, "window")?;
     let b = duration_arg(baseline, "baseline")?;
-    let min_rank = min_level_filter(min_level)?;
-    let split = now - w;
-    let lo = split - b;
-    let stats = store.split_counts(lo, split, now).map_err(db)?;
+    let data = whats_new_data(store, w, b, min_level, now)?;
     let rel = Releases::load(store)?;
-    let events_in_window: i64 = stats.iter().map(|s| s.after).sum();
-    let events_in_baseline: i64 = stats.iter().map(|s| s.before).sum();
-    // When the whole app gets busier, every pattern rises with it. Judge spikes
-    // against overall volume so only patterns that grew faster than traffic show up.
-    let traffic = if events_in_baseline > 0 {
-        per_hour(events_in_window, w) / per_hour(events_in_baseline, b).max(0.001)
-    } else {
-        1.0
-    };
-    let active = stats.iter().filter(|s| s.after > 0).count();
-
-    // (group, kind order, level, count) for sorting; group 1 = good news, listed last.
-    let mut found: Vec<((u8, u8, u8, i64), Value)> = vec![];
-    let mut tally = [0usize; 4];
-    for SplitStat { row, before, after } in &stats {
-        let lvl = level_rank(row.level.as_deref());
-        if lvl < min_rank {
-            continue;
-        }
-        let (a_rate, b_rate) = (per_hour(*after, w), per_hour(*before, b));
-        let (kind, order, note) = if *after > 0 && row.first_seen >= split {
-            ("new", 0u8, String::new())
-        } else if *after > 0 && *before == 0 {
-            (
-                "returning",
-                1,
-                format!(
-                    "Back after a quiet baseline; first seen {}.",
-                    fmt_t(row.first_seen, now, d)
-                ),
-            )
-        } else if *after >= 5 && *before > 0 && a_rate >= 3.0 * b_rate * traffic.max(1.0) {
-            let x = a_rate / b_rate.max(0.001);
-            let note = if traffic > 1.2 {
-                format!("{x:.1}x its baseline rate, while overall log volume is {traffic:.1}x.")
-            } else {
-                format!("{x:.1}x its baseline rate.")
-            };
-            ("spike", 2, note)
-        } else if *after == 0 && (*before as f64) * w / b >= 5.0 {
-            (
-                "gone_quiet",
-                3,
-                format!(
-                    "Expected ~{:.0} in the window from its baseline rate, saw none.",
-                    *before as f64 * w / b
-                ),
-            )
-        } else {
-            continue;
-        };
-        tally[order as usize] += 1;
-        let mut v = pattern_brief(row, &rel, now, d);
-        v["kind"] = json!(kind);
-        if !note.is_empty() {
-            v["note"] = json!(note);
-        }
-        v["count_in_window"] = json!(after);
-        v["per_hour"] = if d.full() {
-            json!({"window": a_rate, "baseline": b_rate})
-        } else {
-            json!(format!("{a_rate} vs {b_rate} baseline"))
-        };
-        let group = u8::from(kind == "gone_quiet");
-        found.push(((group, 4 - lvl, order, -after), v));
-    }
-    found.sort_by_key(|a| a.0);
-    let total = found.len();
-    let findings: Vec<Value> = found
-        .into_iter()
+    let split = data.window_from;
+    let total = data.findings.len();
+    let findings: Vec<Value> = data
+        .findings
+        .iter()
         .skip(page.offset)
         .take(page.limit)
         .enumerate()
-        .map(|(i, (_, mut v))| {
-            if v["kind"] != "gone_quiet"
-                && (d.full() || i < BRIEF_SAMPLES)
-                && let Some(id) = v["pattern_id"].as_str()
-            {
-                v["sample"] = json!(latest_sample(store, id, d));
+        .map(|(i, f)| {
+            let mut v = pattern_brief(&f.row, &rel, now, d);
+            v["kind"] = json!(f.kind);
+            if let Some(n) = &f.note {
+                // The note was written for brief output; redo the time in full mode.
+                v["note"] = json!(if d.full() && f.kind == "returning" {
+                    format!(
+                        "Back after a quiet baseline; first seen {}.",
+                        fmt_t(f.row.first_seen, now, d)
+                    )
+                } else {
+                    n.clone()
+                });
+            }
+            v["count_in_window"] = json!(f.count_window);
+            v["per_hour"] = if d.full() {
+                json!({"window": f.per_hour_window, "baseline": f.per_hour_baseline})
+            } else {
+                json!(format!(
+                    "{} vs {} baseline",
+                    f.per_hour_window, f.per_hour_baseline
+                ))
+            };
+            if f.kind != "gone_quiet" && (d.full() || i < BRIEF_SAMPLES) {
+                v["sample"] = json!(latest_sample(store, &f.row.id, d));
             }
             v
         })
         .collect();
 
-    let summary = if total == 0 {
-        format!(
-            "Nothing new: {events_in_window} events across {active} known patterns, all within their usual rates."
-        )
-    } else {
-        format!(
-            "{} new, {} returning, {} spiking, {} gone quiet. {events_in_window} events across {active} patterns in the window.",
-            tally[0], tally[1], tally[2], tally[3]
-        )
-    };
+    let traffic = data.traffic;
     let traffic_note = (traffic >= 2.0 || traffic <= 0.5)
         .then(|| format!("Overall log volume is {traffic:.1}x its baseline."));
     let head = json!({
@@ -647,11 +732,11 @@ pub fn whats_new(
         } else {
             format!("last {} vs prior {}", fmt_duration(w), fmt_duration(b))
         },
-        "summary": summary,
+        "summary": data.summary(),
         "traffic": if d.full() {
             json!({
-                "per_hour_window": per_hour(events_in_window, w),
-                "per_hour_baseline": per_hour(events_in_baseline, b),
+                "per_hour_window": per_hour(data.events_in_window, w),
+                "per_hour_baseline": per_hour(data.events_in_baseline, b),
                 "note": traffic_note,
             })
         } else {
@@ -663,15 +748,39 @@ pub fn whats_new(
     Ok(paged(head, "findings", findings, total, page, true, now))
 }
 
-/// Did this pattern stop (or drop) after a point in time?
-pub fn verify_fix(
+/// The result of `verify_fix`, before formatting.
+#[derive(Debug, Clone)]
+pub struct FixCheck {
+    pub row: PatternRow,
+    pub split: f64,
+    /// The marker `since` named, if it was one.
+    pub marker: Option<String>,
+    /// fixed, reduced, still_occurring, worse, too_early, appeared_after or not_active_before.
+    pub verdict: &'static str,
+    pub explanation: String,
+    /// Start of the period measured before the split (absent for appeared_after).
+    pub before_from: Option<f64>,
+    pub before_count: i64,
+    pub after_count: i64,
+    pub now: f64,
+    /// Occurrences expected after the split at the old rate.
+    pub expected_after: Option<f64>,
+    /// For "fixed": "high" or "medium".
+    pub confidence: Option<&'static str>,
+    /// For "too_early": minutes until a verdict is meaningful.
+    pub wait_minutes: Option<f64>,
+    /// Set when traffic dropped too much to trust a fixed or reduced verdict.
+    pub caveat: Option<String>,
+}
+
+/// Did this pattern stop (or drop) after a point in time? Typed result.
+pub fn verify_fix_data(
     store: &Store,
     pattern_id: &str,
     since: &str,
     before: Option<&str>,
-    d: Detail,
     now: f64,
-) -> AResult {
+) -> Result<FixCheck, String> {
     let row = store.pattern(pattern_id).map_err(db)?.ok_or_else(|| {
         format!("Unknown pattern_id '{pattern_id}'. Use whats_new or list_patterns to find IDs.")
     })?;
@@ -684,22 +793,29 @@ pub fn verify_fix(
         Some(b) => duration_arg(b, "before")?,
         None => after_secs.max(3600.0),
     };
-    let mut base = json!({
-        "pattern_id": row.id,
-        "level": if d.full() { row.level.clone() } else { None },
-        "template": truncate(&row.template, if d.full() { TEMPLATE_CHARS } else { 120 }),
-        "split": {"at": fmt_t(split, now, d), "marker": marker},
-        "last_seen": fmt_t(row.last_seen, now, d),
-    });
+    let mut out = FixCheck {
+        row: row.clone(),
+        split,
+        marker,
+        verdict: "appeared_after",
+        explanation: String::new(),
+        before_from: None,
+        before_count: 0,
+        after_count: 0,
+        now,
+        expected_after: None,
+        confidence: None,
+        wait_minutes: None,
+        caveat: None,
+    };
 
     if row.first_seen >= split {
-        base["verdict"] = json!("appeared_after");
-        base["explanation"] = json!(format!(
+        out.explanation = format!(
             "This pattern did not exist before the split; it first appeared {}. The change likely introduced it.",
-            fmt_t(row.first_seen, now, d)
-        ));
-        base["after"] = json!({"count": store.count(&row.id, split, now).map_err(db)?});
-        return Ok(base);
+            fmt_t(row.first_seen, now, Detail::Brief)
+        );
+        out.after_count = store.count(&row.id, split, now).map_err(db)?;
+        return Ok(out);
     }
 
     // Measure the "before" rate only while the pattern existed, so a bug that
@@ -730,18 +846,14 @@ pub fn verify_fix(
     let b_rate = b as f64 / before_secs; // per second
     let a_rate = a as f64 / after_secs;
     let expected = b_rate * after_secs;
-    if d.full() {
-        base["before"] = json!({"window": format!("{} before the split", fmt_duration(before_secs)), "count": b, "per_hour": per_hour(b, before_secs)});
-        base["after"] = json!({"window": format!("{} since the split", fmt_duration(after_secs)), "count": a, "per_hour": per_hour(a, after_secs)});
-        base["expected_after_if_unchanged"] = json!((expected * 10.0).round() / 10.0);
-    } else {
-        base["before"] = json!(count_str(b, before_secs));
-        base["after"] = json!(count_str(a, after_secs));
-    }
+    out.before_from = Some(split - before_secs);
+    out.before_count = b;
+    out.after_count = a;
+    out.expected_after = Some((expected * 10.0).round() / 10.0);
 
     let (verdict, explanation) = if b == 0 {
         (
-            "not_active_before".to_string(),
+            "not_active_before",
             format!(
                 "No occurrences in the {} before the split, so there is nothing to compare. Try a longer 'before' window.",
                 fmt_duration(before_secs)
@@ -749,14 +861,13 @@ pub fn verify_fix(
         )
     } else if a == 0 {
         if expected >= MIN_EXPECTED {
-            let conf = if expected >= 2.0 * MIN_EXPECTED {
+            out.confidence = Some(if expected >= 2.0 * MIN_EXPECTED {
                 "high"
             } else {
                 "medium"
-            };
-            base["confidence"] = json!(conf);
+            });
             (
-                "fixed".to_string(),
+                "fixed",
                 format!(
                     "At the old rate about {expected:.0} would have occurred since the split; none did."
                 ),
@@ -765,9 +876,9 @@ pub fn verify_fix(
             let wait = ((MIN_EXPECTED / b_rate - after_secs) / 60.0)
                 .ceil()
                 .max(1.0);
-            base["wait_minutes"] = json!(wait);
+            out.wait_minutes = Some(wait);
             (
-                "too_early".to_string(),
+                "too_early",
                 format!(
                     "None since the split, but at the old rate only ~{expected:.1} were expected yet. Check again in about {wait:.0} minutes."
                 ),
@@ -777,12 +888,12 @@ pub fn verify_fix(
         let ratio = a_rate / b_rate;
         if ratio >= 2.0 {
             (
-                "worse".to_string(),
+                "worse",
                 format!("Happening {ratio:.1}x as often as before the split."),
             )
         } else if ratio <= 0.5 && expected >= MIN_EXPECTED {
             (
-                "reduced".to_string(),
+                "reduced",
                 format!(
                     "Down to {:.0}% of its earlier rate but still occurring.",
                     ratio * 100.0
@@ -790,7 +901,7 @@ pub fn verify_fix(
             )
         } else {
             (
-                "still_occurring".to_string(),
+                "still_occurring",
                 format!(
                     "Still happening at {:.0}% of its earlier rate.",
                     ratio * 100.0
@@ -801,28 +912,110 @@ pub fn verify_fix(
     if (verdict == "fixed" || verdict == "reduced") && tb > 0 {
         let traffic = (ta as f64 / after_secs) / (tb as f64 / before_secs);
         if traffic < 0.3 {
-            base["caveat"] = json!(format!(
+            out.caveat = Some(format!(
                 "Overall log volume dropped to {:.0}% of its earlier rate after the split; low traffic can hide errors.",
                 traffic * 100.0
             ));
         }
     }
-    base["verdict"] = json!(verdict);
-    base["explanation"] = json!(explanation);
-    Ok(base)
+    out.verdict = verdict;
+    out.explanation = explanation;
+    Ok(out)
 }
 
-/// Fleet-wide before/after diff around a deploy or other point in time.
-pub fn compare_deploy(
+/// Did this pattern stop (or drop) after a point in time?
+pub fn verify_fix(
     store: &Store,
-    at: Option<&str>,
+    pattern_id: &str,
+    since: &str,
     before: Option<&str>,
-    page: &Page,
     d: Detail,
     now: f64,
 ) -> AResult {
+    let c = verify_fix_data(store, pattern_id, since, before, now)?;
+    let row = &c.row;
+    let mut base = json!({
+        "pattern_id": row.id,
+        "level": if d.full() { row.level.clone() } else { None },
+        "template": truncate(&row.template, if d.full() { TEMPLATE_CHARS } else { 120 }),
+        "split": {"at": fmt_t(c.split, now, d), "marker": c.marker},
+        "last_seen": fmt_t(row.last_seen, now, d),
+    });
+    match c.before_from {
+        None => {
+            base["verdict"] = json!(c.verdict);
+            base["explanation"] = json!(format!(
+                "This pattern did not exist before the split; it first appeared {}. The change likely introduced it.",
+                fmt_t(row.first_seen, now, d)
+            ));
+            base["after"] = json!({"count": c.after_count});
+        }
+        Some(before_lo) => {
+            let (before_secs, after_secs) = (c.split - before_lo, now - c.split);
+            let (b, a) = (c.before_count, c.after_count);
+            if d.full() {
+                base["before"] = json!({"window": format!("{} before the split", fmt_duration(before_secs)), "count": b, "per_hour": per_hour(b, before_secs)});
+                base["after"] = json!({"window": format!("{} since the split", fmt_duration(after_secs)), "count": a, "per_hour": per_hour(a, after_secs)});
+                base["expected_after_if_unchanged"] = json!(c.expected_after);
+            } else {
+                base["before"] = json!(count_str(b, before_secs));
+                base["after"] = json!(count_str(a, after_secs));
+            }
+            base["confidence"] = json!(c.confidence);
+            base["wait_minutes"] = json!(c.wait_minutes);
+            base["caveat"] = json!(c.caveat);
+            base["verdict"] = json!(c.verdict);
+            base["explanation"] = json!(c.explanation);
+        }
+    }
+    Ok(compact(base))
+}
+
+/// One `compare_deploy` finding, before formatting.
+#[derive(Debug, Clone)]
+pub struct Change {
+    pub row: PatternRow,
+    /// "new_after", "increased", "stopped" or "decreased".
+    pub kind: &'static str,
+    pub count_before: i64,
+    pub count_after: i64,
+    pub per_hour_before: f64,
+    pub per_hour_after: f64,
+}
+
+/// The result of `compare_deploy`, before formatting.
+#[derive(Debug, Clone)]
+pub struct DeployDiff {
+    pub split: f64,
+    pub marker: Option<String>,
+    pub before_from: f64,
+    pub now: f64,
+    pub events_before: i64,
+    pub events_after: i64,
+    /// Changes per kind: new_after, increased, stopped, decreased.
+    pub tally: [usize; 4],
+    pub changes: Vec<Change>,
+}
+
+impl DeployDiff {
+    pub fn summary(&self) -> String {
+        let t = self.tally;
+        format!(
+            "{} new since the split, {} increased, {} stopped, {} decreased.",
+            t[0], t[1], t[2], t[3]
+        )
+    }
+}
+
+/// Fleet-wide before/after diff around a deploy. Typed result.
+pub fn compare_deploy_data(
+    store: &Store,
+    at: Option<&str>,
+    before: Option<&str>,
+    now: f64,
+) -> Result<DeployDiff, String> {
     let rel = Releases::load(store)?;
-    let (split, marker) = match at {
+    let (split, marker) = match at.map(str::trim).filter(|a| !a.is_empty()) {
         Some(at) => resolve_time(store, at, now)?,
         None => match rel.latest() {
             Some((t, n)) => (t, Some(n.to_string())),
@@ -848,10 +1041,10 @@ pub fn compare_deploy(
         1.0
     };
 
-    let mut found: Vec<((u8, u8, u8, i64), Value)> = vec![];
+    let mut found: Vec<((u8, u8, u8, i64), Change)> = vec![];
     let mut tally = [0usize; 4];
-    for SplitStat { row, before, after } in &stats {
-        let (b, a) = (*before, *after);
+    for SplitStat { row, before, after } in stats {
+        let (b, a) = (before, after);
         let b_rate = b as f64 / span;
         let a_rate = a as f64 / after_secs;
         let expected = b_rate * after_secs;
@@ -867,42 +1060,74 @@ pub fn compare_deploy(
             continue;
         };
         tally[order as usize] += 1;
-        let mut v = pattern_brief(row, &rel, now, d);
-        v["kind"] = json!(kind);
-        if d.full() {
-            v["before"] = json!({"count": b, "per_hour": per_hour(b, span)});
-            v["after"] = json!({"count": a, "per_hour": per_hour(a, after_secs)});
-        } else {
-            v["before"] = json!(count_str(b, span));
-            v["after"] = json!(count_str(a, after_secs));
-        }
         let group = u8::from(order >= 2);
+        let key = (
+            group,
+            4 - level_rank(row.level.as_deref()),
+            order,
+            -(a.max(b)),
+        );
         found.push((
-            (
-                group,
-                4 - level_rank(row.level.as_deref()),
-                order,
-                -(a.max(b)),
-            ),
-            v,
+            key,
+            Change {
+                row,
+                kind,
+                count_before: b,
+                count_after: a,
+                per_hour_before: per_hour(b, span),
+                per_hour_after: per_hour(a, after_secs),
+            },
         ));
     }
     found.sort_by_key(|x| x.0);
-    let total = found.len();
-    let findings: Vec<Value> = found
-        .into_iter()
+    Ok(DeployDiff {
+        split,
+        marker,
+        before_from: lo,
+        now,
+        events_before: tb,
+        events_after: ta,
+        tally,
+        changes: found.into_iter().map(|(_, c)| c).collect(),
+    })
+}
+
+/// Fleet-wide before/after diff around a deploy or other point in time.
+pub fn compare_deploy(
+    store: &Store,
+    at: Option<&str>,
+    before: Option<&str>,
+    page: &Page,
+    d: Detail,
+    now: f64,
+) -> AResult {
+    let diff = compare_deploy_data(store, at, before, now)?;
+    let rel = Releases::load(store)?;
+    let (span, after_secs) = (diff.split - diff.before_from, now - diff.split);
+    let total = diff.changes.len();
+    let findings: Vec<Value> = diff
+        .changes
+        .iter()
         .skip(page.offset)
         .take(page.limit)
-        .map(|(_, v)| v)
+        .map(|c| {
+            let mut v = pattern_brief(&c.row, &rel, now, d);
+            v["kind"] = json!(c.kind);
+            if d.full() {
+                v["before"] = json!({"count": c.count_before, "per_hour": c.per_hour_before});
+                v["after"] = json!({"count": c.count_after, "per_hour": c.per_hour_after});
+            } else {
+                v["before"] = json!(count_str(c.count_before, span));
+                v["after"] = json!(count_str(c.count_after, after_secs));
+            }
+            v
+        })
         .collect();
     let head = json!({
-        "split": {"at": fmt_t(split, now, d), "marker": marker},
+        "split": {"at": fmt_t(diff.split, now, d), "marker": diff.marker},
         "compared": format!("{} before vs {} after", fmt_duration(span), fmt_duration(after_secs)),
-        "summary": format!(
-            "{} new since the split, {} increased, {} stopped, {} decreased.",
-            tally[0], tally[1], tally[2], tally[3]
-        ),
-        "traffic_per_hour": format!("{} before, {} after", per_hour(tb, span), per_hour(ta, after_secs)),
+        "summary": diff.summary(),
+        "traffic_per_hour": format!("{} before, {} after", per_hour(diff.events_before, span), per_hour(diff.events_after, after_secs)),
     });
     Ok(paged(head, "findings", findings, total, page, true, now))
 }

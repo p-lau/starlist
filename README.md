@@ -61,9 +61,17 @@ Agents don't have to poll. starlist exposes `whats_new` as the MCP resource `sta
 
 Without a connected agent, pass `--notify-url https://...` (or `STARLIST_NOTIFY_URL`) to `serve`, `collect` or `mcp`, and each alert is POSTed there as JSON (`summary`, `findings`). `--no-alerts` turns both off.
 
+### JSON API for your own UI
+
+The same process serves a plain JSON API at `http://127.0.0.1:7341/api/v1`, for dashboards, scripts and custom UIs: status, event counts over time, `whats-new`, patterns, verify, compare, context lines, requests, markers, and a server-sent event stream of alerts. It returns data rather than agent summaries (ISO times, numbers, full samples) and has the same protection as `/mcp`. Calling it from a page on another origin needs `--cors-origin http://localhost:5173`; `--no-api` serves MCP only. See [docs/api.md](docs/api.md).
+
+```sh
+curl -s 'http://127.0.0.1:7341/api/v1/whats-new?window=1h&min_level=WARN'
+```
+
 ### Security, privacy and time zones
 
-- On localhost (the default) no token is needed, and only loopback `Host` headers are accepted, which blocks DNS-rebinding tricks from a browser.
+- On localhost (the default) no token is needed, and only loopback `Host` headers are accepted, which blocks DNS-rebinding tricks from a browser. The API also refuses writes from other sites' pages.
 - When listening beyond localhost (`--http 0.0.0.0:7341`), a bearer token is required. Pass `--token` or set `STARLIST_TOKEN`. If you don't, one is generated and saved next to the database as `<db>.token` (owner-only permissions). Agents send it as `Authorization: Bearer <token>`, e.g. `claude mcp add --transport http logs http://host:7341/mcp --header "Authorization: Bearer $(cat starlist.token)"`.
 - Request IDs are read from a W3C `traceparent` and fields like `trace_id`, `request_id`, `x-request-id` and `correlation_id` (any spelling, in JSON or `key=value` text). Add your own with `--request-key order_ref`. They're kept out of patterns, and an ID that looks like a secret is ignored. See [docs/design/requests-across-services.md](docs/design/requests-across-services.md) for how this will work across services with the hub.
 - Raw lines: to answer `get_context` and `get_request`, starlist keeps the most recent events in the database, redacted the same way as samples, up to `--raw-size` (default 20MB; oldest lines are dropped first). Redaction catches common secrets and personal data, but it can't know every sensitive value your app logs, so this buffer holds more of your log text than the pattern summaries do. If that's a concern, add `--redact` rules or run with `--no-raw`, which stores no raw lines and deletes any already kept.

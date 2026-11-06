@@ -1423,6 +1423,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "futures-util",
  "getrandom 0.4.3",
  "regex",
  "reqwest",
