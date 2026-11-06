@@ -26,10 +26,10 @@ def _load(name: str, path: Path):
     return mod
 
 
-sys.path.insert(0, str(HERE.parent))  # round 1's simulate imports its scenarios
-base = _load("round1_simulate", HERE.parent / "simulate.py")  # formatter, traffic, helpers
-sys.path.remove(str(HERE.parent))
-round2 = _load("round2_scenarios", HERE / "scenarios.py")
+sys.path.insert(0, str(HERE.parent / "v1"))  # v1's simulate imports its scenarios
+base = _load("v1_simulate", HERE.parent / "v1" / "simulate.py")  # formatter, traffic, helpers
+sys.path.remove(str(HERE.parent / "v1"))
+round2 = _load("v2_scenarios", HERE / "scenarios.py")
 
 
 class World:

@@ -19,9 +19,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-# A suite is a directory with app/, simulate.py, scenarios.py and checks/:
-# round 1 is this directory, round 2 is v2/.
-SUITES = {"round1": HERE, "round2": HERE / "v2"}
+# A suite is a directory with app/, simulate.py, scenarios.py and checks/.
+# Results from every suite go to results/, so suites can be compared.
+SUITES = {"v1": HERE / "v1", "v2": HERE / "v2"}
 
 
 def load_scenarios(suite: Path):
@@ -168,7 +168,7 @@ def run_one(job: dict) -> dict:
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
-    suite = Path(job["suite"])
+    suite = Path(job["suite_dir"])
     p = prepare(suite, work, job["scenario"], job["arm"], job["seed"], Path(job["starlist"]),
                 job["sim_args"], job["hint"])
     log = work / "logs" / "app.log"
@@ -185,7 +185,7 @@ def run_one(job: dict) -> dict:
             timed_out = False
         except subprocess.TimeoutExpired:
             timed_out = True
-    row = {k: job[k] for k in ("round", "variant", "scenario", "arm", "seed", "model")}
+    row = {k: job[k] for k in ("suite", "variant", "scenario", "arm", "seed", "model")}
     row.update(measure(transcript))
     row.update(grade(suite, work, job["scenario"]))
     if log_bytes:
@@ -204,8 +204,8 @@ def run_one(job: dict) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--round", choices=sorted(SUITES), default="round1",
-                   help="round1: bugs visible in the code; round2: bugs only the logs reveal")
+    p.add_argument("--suite", choices=sorted(SUITES), default="v1",
+                   help="v1: bugs visible in the code; v2: bugs only the logs reveal")
     p.add_argument("--model", default="claude-sonnet-5-5")
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--scenario", action="append", help="Only these (repeatable)")
@@ -228,19 +228,19 @@ def main() -> None:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     variant = ("large" if a.large else "small") + ("-no-hint" if a.no_hint else "")
     sim_args = ["--traffic", "8", "--debug"] if a.large else []
-    out = Path(a.out or HERE / "results" / f"{stamp}-{a.round}-{variant}-{a.model}.jsonl")
+    out = Path(a.out or HERE / "results" / f"{stamp}-{a.suite}-{variant}-{a.model}.jsonl")
     out.parent.mkdir(exist_ok=True)
     jobs = []
     for seed in range(1, a.repeats + 1):
-        for scenario in a.scenario or sorted(load_scenarios(SUITES[a.round]).SCENARIOS):
+        for scenario in a.scenario or sorted(load_scenarios(SUITES[a.suite]).SCENARIOS):
             for arm in a.arm or ["raw", "starlist"]:
                 jobs.append({"variant": variant, "sim_args": sim_args, "keep": a.keep,
-                             "hint": not a.no_hint, "round": a.round,
-                             "suite": str(SUITES[a.round]),
+                             "hint": not a.no_hint, "suite": a.suite,
+                             "suite_dir": str(SUITES[a.suite]),
                              "scenario": scenario, "arm": arm, "seed": seed, "model": a.model,
                              "starlist": a.starlist, "max_turns": a.max_turns,
                              "timeout": a.timeout,
-                             "work": f"{a.work}/{stamp}-{a.round}-{variant}/{scenario}-{arm}-{seed}"})
+                             "work": f"{a.work}/{stamp}-{a.suite}-{variant}/{scenario}-{arm}-{seed}"})
     with ThreadPoolExecutor(a.parallel) as pool, open(out, "a") as f:
         for row in pool.map(run_one, jobs):
             f.write(json.dumps(row) + "\n")
