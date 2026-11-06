@@ -495,6 +495,7 @@ fn pattern_brief(row: &PatternRow, rel: &Releases, now: f64, d: Detail) -> Value
         "template": truncate(&row.template, TEMPLATE_CHARS),
         "first_seen": if d.full() { Some(fmt_t(row.first_seen, now, d)) } else { None },
         "first_release": rel.at(row.first_seen),
+        "location": row.location,
         "last_seen": fmt_t(row.last_seen, now, d),
     })
 }
@@ -967,6 +968,14 @@ pub fn get_pattern(
     let mut v = pattern_brief(&row, &Releases::load(store)?, now, Detail::Full);
     v["template"] = json!(row.template);
     v["exception"] = json!(row.exc_type);
+    let locs = store.locations(&row.id, 5).map_err(db)?;
+    if locs.len() > 1 {
+        v["locations"] = json!(
+            locs.into_iter()
+                .map(|(l, n)| json!({"location": l, "count": n}))
+                .collect::<Vec<_>>()
+        );
+    }
     v["total_seen"] = json!(row.total);
     v["count_last_hour"] = json!(store.count(&row.id, now - 3600.0, now).map_err(db)?);
     v["count_last_24h"] = json!(store.count(&row.id, day, now).map_err(db)?);

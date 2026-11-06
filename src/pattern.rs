@@ -188,6 +188,8 @@ pub struct Event {
     pub template: String,
     pub pattern_id: String,
     pub exc_type: Option<String>,
+    /// Top app frame of the stack trace, `file:line in function`.
+    pub location: Option<String>,
 }
 
 fn detect_level(message: &str) -> Option<&'static str> {
@@ -317,6 +319,7 @@ pub fn parse_event(
         template = format!("{template} | {e}");
     }
     let pattern_id = pattern_id(&template);
+    let location = crate::location::app_frame(&body).map(|f| f.display(&[]));
     Event {
         ts,
         ts_naive,
@@ -326,6 +329,7 @@ pub fn parse_event(
         template,
         pattern_id,
         exc_type,
+        location,
     }
 }
 
