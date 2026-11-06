@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 const INSTRUCTIONS: &str = "\
 Distilled, redacted view of one app's logs. Lines are grouped into patterns with stable IDs.
-Flow: whats_new -> get_pattern -> ship a fix -> add_marker (deploys are also auto-detected) -> verify_fix(pattern_id, since=marker).
+Flow: whats_new -> get_pattern (get_context for surrounding lines) -> ship a fix -> add_marker (deploys are also auto-detected) -> verify_fix(pattern_id, since=marker).
 Patterns show first_release, the deploy live when they first appeared.
 Times: '30m', '2h', ISO time, or marker name. Output is brief by default; pass detail='full' for more.";
 
@@ -102,6 +102,22 @@ pub struct AddMarkerArgs {
     pub at: Option<String>,
     /// True if this is a release going live; patterns first seen after it are attributed to it.
     pub deploy: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetContextArgs {
+    /// Center on the latest occurrence of this pattern (at or before `at`, if given).
+    pub pattern_id: Option<String>,
+    /// Center on this time: a duration back from now like "5m", an ISO time or a marker name.
+    pub at: Option<String>,
+    /// Lines before the anchor, 0 to 200. Default 20.
+    pub before: Option<i64>,
+    /// Lines after the anchor, 0 to 200. Default 20.
+    pub after: Option<i64>,
+    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    pub max_chars: Option<usize>,
+    /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -241,6 +257,24 @@ impl LogServer {
             a.samples,
             budget(a.max_chars, detail(&a.detail)?),
             detail(&a.detail)?,
+            analysis::now(),
+        ))
+    }
+
+    #[tool(
+        description = "The redacted raw lines just before and after an occurrence of a pattern or a point in time, from a buffer of recent events.",
+        annotations(read_only_hint = true)
+    )]
+    fn get_context(&self, Parameters(a): Parameters<GetContextArgs>) -> Result<String, String> {
+        let d = detail(&a.detail)?;
+        out(analysis::get_context(
+            &self.store,
+            a.pattern_id.as_deref(),
+            a.at.as_deref(),
+            a.before.unwrap_or(20),
+            a.after.unwrap_or(20),
+            budget(a.max_chars, d),
+            d,
             analysis::now(),
         ))
     }

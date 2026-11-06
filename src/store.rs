@@ -46,6 +46,29 @@ pub struct Marker {
 
 pub struct Store {
     conn: Mutex<Connection>,
+    raw: Mutex<RawBuffer>,
+}
+
+/// Default size of the raw-line buffer: the text of recent events, kept so an
+/// agent can read the lines around an error.
+pub const DEFAULT_RAW_BYTES: i64 = 20 * 1024 * 1024;
+/// Longest single event kept in the raw buffer.
+const RAW_EVENT_CHARS: usize = 4000;
+
+struct RawBuffer {
+    /// Upper bound on stored text in bytes; `None` keeps no raw lines.
+    cap: Option<i64>,
+    /// Bytes stored, counted on first write.
+    bytes: Option<i64>,
+}
+
+/// One stored event in the raw buffer.
+#[derive(Debug, Clone)]
+pub struct RawLine {
+    pub id: i64,
+    pub ts: f64,
+    pub pattern_id: String,
+    pub text: String,
 }
 
 type R<T> = rusqlite::Result<T>;
@@ -90,11 +113,31 @@ impl Store {
              CREATE TABLE IF NOT EXISTS aliases(alias TEXT PRIMARY KEY, canonical TEXT NOT NULL) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS locations(
                 pattern_id TEXT NOT NULL, location TEXT NOT NULL, n INTEGER NOT NULL, last_seen REAL NOT NULL,
-                PRIMARY KEY(pattern_id, location)) WITHOUT ROWID;",
+                PRIMARY KEY(pattern_id, location)) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS raw(
+                id INTEGER PRIMARY KEY, ts REAL NOT NULL, pattern_id TEXT NOT NULL, text TEXT NOT NULL);
+             CREATE INDEX IF NOT EXISTS raw_ts ON raw(ts, id);
+             CREATE INDEX IF NOT EXISTS raw_pid ON raw(pattern_id, ts);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            raw: Mutex::new(RawBuffer {
+                cap: Some(DEFAULT_RAW_BYTES),
+                bytes: None,
+            }),
         })
+    }
+
+    /// Set the raw-line buffer size in bytes, or turn it off with `None`,
+    /// which also deletes the lines already stored.
+    pub fn set_raw_cap(&self, cap: Option<i64>) -> R<()> {
+        let mut raw = self.raw.lock().unwrap_or_else(|e| e.into_inner());
+        raw.cap = cap.map(|c| c.max(0));
+        if raw.cap.is_none() {
+            self.conn().execute("DELETE FROM raw", [])?;
+            raw.bytes = Some(0);
+        }
+        Ok(())
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -106,9 +149,19 @@ impl Store {
         if events.is_empty() {
             return Ok(());
         }
+        let mut raw = self.raw.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = self.conn();
+        if raw.cap.is_some() && raw.bytes.is_none() {
+            raw.bytes = Some(conn.query_row(
+                "SELECT COALESCE(SUM(length(CAST(text AS BLOB))), 0) FROM raw",
+                [],
+                |r| r.get(0),
+            )?);
+        }
         let tx = conn.transaction()?;
         {
+            let mut ins_raw =
+                tx.prepare_cached("INSERT INTO raw(ts, pattern_id, text) VALUES (?1, ?2, ?3)")?;
             let mut up_pattern = tx.prepare_cached(
                 "INSERT INTO patterns(id, template, level, exc_type, first_seen, last_seen, total)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1)
@@ -145,6 +198,11 @@ impl Store {
                 if let Some(l) = &e.location {
                     up_loc.execute(params![e.pattern_id, l, ts])?;
                 }
+                if raw.cap.is_some() {
+                    let text = crate::pattern::truncate(&e.body, RAW_EVENT_CHARS);
+                    ins_raw.execute(params![ts, e.pattern_id, text])?;
+                    *raw.bytes.get_or_insert(0) += text.len() as i64;
+                }
                 let last: Option<f64> = last_sample.query_row([&e.pattern_id], |r| r.get(0))?;
                 if last.is_none_or(|l| (ts - l).abs() >= SAMPLE_EVERY_SECS) {
                     ins_sample.execute(params![e.pattern_id, ts, e.body])?;
@@ -152,8 +210,100 @@ impl Store {
                     prune.execute(params![e.pattern_id, SAMPLES_PER_PATTERN])?;
                 }
             }
+            // Over the cap: drop the oldest lines until 90% of it is used.
+            if let (Some(cap), Some(bytes)) = (raw.cap, raw.bytes)
+                && bytes > cap
+            {
+                let target = bytes - cap * 9 / 10;
+                let mut st = tx
+                    .prepare_cached("SELECT id, length(CAST(text AS BLOB)) FROM raw ORDER BY id")?;
+                let mut rows = st.query([])?;
+                let (mut freed, mut cut) = (0i64, None);
+                while freed < target
+                    && let Some(r) = rows.next()?
+                {
+                    cut = Some(r.get::<_, i64>(0)?);
+                    freed += r.get::<_, i64>(1)?;
+                }
+                drop(rows);
+                if let Some(cut) = cut {
+                    tx.execute("DELETE FROM raw WHERE id <= ?1", [cut])?;
+                    raw.bytes = Some(bytes - freed);
+                }
+            }
         }
         tx.commit()
+    }
+
+    /// The raw line to center a context window on: the latest occurrence of
+    /// `pattern_id` at or before `at` (or ever), or the last line at or before `at`.
+    pub fn raw_anchor(&self, pattern_id: Option<&str>, at: Option<f64>) -> R<Option<RawLine>> {
+        let at = at.unwrap_or(f64::MAX);
+        let conn = self.conn();
+        let row = |r: &rusqlite::Row| {
+            Ok(RawLine {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                pattern_id: r.get(2)?,
+                text: r.get(3)?,
+            })
+        };
+        match pattern_id {
+            Some(p) => conn
+                .query_row(
+                    "SELECT id, ts, pattern_id, text FROM raw WHERE pattern_id = ?1 AND ts <= ?2
+                     ORDER BY ts DESC, id DESC LIMIT 1",
+                    params![p, at],
+                    row,
+                )
+                .optional(),
+            None => conn
+                .query_row(
+                    "SELECT id, ts, pattern_id, text FROM raw WHERE ts <= ?1
+                     ORDER BY ts DESC, id DESC LIMIT 1",
+                    params![at],
+                    row,
+                )
+                .optional(),
+        }
+    }
+
+    /// Up to `before` lines before and `after` lines after the anchor, oldest first.
+    pub fn raw_around(&self, anchor: &RawLine, before: i64, after: i64) -> R<Vec<RawLine>> {
+        let conn = self.conn();
+        let row = |r: &rusqlite::Row| {
+            Ok(RawLine {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                pattern_id: r.get(2)?,
+                text: r.get(3)?,
+            })
+        };
+        let mut st = conn.prepare_cached(
+            "SELECT id, ts, pattern_id, text FROM raw WHERE (ts, id) < (?1, ?2)
+             ORDER BY ts DESC, id DESC LIMIT ?3",
+        )?;
+        let mut lines: Vec<RawLine> = st
+            .query_map(params![anchor.ts, anchor.id, before], row)?
+            .collect::<R<_>>()?;
+        lines.reverse();
+        lines.push(anchor.clone());
+        let mut st = conn.prepare_cached(
+            "SELECT id, ts, pattern_id, text FROM raw WHERE (ts, id) > (?1, ?2)
+             ORDER BY ts, id LIMIT ?3",
+        )?;
+        for l in st.query_map(params![anchor.ts, anchor.id, after], row)? {
+            lines.push(l?);
+        }
+        Ok(lines)
+    }
+
+    /// Number of raw lines stored and the oldest one's time.
+    pub fn raw_span(&self) -> R<(i64, Option<f64>)> {
+        self.conn()
+            .query_row("SELECT COUNT(*), MIN(ts) FROM raw", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
     }
 
     /// Drop counts and markers older than `before_ts`. Patterns are kept so that
@@ -226,6 +376,10 @@ impl Store {
                 params![c, a],
             )?;
             tx.execute("DELETE FROM locations WHERE pattern_id = ?1", [a])?;
+            tx.execute(
+                "UPDATE raw SET pattern_id = ?1 WHERE pattern_id = ?2",
+                params![c, a],
+            )?;
             tx.execute(
                 "UPDATE samples SET pattern_id = ?1 WHERE pattern_id = ?2",
                 params![c, a],

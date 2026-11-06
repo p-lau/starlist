@@ -88,6 +88,12 @@ struct PipelineArgs {
     /// like "/app" in a container (repeatable).
     #[arg(long = "source-root")]
     source_roots: Vec<String>,
+    /// Disk space for recent redacted lines that get_context reads, like "20MB" or "1GB".
+    #[arg(long, default_value = "20MB", value_parser = parse_size)]
+    raw_size: i64,
+    /// Keep no raw lines (get_context is then unavailable) and delete any already stored.
+    #[arg(long)]
+    no_raw: bool,
     /// Merge patterns that differ in one word once it has taken this many values (0 turns merging off).
     #[arg(long, default_value_t = starlist::merge::DEFAULT_THRESHOLD)]
     merge_after: usize,
@@ -134,6 +140,24 @@ struct McpArgs {
     /// Host-header checks on when listening beyond localhost.
     #[arg(long = "allowed-host")]
     allowed_hosts: Vec<String>,
+}
+
+fn parse_size(s: &str) -> Result<i64, String> {
+    let t = s.trim().to_ascii_uppercase();
+    let (num, mult) = [
+        ("GB", 1i64 << 30),
+        ("MB", 1 << 20),
+        ("KB", 1 << 10),
+        ("B", 1),
+    ]
+    .iter()
+    .find_map(|(u, m)| t.strip_suffix(u).map(|n| (n.trim().to_string(), *m)))
+    .unwrap_or((t.clone(), 1));
+    num.parse::<f64>()
+        .ok()
+        .filter(|n| *n >= 0.0)
+        .map(|n| (n * mult as f64) as i64)
+        .ok_or_else(|| format!("'{s}' is not a size; use something like 20MB"))
 }
 
 fn parse_tz(s: &str) -> Result<i32, String> {
@@ -202,6 +226,7 @@ fn pipeline(opts: &PipelineArgs, store: Arc<Store>) -> Result<Pipeline> {
         Some(Regex::new(&opts.marker_regex).context("bad --marker-regex")?)
     };
     let merge = (opts.merge_after > 0).then_some(opts.merge_after);
+    store.set_raw_cap((!opts.no_raw).then_some(opts.raw_size))?;
     Ok(
         Pipeline::with_merging(store, Redactor::new(!opts.keep_ips, extra), marker, merge)
             .with_log_tz(opts.log_tz.unwrap_or(0))
