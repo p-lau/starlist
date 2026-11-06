@@ -92,8 +92,8 @@ fn whats_new_finds_new_spiking_and_quiet_patterns() {
 
     let v = whats_new(
         &s,
-        "1h",
-        "24h",
+        Some("1h"),
+        Some("24h"),
         None,
         &Page::first(10, Detail::Brief),
         Detail::Brief,
@@ -144,8 +144,8 @@ fn whats_new_is_quiet_when_nothing_changed() {
     );
     let v = whats_new(
         &s,
-        "1h",
-        "24h",
+        Some("1h"),
+        Some("24h"),
         None,
         &Page::first(10, Detail::Brief),
         Detail::Brief,
@@ -267,8 +267,8 @@ fn unknown_inputs_give_helpful_errors() {
     assert!(
         whats_new(
             &s,
-            "soon",
-            "24h",
+            Some("soon"),
+            Some("24h"),
             None,
             &Page::first(5, Detail::Brief),
             Detail::Brief,
@@ -309,8 +309,8 @@ fn busier_traffic_alone_is_not_a_spike() {
     spread(&s, "ERROR db pool exhausted", NOW - H, NOW, 60); // grew much faster than traffic
     let v = whats_new(
         &s,
-        "1h",
-        "24h",
+        Some("1h"),
+        Some("24h"),
         None,
         &Page::first(10, Detail::Brief),
         Detail::Brief,
@@ -384,7 +384,16 @@ fn brief_output_is_much_smaller_than_full() {
     }
     let size = |d| {
         serde_json::to_string(&compact(
-            whats_new(&s, "1h", "24h", None, &Page::first(10, d), d, NOW).unwrap(),
+            whats_new(
+                &s,
+                Some("1h"),
+                Some("24h"),
+                None,
+                &Page::first(10, d),
+                d,
+                NOW,
+            )
+            .unwrap(),
         ))
         .unwrap()
         .len()
@@ -403,4 +412,77 @@ fn brief_output_is_much_smaller_than_full() {
     .pattern_id;
     let g = get_pattern(&s, &id, None, DEFAULT_MAX_CHARS, Detail::Brief, NOW).unwrap();
     assert_eq!(g["samples"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn whats_new_defaults_to_everything_since_a_recent_deploy() {
+    let s = store();
+    spread(
+        &s,
+        "INFO GET /api/items 200 in 12ms",
+        NOW - 25.0 * H,
+        NOW,
+        3000,
+    );
+    s.add_deploy("2.4.0", NOW - 3.0 * H, None).unwrap();
+    // Started with the deploy and stopped more than an hour ago.
+    spread(
+        &s,
+        "ERROR checkout failed: card_token missing",
+        NOW - 2.9 * H,
+        NOW - 1.5 * H,
+        40,
+    );
+    let d = Detail::Brief;
+    let v = whats_new(&s, None, None, None, &Page::first(10, d), d, NOW).unwrap();
+    assert!(
+        v["window"].as_str().unwrap().contains("since deploy 2.4.0"),
+        "{v}"
+    );
+    let ids: Vec<&str> = v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["kind"] == "new")
+        .map(|f| f["pattern_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&id_of("ERROR checkout failed: card_token missing").as_str()),
+        "{v}"
+    );
+
+    // An explicit window still means exactly that window.
+    let v = whats_new(&s, Some("1h"), None, None, &Page::first(10, d), d, NOW).unwrap();
+    assert!(v["window"].as_str().unwrap().starts_with("last 60m"), "{v}");
+}
+
+#[test]
+fn whats_new_compares_only_against_history_that_exists() {
+    let s = store();
+    // Two hours of steady logs, nothing before.
+    spread(
+        &s,
+        "INFO GET /api/items 200 in 12ms",
+        NOW - 2.0 * H,
+        NOW,
+        2000,
+    );
+    spread(&s, "WARN slow query took 900ms", NOW - 2.0 * H, NOW, 100);
+    let d = Detail::Brief;
+    // The 1h baseline actually available isn't diluted by 23 empty hours.
+    let v = whats_new(&s, Some("1h"), None, None, &Page::first(10, d), d, NOW).unwrap();
+    assert!(
+        v.get("traffic").and_then(|t| t.get("note")).is_none(),
+        "{v}"
+    );
+    assert!(v["findings"].as_array().is_none_or(|f| f.is_empty()), "{v}");
+    // A window covering all of it says there's nothing to compare with.
+    let v = whats_new(&s, Some("3h"), None, None, &Page::first(10, d), d, NOW).unwrap();
+    assert!(
+        v["note"]
+            .as_str()
+            .unwrap()
+            .contains("covers nearly all the history"),
+        "{v}"
+    );
 }

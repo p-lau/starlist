@@ -53,8 +53,8 @@ fn a_finding_links_to_a_request_that_can_be_followed() {
     two_requests(&s);
     let v = whats_new(
         &s,
-        "1h",
-        "24h",
+        Some("1h"),
+        Some("24h"),
         Some("ERROR"),
         &Page::first(5, Detail::Brief),
         Detail::Brief,

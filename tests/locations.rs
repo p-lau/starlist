@@ -51,8 +51,8 @@ fn findings_point_at_the_failing_line_and_patterns_group_by_it() {
 
     let v = whats_new(
         &s,
-        "1h",
-        "24h",
+        Some("1h"),
+        Some("24h"),
         None,
         &Page::first(10, Detail::Brief),
         Detail::Brief,

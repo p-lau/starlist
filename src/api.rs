@@ -351,8 +351,8 @@ async fn whats_new(
     blocking(move || {
         let store = &s.store;
         let now = analysis::now();
-        let w = analysis::duration_arg(q.window.as_deref().unwrap_or("1h"), "window")?;
-        let b = analysis::duration_arg(q.baseline.as_deref().unwrap_or("24h"), "baseline")?;
+        let nw = analysis::new_window(store, q.window.as_deref(), q.baseline.as_deref(), now)?;
+        let (w, b) = (nw.window, nw.baseline);
         let data = analysis::whats_new_data(store, w, b, q.min_level.as_deref(), now)?;
         let cx = Cx::load(store, now)?;
         let (limit, offset) = (q.limit.unwrap_or(20).clamp(1, 200), q.offset.unwrap_or(0));
@@ -381,7 +381,7 @@ async fn whats_new(
             .collect();
         let t = data.tally;
         Ok(json!({
-            "window": {"from": iso(data.window_from), "to": iso(now)},
+            "window": {"from": iso(data.window_from), "to": iso(now), "since_deploy": nw.deploy},
             "baseline": {"from": iso(data.baseline_from), "to": iso(data.window_from)},
             "summary": data.summary(),
             "counts": {"new": t[0], "regressed": data.regressed, "returning": t[1], "spike": t[2], "gone_quiet": t[3]},

@@ -1017,6 +1017,12 @@ impl Store {
     }
 
     /// Number of patterns (merged ones count once).
+    /// When the oldest pattern was first seen: roughly where the logs start.
+    pub fn data_start(&self) -> R<Option<f64>> {
+        self.conn()
+            .query_row("SELECT MIN(first_seen) FROM patterns", [], |r| r.get(0))
+    }
+
     pub fn pattern_count(&self) -> R<i64> {
         self.conn()
             .query_row("SELECT COUNT(*) FROM patterns", [], |r| r.get(0))

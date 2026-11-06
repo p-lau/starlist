@@ -702,18 +702,87 @@ pub fn whats_new_data(
     })
 }
 
-/// What changed in the last `window` compared with the `baseline` before it.
+/// A deploy at most this old is what whats_new compares around by default.
+const DEPLOY_WINDOW_MAX: f64 = 6.0 * 3600.0;
+/// ...and at least this old, so the window has something in it.
+const DEPLOY_WINDOW_MIN: f64 = 5.0 * 60.0;
+
+/// The period whats_new looks at, and the "normal" period before it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewWindow {
+    pub window: f64,
+    pub baseline: f64,
+    /// Set when the window starts at this deploy.
+    pub deploy: Option<String>,
+    /// Set when there is too little history before the window to compare with.
+    pub note: Option<String>,
+}
+
+/// Work out whats_new's window. With no window given, a deploy in the last 6 hours is the
+/// split, so everything since the release is compared with the time before it; otherwise
+/// the last hour. The baseline never reaches back before the first log line, so rates
+/// stay honest on a young database; when almost nothing is left to compare with, the
+/// answer says so.
+pub fn new_window(
+    store: &Store,
+    window: Option<&str>,
+    baseline: Option<&str>,
+    now: f64,
+) -> Result<NewWindow, String> {
+    let wanted_b = duration_arg(baseline.unwrap_or("24h"), "baseline")?;
+    let start = store.data_start().map_err(db)?;
+    let fit = |w: f64| -> f64 {
+        match start {
+            Some(s) if now - w - wanted_b < s => (now - w - s).max(0.0),
+            _ => wanted_b,
+        }
+    };
+    let enough = |w: f64, b: f64| b >= (w / 12.0).max(300.0);
+    let plain = |w: f64| {
+        let b = fit(w);
+        let note = (!enough(w, b)).then(|| {
+            let from = start.map(|s| fmt_t(s, now, Detail::Brief)).unwrap_or_default();
+            format!(
+                "The window covers nearly all the history (logs start {from}), so most patterns count as new. A shorter window compares against more."
+            )
+        });
+        NewWindow {
+            window: w,
+            baseline: b.max(1.0),
+            deploy: None,
+            note,
+        }
+    };
+    if let Some(s) = window {
+        return Ok(plain(duration_arg(s, "window")?));
+    }
+    if let Some((t, name)) = Releases::load(store)?.latest() {
+        let w = now - t;
+        if (DEPLOY_WINDOW_MIN..=DEPLOY_WINDOW_MAX).contains(&w) && enough(w, fit(w)) {
+            return Ok(NewWindow {
+                window: w,
+                baseline: fit(w),
+                deploy: Some(name.to_string()),
+                note: None,
+            });
+        }
+    }
+    Ok(plain(3600.0))
+}
+
+/// What changed in the window (since the latest deploy, or the last hour) compared with
+/// the baseline before it. See [`new_window`].
 pub fn whats_new(
     store: &Store,
-    window: &str,
-    baseline: &str,
+    window: Option<&str>,
+    baseline: Option<&str>,
     min_level: Option<&str>,
     page: &Page,
     d: Detail,
     now: f64,
 ) -> AResult {
-    let w = duration_arg(window, "window")?;
-    let b = duration_arg(baseline, "baseline")?;
+    let nw = new_window(store, window, baseline, now)?;
+    let (w, b) = (nw.window, nw.baseline);
     let data = whats_new_data(store, w, b, min_level, now)?;
     let rel = Releases::load(store)?;
     let split = data.window_from;
@@ -758,12 +827,14 @@ pub fn whats_new(
     let traffic_note = (traffic >= 2.0 || traffic <= 0.5)
         .then(|| format!("Overall log volume is {traffic:.1}x its baseline."));
     let head = json!({
-        "window": if d.full() {
-            format!("last {} (since {}) vs the {} before", fmt_duration(w), fmt_time(split, now), fmt_duration(b))
-        } else {
-            format!("last {} vs prior {}", fmt_duration(w), fmt_duration(b))
+        "window": match (&nw.deploy, d.full()) {
+            (Some(name), true) => format!("since deploy {name} at {} ({}) vs the {} before", fmt_time(split, now), fmt_duration(w), fmt_duration(b)),
+            (Some(name), false) => format!("since deploy {name} ({} ago) vs prior {}", fmt_duration(w), fmt_duration(b)),
+            (None, true) => format!("last {} (since {}) vs the {} before", fmt_duration(w), fmt_time(split, now), fmt_duration(b)),
+            (None, false) => format!("last {} vs prior {}", fmt_duration(w), fmt_duration(b)),
         },
         "summary": data.summary(),
+        "note": nw.note,
         "traffic": if d.full() {
             json!({
                 "per_hour_window": per_hour(data.events_in_window, w),
