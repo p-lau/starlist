@@ -19,7 +19,10 @@ fn usernames_merge_into_one_pattern_and_old_ids_still_work() {
     {
         let p = Pipeline::new(store.clone(), Redactor::default(), None);
         // Two batches, so the merge happens partway through.
-        let lines: Vec<String> = names.iter().map(|n| format!("2026-11-06T10:00:00Z WARN password reset requested for {n}")).collect();
+        let lines: Vec<String> = names
+            .iter()
+            .map(|n| format!("2026-11-06T10:00:00Z WARN password reset requested for {n}"))
+            .collect();
         p.ingest(&lines[..3]);
         p.ingest(&lines[3..]);
     }
@@ -45,7 +48,10 @@ fn merging_can_be_turned_off() {
     let _ = std::fs::remove_file(&db);
     let store = Arc::new(Store::open(&db).unwrap());
     let p = Pipeline::with_merging(store.clone(), Redactor::default(), None, None);
-    let lines: Vec<String> = ["a", "b", "c", "d", "e", "f"].iter().map(|n| format!("INFO hello {n}x")).collect();
+    let lines: Vec<String> = ["a", "b", "c", "d", "e", "f"]
+        .iter()
+        .map(|n| format!("INFO hello {n}x"))
+        .collect();
     p.ingest(&lines);
     assert_eq!(store.pattern_templates().unwrap().len(), 6);
 }

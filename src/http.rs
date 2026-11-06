@@ -21,13 +21,17 @@ async fn require_bearer(State(token): State<Arc<String>>, req: Request, next: Ne
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
         .is_some_and(|t| same(t.trim().as_bytes(), token.as_bytes()));
     if ok {
         return next.run(req).await;
     }
     let mut res = (StatusCode::UNAUTHORIZED, "missing or wrong bearer token\n").into_response();
-    res.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    res.headers_mut()
+        .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
     res
 }
 
@@ -38,15 +42,22 @@ async fn require_bearer(State(token): State<Arc<String>>, req: Request, next: Ne
 ///   rebinding attack can't supply the token anyway.
 /// - Without a token, only loopback Host headers are accepted (rmcp's default),
 ///   which protects a local server from DNS rebinding.
-pub fn router(store: Arc<Store>, token: Option<String>, allowed_hosts: Vec<String>) -> axum::Router {
+pub fn router(
+    store: Arc<Store>,
+    token: Option<String>,
+    allowed_hosts: Vec<String>,
+) -> axum::Router {
     let mut config = StreamableHttpServerConfig::default();
     if !allowed_hosts.is_empty() {
         config = config.with_allowed_hosts(allowed_hosts);
     } else if token.is_some() {
         config = config.disable_allowed_hosts();
     }
-    let service: StreamableHttpService<LogServer, LocalSessionManager> =
-        StreamableHttpService::new(move || Ok(LogServer::new(store.clone())), Default::default(), config);
+    let service: StreamableHttpService<LogServer, LocalSessionManager> = StreamableHttpService::new(
+        move || Ok(LogServer::new(store.clone())),
+        Default::default(),
+        config,
+    );
     let router = axum::Router::new().nest_service("/mcp", service);
     match token {
         Some(t) => router.layer(middleware::from_fn_with_state(Arc::new(t), require_bearer)),

@@ -60,7 +60,8 @@ fn row_to_pattern(r: &rusqlite::Row, off: usize) -> R<PatternRow> {
     })
 }
 
-const PATTERN_COLS: &str = "p.id, p.template, p.level, p.exc_type, p.first_seen, p.last_seen, p.total";
+const PATTERN_COLS: &str =
+    "p.id, p.template, p.level, p.exc_type, p.first_seen, p.last_seen, p.total";
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> R<Self> {
@@ -85,7 +86,9 @@ impl Store {
              CREATE INDEX IF NOT EXISTS markers_name ON markers(name);
              CREATE TABLE IF NOT EXISTS aliases(alias TEXT PRIMARY KEY, canonical TEXT NOT NULL) WITHOUT ROWID;",
         )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -118,7 +121,8 @@ impl Store {
                 tx.prepare_cached("SELECT last_sample_ts FROM patterns WHERE id = ?1")?;
             let mut ins_sample =
                 tx.prepare_cached("INSERT INTO samples(pattern_id, ts, text) VALUES (?1, ?2, ?3)")?;
-            let mut set_sample = tx.prepare_cached("UPDATE patterns SET last_sample_ts = ?2 WHERE id = ?1")?;
+            let mut set_sample =
+                tx.prepare_cached("UPDATE patterns SET last_sample_ts = ?2 WHERE id = ?1")?;
             let mut prune = tx.prepare_cached(
                 "DELETE FROM samples WHERE pattern_id = ?1 AND id NOT IN
                    (SELECT id FROM samples WHERE pattern_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2)",
@@ -142,7 +146,10 @@ impl Store {
     /// "first seen" stays accurate.
     pub fn prune(&self, before_ts: f64) -> R<usize> {
         let conn = self.conn();
-        conn.execute("DELETE FROM counts WHERE bucket < ?1", [bucket_of(before_ts)])
+        conn.execute(
+            "DELETE FROM counts WHERE bucket < ?1",
+            [bucket_of(before_ts)],
+        )
     }
 
     /// Look up a pattern by ID. IDs of patterns that were merged into another
@@ -150,12 +157,18 @@ impl Store {
     pub fn pattern(&self, id: &str) -> R<Option<PatternRow>> {
         let conn = self.conn();
         let id: String = conn
-            .query_row("SELECT canonical FROM aliases WHERE alias = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT canonical FROM aliases WHERE alias = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .optional()?
             .unwrap_or_else(|| id.to_string());
-        conn.query_row(&format!("SELECT {PATTERN_COLS} FROM patterns p WHERE p.id = ?1"), [&id], |r| {
-            row_to_pattern(r, 0)
-        })
+        conn.query_row(
+            &format!("SELECT {PATTERN_COLS} FROM patterns p WHERE p.id = ?1"),
+            [&id],
+            |r| row_to_pattern(r, 0),
+        )
         .optional()
     }
 
@@ -180,7 +193,10 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let c = &op.canonical;
-        tx.execute("UPDATE patterns SET template = ?2 WHERE id = ?1", params![c, op.template])?;
+        tx.execute(
+            "UPDATE patterns SET template = ?2 WHERE id = ?1",
+            params![c, op.template],
+        )?;
         for a in &op.aliases {
             tx.execute(
                 "INSERT INTO counts(pattern_id, bucket, n) SELECT ?1, bucket, n FROM counts WHERE pattern_id = ?2 AND true
@@ -188,7 +204,10 @@ impl Store {
                 params![c, a],
             )?;
             tx.execute("DELETE FROM counts WHERE pattern_id = ?1", [a])?;
-            tx.execute("UPDATE samples SET pattern_id = ?1 WHERE pattern_id = ?2", params![c, a])?;
+            tx.execute(
+                "UPDATE samples SET pattern_id = ?1 WHERE pattern_id = ?2",
+                params![c, a],
+            )?;
             tx.execute(
                 "UPDATE patterns SET
                    first_seen = MIN(first_seen, COALESCE((SELECT first_seen FROM patterns WHERE id = ?2), first_seen)),
@@ -198,8 +217,14 @@ impl Store {
                 params![c, a],
             )?;
             tx.execute("DELETE FROM patterns WHERE id = ?1", [a])?;
-            tx.execute("UPDATE aliases SET canonical = ?1 WHERE canonical = ?2", params![c, a])?;
-            tx.execute("INSERT OR REPLACE INTO aliases(alias, canonical) VALUES (?1, ?2)", params![a, c])?;
+            tx.execute(
+                "UPDATE aliases SET canonical = ?1 WHERE canonical = ?2",
+                params![c, a],
+            )?;
+            tx.execute(
+                "INSERT OR REPLACE INTO aliases(alias, canonical) VALUES (?1, ?2)",
+                params![a, c],
+            )?;
         }
         tx.execute(
             "DELETE FROM samples WHERE pattern_id = ?1 AND id NOT IN
@@ -224,7 +249,11 @@ impl Store {
              GROUP BY c.pattern_id"
         ))?;
         let rows = st.query_map(params![lo_b, split_b, hi_b], |r| {
-            Ok(SplitStat { row: row_to_pattern(r, 0)?, before: r.get(7)?, after: r.get(8)? })
+            Ok(SplitStat {
+                row: row_to_pattern(r, 0)?,
+                before: r.get(7)?,
+                after: r.get(8)?,
+            })
         })?;
         rows.collect()
     }
@@ -301,7 +330,14 @@ impl Store {
             .query_row(
                 "SELECT name, ts, kind, note FROM markers WHERE name = ?1 ORDER BY ts DESC LIMIT 1",
                 [name],
-                |r| Ok(Marker { name: r.get(0)?, ts: r.get(1)?, kind: r.get(2)?, note: r.get(3)? }),
+                |r| {
+                    Ok(Marker {
+                        name: r.get(0)?,
+                        ts: r.get(1)?,
+                        kind: r.get(2)?,
+                        note: r.get(3)?,
+                    })
+                },
             )
             .optional()
     }
@@ -313,7 +349,12 @@ impl Store {
             "SELECT name, ts, kind, note FROM markers WHERE ts >= ?1 AND ts <= ?2 ORDER BY ts DESC LIMIT ?3",
         )?;
         let rows = st.query_map(params![lo, hi, limit], |r| {
-            Ok(Marker { name: r.get(0)?, ts: r.get(1)?, kind: r.get(2)?, note: r.get(3)? })
+            Ok(Marker {
+                name: r.get(0)?,
+                ts: r.get(1)?,
+                kind: r.get(2)?,
+                note: r.get(3)?,
+            })
         })?;
         rows.collect()
     }

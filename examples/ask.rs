@@ -13,7 +13,9 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let url = args.next().unwrap_or_else(|| "http://127.0.0.1:7341/mcp".into());
+    let url = args
+        .next()
+        .unwrap_or_else(|| "http://127.0.0.1:7341/mcp".into());
     let mut config = StreamableHttpClientTransportConfig::with_uri(url);
     if let Ok(t) = std::env::var("STARLIST_TOKEN") {
         config = config.auth_header(t);
@@ -29,7 +31,9 @@ async fn main() -> anyhow::Result<()> {
         Some(tool) => {
             let json = args.next().unwrap_or_else(|| "{}".into());
             let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&json)?;
-            let res = client.call_tool(CallToolRequestParams::new(tool).with_arguments(map)).await?;
+            let res = client
+                .call_tool(CallToolRequestParams::new(tool).with_arguments(map))
+                .await?;
             if res.is_error == Some(true) {
                 print!("ERROR: ");
             }

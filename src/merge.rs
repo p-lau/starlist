@@ -60,7 +60,9 @@ fn key(toks: &[String]) -> GroupKey {
 fn generalize(a: &str, b: &str) -> String {
     let cut = |s: &str| s.rfind(['=', ':']).map(|i| i + 1);
     match (cut(a), cut(b)) {
-        (Some(i), Some(j)) if a[..i] == b[..j] && i < a.len() && j < b.len() => format!("{}{WILDCARD}", &a[..i]),
+        (Some(i), Some(j)) if a[..i] == b[..j] && i < a.len() && j < b.len() => {
+            format!("{}{WILDCARD}", &a[..i])
+        }
         _ => WILDCARD.to_string(),
     }
 }
@@ -76,7 +78,13 @@ fn token_matches(canon: &str, tok: &str) -> bool {
 
 /// Positions where `toks` differs from `canon` (respecting wildcards).
 fn diffs(canon: &[String], toks: &[String]) -> Vec<usize> {
-    canon.iter().zip(toks).enumerate().filter(|(_, (c, t))| !token_matches(c, t)).map(|(i, _)| i).collect()
+    canon
+        .iter()
+        .zip(toks)
+        .enumerate()
+        .filter(|(_, (c, t))| !token_matches(c, t))
+        .map(|(i, _)| i)
+        .collect()
 }
 
 impl Merger {
@@ -115,7 +123,11 @@ impl Merger {
         }
         let toks = tokens(&e.template);
         // Already covered by a generalized pattern?
-        if let Some(c) = self.groups.get(&key(&toks)).and_then(|g| g.iter().find(|c| diffs(&c.tokens, &toks).is_empty())) {
+        if let Some(c) = self
+            .groups
+            .get(&key(&toks))
+            .and_then(|g| g.iter().find(|c| diffs(&c.tokens, &toks).is_empty()))
+        {
             let cid = c.id.clone();
             self.aliases.insert(e.pattern_id.clone(), cid.clone());
             self.retarget(e, &cid);
@@ -144,7 +156,10 @@ impl Merger {
             let d = diffs(&c.tokens, &toks);
             (d.len() == 1).then(|| (c.id.clone(), d[0]))
         });
-        group.push(Canon { id: id.to_string(), tokens: toks.clone() });
+        group.push(Canon {
+            id: id.to_string(),
+            tokens: toks.clone(),
+        });
         self.templates.insert(id.to_string(), template.to_string());
 
         let (cid, pos) = hit?;
@@ -159,7 +174,9 @@ impl Merger {
 
         // Merge: generalize the canonical pattern and fold the variants into it.
         let v = self.variants.remove(&(cid.clone(), pos))?;
-        let general = v.values.iter().fold(canon_tok.clone(), |acc, t| if acc == *t { acc } else { generalize(&acc, t) });
+        let general = v.values.iter().fold(canon_tok.clone(), |acc, t| {
+            if acc == *t { acc } else { generalize(&acc, t) }
+        });
         let group = self.groups.get_mut(&k)?;
         let canon = group.iter_mut().find(|c| c.id == cid)?;
         canon.tokens[pos] = general;
@@ -176,7 +193,11 @@ impl Merger {
             }
         }
         self.templates.insert(cid.clone(), template.clone());
-        Some(MergeOp { canonical: cid, template, aliases: v.ids })
+        Some(MergeOp {
+            canonical: cid,
+            template,
+            aliases: v.ids,
+        })
     }
 
     pub fn canonical_of(&self, id: &str) -> Option<&str> {
@@ -207,7 +228,10 @@ mod tests {
             }
             ops.extend(m.resolve(&mut e));
             if i >= 4 {
-                assert_eq!(e.pattern_id, first_id, "event {i} should land on the canonical pattern");
+                assert_eq!(
+                    e.pattern_id, first_id,
+                    "event {i} should land on the canonical pattern"
+                );
             }
         }
         assert_eq!(ops.len(), 1);

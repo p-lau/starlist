@@ -65,11 +65,32 @@ pub fn trim_trace(text: &str, max_lines: usize) -> String {
     let lib_frame = |l: &str| {
         let t = l.trim_start();
         (t.starts_with("File \"")
-            && ["site-packages", "dist-packages", "/lib/python", "\\lib\\python", "<frozen"].iter().any(|m| t.contains(m)))
+            && [
+                "site-packages",
+                "dist-packages",
+                "/lib/python",
+                "\\lib\\python",
+                "<frozen",
+            ]
+            .iter()
+            .any(|m| t.contains(m)))
             || (t.starts_with("at ")
-                && ["at java.", "at javax.", "at jdk.", "at sun.", "at kotlin.", "at scala.", "at org.springframework.", "at org.apache.", "at io.netty.", "node:internal", "node_modules", "(node:"]
-                    .iter()
-                    .any(|m| t.contains(m)))
+                && [
+                    "at java.",
+                    "at javax.",
+                    "at jdk.",
+                    "at sun.",
+                    "at kotlin.",
+                    "at scala.",
+                    "at org.springframework.",
+                    "at org.apache.",
+                    "at io.netty.",
+                    "node:internal",
+                    "node_modules",
+                    "(node:",
+                ]
+                .iter()
+                .any(|m| t.contains(m)))
     };
     let mut kept: Vec<&str> = vec![];
     let mut hidden = 0usize;
@@ -147,7 +168,11 @@ pub fn fmt_duration(secs: f64) -> String {
         format!("{}m", (s / 60.0).round() as i64)
     } else if s < 48.0 * 3600.0 {
         let h = s / 3600.0;
-        if h < 10.0 { format!("{:.1}h", h) } else { format!("{}h", h.round() as i64) }
+        if h < 10.0 {
+            format!("{:.1}h", h)
+        } else {
+            format!("{}h", h.round() as i64)
+        }
     } else {
         format!("{}d", (s / 86400.0).round() as i64)
     }
@@ -171,16 +196,28 @@ fn fmt_t(ts: f64, now: f64, d: Detail) -> String {
         return fmt_time(ts, now);
     }
     let delta = now - ts;
-    if delta >= 0.0 { format!("{} ago", fmt_duration(delta)) } else { format!("in {}", fmt_duration(delta)) }
+    if delta >= 0.0 {
+        format!("{} ago", fmt_duration(delta))
+    } else {
+        format!("in {}", fmt_duration(delta))
+    }
 }
 
 /// "27 in 35m (46.2/h)"
 fn count_str(count: i64, secs: f64) -> String {
-    format!("{count} in {} ({}/h)", fmt_duration(secs), per_hour(count, secs))
+    format!(
+        "{count} in {} ({}/h)",
+        fmt_duration(secs),
+        per_hour(count, secs)
+    )
 }
 
 fn per_hour(count: i64, secs: f64) -> f64 {
-    if secs <= 0.0 { 0.0 } else { (count as f64 * 3600.0 / secs * 10.0).round() / 10.0 }
+    if secs <= 0.0 {
+        0.0
+    } else {
+        (count as f64 * 3600.0 / secs * 10.0).round() / 10.0
+    }
 }
 
 /// A point in time: "now", a duration back from now ("30m"), an ISO time,
@@ -194,7 +231,9 @@ pub fn resolve_time(store: &Store, spec: &str, now: f64) -> Result<(f64, Option<
     if let Some(name) = s.strip_prefix("marker:") {
         return match store.marker(name).map_err(db)? {
             Some(m) => Ok((m.ts, Some(m.name))),
-            None => Err(format!("No marker named '{name}'. Call list_markers to see what exists.")),
+            None => Err(format!(
+                "No marker named '{name}'. Call list_markers to see what exists."
+            )),
         };
     }
     if let Some(d) = parse_duration(s) {
@@ -215,7 +254,9 @@ pub fn resolve_time(store: &Store, spec: &str, now: f64) -> Result<(f64, Option<
 }
 
 fn duration_arg(s: &str, what: &str) -> Result<f64, String> {
-    parse_duration(s).filter(|d| *d > 0.0).ok_or_else(|| format!("{what} must be a duration like '1h' or '30m', got '{s}'"))
+    parse_duration(s)
+        .filter(|d| *d > 0.0)
+        .ok_or_else(|| format!("{what} must be a duration like '1h' or '30m', got '{s}'"))
 }
 
 fn sample_text(text: &str, d: Detail) -> String {
@@ -227,7 +268,12 @@ fn sample_text(text: &str, d: Detail) -> String {
 }
 
 fn latest_sample(store: &Store, id: &str, d: Detail) -> Option<String> {
-    store.samples(id, 1).ok()?.into_iter().next().map(|(_, t)| sample_text(&t, d))
+    store
+        .samples(id, 1)
+        .ok()?
+        .into_iter()
+        .next()
+        .map(|(_, t)| sample_text(&t, d))
 }
 
 fn pattern_brief(row: &PatternRow, now: f64, d: Detail) -> Value {
@@ -249,7 +295,13 @@ fn min_level_filter(min_level: Option<&str>) -> Result<u8, String> {
     }
 }
 
-fn markers_between(store: &Store, lo: f64, hi: f64, now: f64, d: Detail) -> Result<Vec<Value>, String> {
+fn markers_between(
+    store: &Store,
+    lo: f64,
+    hi: f64,
+    now: f64,
+    d: Detail,
+) -> Result<Vec<Value>, String> {
     Ok(store
         .markers(lo, hi, 10)
         .map_err(db)?
@@ -297,7 +349,14 @@ pub fn whats_new(
         let (kind, order, note) = if *after > 0 && row.first_seen >= split {
             ("new", 0u8, String::new())
         } else if *after > 0 && *before == 0 {
-            ("returning", 1, format!("Back after a quiet baseline; first seen {}.", fmt_t(row.first_seen, now, d)))
+            (
+                "returning",
+                1,
+                format!(
+                    "Back after a quiet baseline; first seen {}.",
+                    fmt_t(row.first_seen, now, d)
+                ),
+            )
         } else if *after >= 5 && *before > 0 && a_rate >= 3.0 * b_rate * traffic.max(1.0) {
             let x = a_rate / b_rate.max(0.001);
             let note = if traffic > 1.2 {
@@ -307,7 +366,14 @@ pub fn whats_new(
             };
             ("spike", 2, note)
         } else if *after == 0 && (*before as f64) * w / b >= 5.0 {
-            ("gone_quiet", 3, format!("Expected ~{:.0} in the window from its baseline rate, saw none.", *before as f64 * w / b))
+            (
+                "gone_quiet",
+                3,
+                format!(
+                    "Expected ~{:.0} in the window from its baseline rate, saw none.",
+                    *before as f64 * w / b
+                ),
+            )
         } else {
             continue;
         };
@@ -344,14 +410,17 @@ pub fn whats_new(
         .collect();
 
     let summary = if findings.is_empty() {
-        format!("Nothing new: {events_in_window} events across {active} known patterns, all within their usual rates.")
+        format!(
+            "Nothing new: {events_in_window} events across {active} known patterns, all within their usual rates."
+        )
     } else {
         format!(
             "{} new, {} returning, {} spiking, {} gone quiet. {events_in_window} events across {active} patterns in the window.",
             tally[0], tally[1], tally[2], tally[3]
         )
     };
-    let traffic_note = (traffic >= 2.0 || traffic <= 0.5).then(|| format!("Overall log volume is {traffic:.1}x its baseline."));
+    let traffic_note = (traffic >= 2.0 || traffic <= 0.5)
+        .then(|| format!("Overall log volume is {traffic:.1}x its baseline."));
     Ok(json!({
         "window": if d.full() {
             format!("last {} (since {}) vs the {} before", fmt_duration(w), fmt_time(split, now), fmt_duration(b))
@@ -375,11 +444,17 @@ pub fn whats_new(
 }
 
 /// Did this pattern stop (or drop) after a point in time?
-pub fn verify_fix(store: &Store, pattern_id: &str, since: &str, before: Option<&str>, d: Detail, now: f64) -> AResult {
-    let row = store
-        .pattern(pattern_id)
-        .map_err(db)?
-        .ok_or_else(|| format!("Unknown pattern_id '{pattern_id}'. Use whats_new or list_patterns to find IDs."))?;
+pub fn verify_fix(
+    store: &Store,
+    pattern_id: &str,
+    since: &str,
+    before: Option<&str>,
+    d: Detail,
+    now: f64,
+) -> AResult {
+    let row = store.pattern(pattern_id).map_err(db)?.ok_or_else(|| {
+        format!("Unknown pattern_id '{pattern_id}'. Use whats_new or list_patterns to find IDs.")
+    })?;
     let (split, marker) = resolve_time(store, since, now)?;
     if split >= now {
         return Err("'since' is in the future.".into());
@@ -447,18 +522,29 @@ pub fn verify_fix(store: &Store, pattern_id: &str, since: &str, before: Option<&
     let (verdict, explanation) = if b == 0 {
         (
             "not_active_before".to_string(),
-            format!("No occurrences in the {} before the split, so there is nothing to compare. Try a longer 'before' window.", fmt_duration(before_secs)),
+            format!(
+                "No occurrences in the {} before the split, so there is nothing to compare. Try a longer 'before' window.",
+                fmt_duration(before_secs)
+            ),
         )
     } else if a == 0 {
         if expected >= MIN_EXPECTED {
-            let conf = if expected >= 2.0 * MIN_EXPECTED { "high" } else { "medium" };
+            let conf = if expected >= 2.0 * MIN_EXPECTED {
+                "high"
+            } else {
+                "medium"
+            };
             base["confidence"] = json!(conf);
             (
                 "fixed".to_string(),
-                format!("At the old rate about {expected:.0} would have occurred since the split; none did."),
+                format!(
+                    "At the old rate about {expected:.0} would have occurred since the split; none did."
+                ),
             )
         } else {
-            let wait = ((MIN_EXPECTED / b_rate - after_secs) / 60.0).ceil().max(1.0);
+            let wait = ((MIN_EXPECTED / b_rate - after_secs) / 60.0)
+                .ceil()
+                .max(1.0);
             base["wait_minutes"] = json!(wait);
             (
                 "too_early".to_string(),
@@ -470,11 +556,26 @@ pub fn verify_fix(store: &Store, pattern_id: &str, since: &str, before: Option<&
     } else {
         let ratio = a_rate / b_rate;
         if ratio >= 2.0 {
-            ("worse".to_string(), format!("Happening {ratio:.1}x as often as before the split."))
+            (
+                "worse".to_string(),
+                format!("Happening {ratio:.1}x as often as before the split."),
+            )
         } else if ratio <= 0.5 && expected >= MIN_EXPECTED {
-            ("reduced".to_string(), format!("Down to {:.0}% of its earlier rate but still occurring.", ratio * 100.0))
+            (
+                "reduced".to_string(),
+                format!(
+                    "Down to {:.0}% of its earlier rate but still occurring.",
+                    ratio * 100.0
+                ),
+            )
         } else {
-            ("still_occurring".to_string(), format!("Still happening at {:.0}% of its earlier rate.", ratio * 100.0))
+            (
+                "still_occurring".to_string(),
+                format!(
+                    "Still happening at {:.0}% of its earlier rate.",
+                    ratio * 100.0
+                ),
+            )
         }
     };
     if (verdict == "fixed" || verdict == "reduced") && tb > 0 {
@@ -492,7 +593,14 @@ pub fn verify_fix(store: &Store, pattern_id: &str, since: &str, before: Option<&
 }
 
 /// Fleet-wide before/after diff around a deploy or other point in time.
-pub fn compare_deploy(store: &Store, at: &str, before: Option<&str>, limit: usize, d: Detail, now: f64) -> AResult {
+pub fn compare_deploy(
+    store: &Store,
+    at: &str,
+    before: Option<&str>,
+    limit: usize,
+    d: Detail,
+    now: f64,
+) -> AResult {
     let (split, marker) = resolve_time(store, at, now)?;
     if split >= now {
         return Err("'at' is in the future.".into());
@@ -505,7 +613,11 @@ pub fn compare_deploy(store: &Store, at: &str, before: Option<&str>, limit: usiz
     let lo = split - span;
     let stats = store.split_counts(lo, split, now).map_err(db)?;
     let (tb, ta) = store.total_split(lo, split, now).map_err(db)?;
-    let traffic = if tb > 0 { (ta as f64 / after_secs) / (tb as f64 / span) } else { 1.0 };
+    let traffic = if tb > 0 {
+        (ta as f64 / after_secs) / (tb as f64 / span)
+    } else {
+        1.0
+    };
 
     let mut found: Vec<((u8, u8, u8, i64), Value)> = vec![];
     let mut tally = [0usize; 4];
@@ -536,7 +648,15 @@ pub fn compare_deploy(store: &Store, at: &str, before: Option<&str>, limit: usiz
             v["after"] = json!(count_str(a, after_secs));
         }
         let group = u8::from(order >= 2);
-        found.push(((group, 4 - level_rank(row.level.as_deref()), order, -(a.max(b))), v));
+        found.push((
+            (
+                group,
+                4 - level_rank(row.level.as_deref()),
+                order,
+                -(a.max(b)),
+            ),
+            v,
+        ));
     }
     found.sort_by_key(|x| x.0);
     let more = found.len().saturating_sub(limit);
@@ -572,9 +692,18 @@ pub fn list_patterns(
         .map_err(db)?
         .into_iter()
         .filter(|s| s.before > 0 && level_rank(s.row.level.as_deref()) >= min_rank)
-        .filter(|s| needle.as_ref().is_none_or(|n| s.row.template.to_lowercase().contains(n)))
+        .filter(|s| {
+            needle
+                .as_ref()
+                .is_none_or(|n| s.row.template.to_lowercase().contains(n))
+        })
         .collect();
-    stats.sort_by_key(|s| (std::cmp::Reverse(level_rank(s.row.level.as_deref())), std::cmp::Reverse(s.before)));
+    stats.sort_by_key(|s| {
+        (
+            std::cmp::Reverse(level_rank(s.row.level.as_deref())),
+            std::cmp::Reverse(s.before),
+        )
+    });
     let total = stats.len();
     let items: Vec<Value> = stats
         .iter()
@@ -593,7 +722,13 @@ pub fn list_patterns(
     }))
 }
 
-pub fn get_pattern(store: &Store, pattern_id: &str, samples: Option<i64>, d: Detail, now: f64) -> AResult {
+pub fn get_pattern(
+    store: &Store,
+    pattern_id: &str,
+    samples: Option<i64>,
+    d: Detail,
+    now: f64,
+) -> AResult {
     let row = store
         .pattern(pattern_id)
         .map_err(db)?
@@ -608,19 +743,31 @@ pub fn get_pattern(store: &Store, pattern_id: &str, samples: Option<i64>, d: Det
     v["hourly_last_24h"] = json!(store.histogram(&row.id, day, now, 3600.0).map_err(db)?);
     v["markers_last_24h"] = json!(markers_between(store, day, now, now, d)?);
     let n = samples.unwrap_or(if d.full() { 3 } else { 1 }).clamp(1, 5);
-    v["samples"] = json!(store
-        .samples(&row.id, n)
-        .map_err(db)?
-        .into_iter()
-        .map(|(ts, t)| {
-            let text = if d.full() { truncate(&t, 1500) } else { truncate(&trim_trace(&t, 16), 800) };
-            json!({"at": fmt_t(ts, now, d), "text": text})
-        })
-        .collect::<Vec<_>>());
+    v["samples"] = json!(
+        store
+            .samples(&row.id, n)
+            .map_err(db)?
+            .into_iter()
+            .map(|(ts, t)| {
+                let text = if d.full() {
+                    truncate(&t, 1500)
+                } else {
+                    truncate(&trim_trace(&t, 16), 800)
+                };
+                json!({"at": fmt_t(ts, now, d), "text": text})
+            })
+            .collect::<Vec<_>>()
+    );
     Ok(v)
 }
 
-pub fn add_marker(store: &Store, name: &str, note: Option<&str>, at: Option<&str>, now: f64) -> AResult {
+pub fn add_marker(
+    store: &Store,
+    name: &str,
+    note: Option<&str>,
+    at: Option<&str>,
+    now: f64,
+) -> AResult {
     let name = name.trim();
     if name.is_empty() {
         return Err("Marker name can't be empty.".into());
@@ -634,7 +781,9 @@ pub fn add_marker(store: &Store, name: &str, note: Option<&str>, at: Option<&str
 }
 
 pub fn list_markers(store: &Store, limit: i64, now: f64) -> AResult {
-    let ms = store.markers(f64::MIN, f64::MAX, limit.clamp(1, 100)).map_err(db)?;
+    let ms = store
+        .markers(f64::MIN, f64::MAX, limit.clamp(1, 100))
+        .map_err(db)?;
     Ok(json!({
         "markers": ms.into_iter().map(|m| json!({"name": m.name, "kind": m.kind, "at": fmt_time(m.ts, now), "note": m.note})).collect::<Vec<_>>()
     }))

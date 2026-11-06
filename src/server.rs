@@ -110,7 +110,10 @@ fn detail(d: &Option<String>) -> Result<Detail, String> {
 #[tool_router]
 impl LogServer {
     pub fn new(store: Arc<Store>) -> Self {
-        Self { store, tool_router: Self::tool_router() }
+        Self {
+            store,
+            tool_router: Self::tool_router(),
+        }
     }
 
     #[tool(
@@ -134,14 +137,24 @@ impl LogServer {
         annotations(read_only_hint = true)
     )]
     fn verify_fix(&self, Parameters(a): Parameters<VerifyFixArgs>) -> Result<String, String> {
-        out(analysis::verify_fix(&self.store, &a.pattern_id, &a.since, a.before.as_deref(), detail(&a.detail)?, analysis::now()))
+        out(analysis::verify_fix(
+            &self.store,
+            &a.pattern_id,
+            &a.since,
+            a.before.as_deref(),
+            detail(&a.detail)?,
+            analysis::now(),
+        ))
     }
 
     #[tool(
         description = "What changed around a deploy: new_after (likely regressions), increased, stopped, decreased.",
         annotations(read_only_hint = true)
     )]
-    fn compare_deploy(&self, Parameters(a): Parameters<CompareDeployArgs>) -> Result<String, String> {
+    fn compare_deploy(
+        &self,
+        Parameters(a): Parameters<CompareDeployArgs>,
+    ) -> Result<String, String> {
         out(analysis::compare_deploy(
             &self.store,
             &a.at,
@@ -173,15 +186,31 @@ impl LogServer {
         annotations(read_only_hint = true)
     )]
     fn get_pattern(&self, Parameters(a): Parameters<GetPatternArgs>) -> Result<String, String> {
-        out(analysis::get_pattern(&self.store, &a.pattern_id, a.samples, detail(&a.detail)?, analysis::now()))
+        out(analysis::get_pattern(
+            &self.store,
+            &a.pattern_id,
+            a.samples,
+            detail(&a.detail)?,
+            analysis::now(),
+        ))
     }
 
     #[tool(
         description = "Name a point in time (e.g. a fix going live) for verify_fix/compare_deploy.",
-        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
     )]
     fn add_marker(&self, Parameters(a): Parameters<AddMarkerArgs>) -> Result<String, String> {
-        out(analysis::add_marker(&self.store, &a.name, a.note.as_deref(), a.at.as_deref(), analysis::now()))
+        out(analysis::add_marker(
+            &self.store,
+            &a.name,
+            a.note.as_deref(),
+            a.at.as_deref(),
+            analysis::now(),
+        ))
     }
 
     #[tool(
@@ -189,7 +218,11 @@ impl LogServer {
         annotations(read_only_hint = true)
     )]
     fn list_markers(&self, Parameters(a): Parameters<ListMarkersArgs>) -> Result<String, String> {
-        out(analysis::list_markers(&self.store, a.limit.unwrap_or(20), analysis::now()))
+        out(analysis::list_markers(
+            &self.store,
+            a.limit.unwrap_or(20),
+            analysis::now(),
+        ))
     }
 }
 
