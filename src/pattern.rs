@@ -70,8 +70,37 @@ static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 const MAX_TEMPLATE_CHARS: usize = 400;
 const MAX_EVENT_LINES: usize = 200;
 
+static HAS_ZONE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:[Zz]|[+-]\d{2}:?\d{2})$").unwrap());
+
+/// Whether a timestamp string carries its own zone ("Z" or an offset).
+pub fn has_zone(raw: &str) -> bool {
+    HAS_ZONE.is_match(raw.trim())
+}
+
+/// Parse "UTC", "Z", "+02:00", "-0800" or "+5" into seconds east of UTC.
+pub fn parse_utc_offset(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("utc") || s.eq_ignore_ascii_case("z") {
+        return Some(0);
+    }
+    let (sign, rest) = match s.chars().next()? {
+        '+' => (1, &s[1..]),
+        '-' => (-1, &s[1..]),
+        _ => return None,
+    };
+    let digits: String = rest.chars().filter(|c| *c != ':').collect();
+    if digits.is_empty() || digits.len() > 4 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (h, m) = if digits.len() <= 2 { (digits.parse::<i32>().ok()?, 0) } else {
+        let split = digits.len() - 2;
+        (digits[..split].parse::<i32>().ok()?, digits[split..].parse::<i32>().ok()?)
+    };
+    (h <= 14 && m < 60).then_some(sign * (h * 3600 + m * 60))
+}
+
 /// Parse a timestamp string into epoch seconds. Timestamps without a zone are
-/// read as UTC.
+/// read as UTC (the collector can shift them with --log-tz).
 pub fn parse_timestamp(raw: &str) -> Option<f64> {
     let mut s = raw.trim().replace(',', ".");
     if s.len() > 10 && s.as_bytes()[10] == b' ' {
@@ -131,6 +160,8 @@ pub fn pattern_id(template: &str) -> String {
 pub struct Event {
     /// Epoch seconds, from the log line when it has a timestamp.
     pub ts: Option<f64>,
+    /// The timestamp came from the log without a zone, so it was read as UTC.
+    pub ts_naive: bool,
     pub level: Option<&'static str>,
     /// Redacted first line, without the timestamp prefix.
     pub head: String,
@@ -177,18 +208,19 @@ fn json_str(v: &serde_json::Value, keys: &[&str]) -> Option<String> {
     None
 }
 
-fn json_ts(v: &serde_json::Value) -> Option<f64> {
+/// The event time and whether it lacked a zone.
+fn json_ts(v: &serde_json::Value) -> Option<(f64, bool)> {
     for k in ["timestamp", "time", "ts", "@timestamp", "t", "datetime"] {
         match v.get(k) {
             Some(serde_json::Value::String(s)) => {
                 if let Some(t) = parse_timestamp(s) {
-                    return Some(t);
+                    return Some((t, !has_zone(s)));
                 }
             }
             Some(serde_json::Value::Number(n)) => {
                 let f = n.as_f64()?;
                 // Milliseconds vs seconds.
-                return Some(if f > 1e11 { f / 1000.0 } else { f });
+                return Some((if f > 1e11 { f / 1000.0 } else { f }, false));
             }
             _ => {}
         }
@@ -223,7 +255,10 @@ pub fn parse_event(
         },
         false => {
             let (ts, msg) = match TS_PREFIX.captures(first) {
-                Some(c) => (parse_timestamp(&c[1]), first[c.get(0).unwrap().end()..].to_string()),
+                Some(c) => (
+                    parse_timestamp(&c[1]).map(|t| (t, !has_zone(&c[1]))),
+                    first[c.get(0).unwrap().end()..].to_string(),
+                ),
                 None => (None, first.to_string()),
             };
             let level = detect_level(&msg);
@@ -232,7 +267,8 @@ pub fn parse_event(
     };
 
     let level = level_hint.and_then(normalize_level).or(level);
-    let ts = ts_hint.or(ts);
+    let ts_naive = ts_hint.is_none() && ts.is_some_and(|(_, naive)| naive);
+    let ts = ts_hint.or(ts.map(|(t, _)| t));
 
     let mut body_lines: Vec<String> = vec![message.clone()];
     if let Some(e) = &extra_body {
@@ -248,7 +284,7 @@ pub fn parse_event(
         template = format!("{template} | {e}");
     }
     let pattern_id = pattern_id(&template);
-    Event { ts, level, head, body, template, pattern_id, exc_type }
+    Event { ts, ts_naive, level, head, body, template, pattern_id, exc_type }
 }
 
 /// Groups physical lines into log events, so a stack trace stays attached to
@@ -383,6 +419,19 @@ mod tests {
         assert_eq!(e.level, Some("ERROR"));
         assert_eq!(e.template, "ERROR db timeout after <NUM>");
         assert!((e.ts.unwrap() - 1793959200.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn utc_offsets_and_zone_detection() {
+        assert_eq!(parse_utc_offset("UTC"), Some(0));
+        assert_eq!(parse_utc_offset("+02:00"), Some(7200));
+        assert_eq!(parse_utc_offset("-0800"), Some(-28800));
+        assert_eq!(parse_utc_offset("+5"), Some(18000));
+        assert_eq!(parse_utc_offset("+05:30"), Some(19800));
+        assert_eq!(parse_utc_offset("Europe/Paris"), None);
+        assert!(ev("2026-11-06 10:00:00 INFO x").ts_naive);
+        assert!(!ev("2026-11-06T10:00:00Z INFO x").ts_naive);
+        assert!(!ev("2026-11-06T10:00:00+0200 INFO x").ts_naive);
     }
 
     #[test]

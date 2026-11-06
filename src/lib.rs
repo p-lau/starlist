@@ -2,6 +2,8 @@
 
 pub mod analysis;
 pub mod collector;
+pub mod http;
+pub mod merge;
 pub mod pattern;
 pub mod redact;
 pub mod server;

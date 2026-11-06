@@ -6,10 +6,7 @@ use starlist::server::LogServer;
 use starlist::store::Store;
 use regex::Regex;
 use rmcp::ServiceExt;
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
-};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -77,6 +74,12 @@ struct PipelineArgs {
     /// Turn off deploy detection from log lines.
     #[arg(long)]
     no_auto_markers: bool,
+    /// UTC offset for log timestamps that have no zone, like "+02:00" or "-0800". Default UTC.
+    #[arg(long, value_parser = parse_tz)]
+    log_tz: Option<i32>,
+    /// Merge patterns that differ in one word once it has taken this many values (0 turns merging off).
+    #[arg(long, default_value_t = starlist::merge::DEFAULT_THRESHOLD)]
+    merge_after: usize,
 }
 
 #[derive(Args, Clone)]
@@ -108,6 +111,52 @@ struct McpArgs {
     /// Address for MCP over HTTP; the endpoint is http://ADDR/mcp.
     #[arg(long, default_value = "127.0.0.1:7341")]
     http: String,
+    /// Require `Authorization: Bearer TOKEN` on HTTP. When listening beyond localhost
+    /// without one, a token is generated and saved next to the database (`<db>.token`).
+    #[arg(long, env = "STARLIST_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+    /// Host names clients use to reach this server (repeatable). Only needed to keep
+    /// Host-header checks on when listening beyond localhost.
+    #[arg(long = "allowed-host")]
+    allowed_hosts: Vec<String>,
+}
+
+fn parse_tz(s: &str) -> Result<i32, String> {
+    starlist::pattern::parse_utc_offset(s).ok_or_else(|| format!("'{s}' is not a UTC offset; use e.g. UTC, +02:00 or -0800"))
+}
+
+fn is_loopback(addr: &str) -> bool {
+    match addr.parse::<std::net::SocketAddr>() {
+        Ok(a) => a.ip().is_loopback(),
+        Err(_) => addr.split(':').next().is_some_and(|h| h.eq_ignore_ascii_case("localhost")),
+    }
+}
+
+/// The token to require, if any. Listening beyond localhost always needs one.
+fn resolve_token(mcp: &McpArgs, db: &Path) -> Result<Option<String>> {
+    if let Some(t) = &mcp.token {
+        if t.trim().len() < 16 {
+            bail!("--token should be at least 16 characters");
+        }
+        return Ok(Some(t.trim().to_string()));
+    }
+    if is_loopback(&mcp.http) {
+        return Ok(None);
+    }
+    let path = db.with_extension("token");
+    if let Ok(t) = std::fs::read_to_string(&path) {
+        eprintln!("starlist: requiring the bearer token in {}", path.display());
+        return Ok(Some(t.trim().to_string()));
+    }
+    let t = starlist::http::generate_token()?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    use std::io::Write;
+    opts.open(&path).and_then(|mut f| f.write_all(t.as_bytes())).with_context(|| format!("writing {}", path.display()))?;
+    eprintln!("starlist: listening beyond localhost, so a bearer token is required. Generated one in {}", path.display());
+    Ok(Some(t))
 }
 
 fn open_store(db: &PathBuf) -> Result<Arc<Store>> {
@@ -121,7 +170,8 @@ fn pipeline(opts: &PipelineArgs, store: Arc<Store>) -> Result<Pipeline> {
     } else {
         Some(Regex::new(&opts.marker_regex).context("bad --marker-regex")?)
     };
-    Ok(Pipeline::new(store, Redactor::new(!opts.keep_ips, extra), marker))
+    let merge = (opts.merge_after > 0).then_some(opts.merge_after);
+    Ok(Pipeline::with_merging(store, Redactor::new(!opts.keep_ips, extra), marker, merge).with_log_tz(opts.log_tz.unwrap_or(0)))
 }
 
 /// Start collection threads. Returns a handle that finishes when stdin closes (if reading stdin).
@@ -145,19 +195,15 @@ fn start_collection(src: &SourceArgs, store: Arc<Store>) -> Result<Option<std::t
     Ok(None)
 }
 
-async fn run_mcp(store: Arc<Store>, mcp: &McpArgs) -> Result<()> {
+async fn run_mcp(store: Arc<Store>, mcp: &McpArgs, db: &Path) -> Result<()> {
     if mcp.stdio {
         eprintln!("starlist: serving MCP over stdio");
         let svc = LogServer::new(store).serve(rmcp::transport::stdio()).await?;
         svc.waiting().await?;
         return Ok(());
     }
-    let service: StreamableHttpService<LogServer, LocalSessionManager> = StreamableHttpService::new(
-        move || Ok(LogServer::new(store.clone())),
-        Default::default(),
-        StreamableHttpServerConfig::default(),
-    );
-    let router = axum::Router::new().nest_service("/mcp", service);
+    let token = resolve_token(mcp, db)?;
+    let router = starlist::http::router(store, token, mcp.allowed_hosts.clone());
     let listener = tokio::net::TcpListener::bind(&mcp.http).await.with_context(|| format!("binding {}", mcp.http))?;
     eprintln!("starlist: MCP endpoint http://{}/mcp", listener.local_addr()?);
     axum::serve(listener, router).with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; }).await?;
@@ -174,7 +220,7 @@ async fn main() -> Result<()> {
             }
             let store = open_store(&src.opts.db)?;
             start_collection(&src, store.clone())?;
-            run_mcp(store, &mcp).await
+            run_mcp(store, &mcp, &src.opts.db).await
         }
         Cmd::Collect { src } => {
             let store = open_store(&src.opts.db)?;
@@ -184,7 +230,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Mcp { db, mcp } => run_mcp(open_store(&db)?, &mcp).await,
+        Cmd::Mcp { db, mcp } => run_mcp(open_store(&db)?, &mcp, &db).await,
         Cmd::Ingest { files, opts } => {
             let store = open_store(&opts.db)?;
             let p = pipeline(&opts, store)?;
