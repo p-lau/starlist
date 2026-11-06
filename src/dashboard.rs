@@ -19,6 +19,20 @@ const PLACEHOLDER: &str = r#"<!doctype html>
 <p>MCP is at <code>/mcp</code> and the JSON API at <code>/api/v1</code>.</p>
 </body></html>"#;
 
+/// The dashboard only talks to its own server and loads nothing from elsewhere.
+const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'";
+
+fn secure(h: &mut axum::http::HeaderMap) {
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CSP),
+    );
+}
+
 /// Whether the dashboard was built into this binary.
 pub fn embedded() -> bool {
     !files::FILES.is_empty()
@@ -46,7 +60,9 @@ fn content_type(path: &str) -> &'static str {
 /// Serve a dashboard file, or the app shell for any other page path.
 pub async fn serve(req: Request) -> Response {
     if !embedded() {
-        return Html(PLACEHOLDER).into_response();
+        let mut res = Html(PLACEHOLDER).into_response();
+        secure(res.headers_mut());
+        return res;
     }
     let path = req.uri().path().trim_start_matches('/');
     let file = match find(path) {
@@ -90,16 +106,6 @@ pub async fn serve(req: Request) -> Response {
             "no-cache"
         }),
     );
-    h.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    // The dashboard only talks to its own server and loads nothing from elsewhere.
-    h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
-        ),
-    );
+    secure(h);
     res
 }
