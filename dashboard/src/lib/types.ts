@@ -44,6 +44,15 @@ export interface Status {
 	last_hour: { events: number; errors: number };
 	raw: { events: number; oldest: string | null };
 	alerts: boolean;
+	health?: {
+		db_bytes: number | null;
+		memory_bytes: number | null;
+		events_per_sec: number;
+		new_patterns_last_hour: number;
+		hub_dropped: number;
+		retention_secs: number | null;
+		history_secs: number | null;
+	};
 }
 
 export interface Timeline {

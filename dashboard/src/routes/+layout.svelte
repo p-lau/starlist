@@ -2,13 +2,20 @@
 	import '../app.css';
 	import { page } from '$app/state';
 	import { get, session, setService, setToken, startLive } from '#lib/api.svelte.ts';
-	import { ago } from '#lib/format.ts';
+	import { ago, approx, bytes, num } from '#lib/format.ts';
 	import type { Status } from '#lib/types.ts';
 	import { onMount } from 'svelte';
 
 	let { children } = $props();
-	let status: Status | null = $state(null);
+	let status = $state<Status | null>(null);
 	let tokenInput = $state('');
+
+	// Many new patterns an hour means lines aren't grouping, and the pattern table grows for good.
+	const MANY_NEW_PATTERNS = 1000;
+	let health = $derived(status?.health);
+	let healthWarn = $derived(
+		!!health && (health.hub_dropped > 0 || health.new_patterns_last_hour >= MANY_NEW_PATTERNS)
+	);
 
 	onMount(startLive);
 
@@ -103,6 +110,21 @@
 
 <footer class="faint">
 	{#if status}starlist {status.version} · {status.patterns} patterns{#if status.raw?.oldest}{' · '}raw lines since {ago(status.raw.oldest)}{/if}{/if}
+	{#if health}
+		<div class="health" class:warn={healthWarn}>
+			{#if health.db_bytes != null}<span title="Database on disk, with its write-ahead log">database {bytes(health.db_bytes)}</span>{/if}
+			{#if health.memory_bytes != null}<span title="Memory starlist is using now">memory {bytes(health.memory_bytes)}</span>{/if}
+			<span title="Log lines read per second, over the last minute">{approx(health.events_per_sec)} lines/s</span>
+			<span
+				title="Patterns first seen in the last hour. A steady stream of new ones means lines aren't grouping: add --group rules or use --merge-after."
+				>{num(health.new_patterns_last_hour)} new patterns/h</span
+			>
+			{#if health.hub_dropped > 0}<span
+					title="Batches dropped because the hub was unreachable for longer than --hub-buffer could hold"
+					>{num(health.hub_dropped)} batches dropped</span
+				>{/if}
+		</div>
+	{/if}
 </footer>
 
 <style>
@@ -215,6 +237,18 @@
 		margin: 0 auto;
 		padding: 0 16px 24px;
 		font-size: 0.8rem;
+	}
+	.health {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px 14px;
+		margin-top: 4px;
+	}
+	.health span {
+		cursor: help;
+	}
+	.health.warn {
+		color: var(--warn);
 	}
 	@media (max-width: 560px) {
 		header .inner {

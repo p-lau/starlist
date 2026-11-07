@@ -533,6 +533,8 @@ fn start_collection(
     let history = starlist::analysis::parse_duration(&src.history)
         .context("bad --history")?
         .max(retention);
+    store.set_meta("retention_secs", Some(&retention.to_string()))?;
+    store.set_meta("history_secs", Some(&history.to_string()))?;
     collector::spawn_pruner(store.clone(), retention, history);
     if let Some(v) = src
         .app_version

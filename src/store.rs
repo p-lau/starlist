@@ -1039,6 +1039,27 @@ impl Store {
             .query_row("SELECT COUNT(*) FROM patterns", [], |r| r.get(0))
     }
 
+    /// Patterns first seen at or after `since`.
+    pub fn new_pattern_count(&self, since: f64) -> R<i64> {
+        self.conn().query_row(
+            "SELECT COUNT(*) FROM patterns WHERE first_seen >= ?1",
+            [since],
+            |r| r.get(0),
+        )
+    }
+
+    /// Bytes the database takes on disk, with its write-ahead log; `None` in memory.
+    pub fn disk_bytes(&self) -> R<Option<u64>> {
+        let path: String = self
+            .conn()
+            .query_row("PRAGMA database_list", [], |r| r.get(2))?;
+        if path.is_empty() {
+            return Ok(None);
+        }
+        let size = |p: &str| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        Ok(Some(size(&path) + size(&format!("{path}-wal"))))
+    }
+
     /// Code locations of a pattern's events, most frequent first.
     pub fn locations(&self, pattern_id: &str, limit: i64) -> R<Vec<(String, i64)>> {
         let conn = self.conn();

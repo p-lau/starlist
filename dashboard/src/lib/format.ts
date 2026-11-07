@@ -65,3 +65,11 @@ const sf = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 3 });
 export function approx(n: number | null | undefined): string {
 	return n === null || n === undefined ? '' : sf.format(n);
 }
+
+/** A size in bytes, like "63 MB". */
+export function bytes(n: number | null | undefined): string {
+	if (n === null || n === undefined) return '';
+	if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+	if (n < 1024 ** 3) return `${sf.format(n / 1024 ** 2)} MB`;
+	return `${sf.format(n / 1024 ** 3)} GB`;
+}

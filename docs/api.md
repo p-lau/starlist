@@ -54,9 +54,26 @@ curl -s -H "Authorization: Bearer $(cat starlist.token)" http://host:7341/api/v1
   "patterns": 42,
   "last_hour": {"events": 9120, "errors": 27},
   "raw": {"events": 51234, "oldest": "2026-11-05T09:12:00.000Z"},
-  "alerts": true
+  "alerts": true,
+  "health": {
+    "db_bytes": 66060288,
+    "memory_bytes": 29360128,
+    "events_per_sec": 152.0,
+    "new_patterns_last_hour": 2,
+    "hub_dropped": 0,
+    "retention_secs": 86400,
+    "history_secs": 2592000
+  }
 }
 ```
+
+`health` shows what starlist itself costs and whether it is keeping up:
+`db_bytes` is the database on disk with its write-ahead log; `memory_bytes` is
+the process's resident memory (Linux only, `null` elsewhere);
+`events_per_sec` is the last minute's rate; `new_patterns_last_hour` climbing
+steadily means many lines don't group (see Known limits in the README);
+`hub_dropped` counts queued batches dropped while a hub was unreachable;
+`retention_secs` and `history_secs` are the settings in effect (`null` on a hub).
 
 ### `GET /timeline`
 
