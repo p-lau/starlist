@@ -11,7 +11,6 @@
 //! "job started" / "job failed": a status word rarely has five values.
 
 use crate::pattern::Event;
-use crate::store::Store;
 use std::collections::{HashMap, HashSet};
 
 pub const DEFAULT_THRESHOLD: usize = 5;
@@ -98,14 +97,20 @@ impl Merger {
         }
     }
 
-    /// Load existing patterns and aliases so merging continues across restarts.
-    /// Merges that the stored patterns already qualify for are applied.
-    pub fn load(threshold: usize, store: &Store) -> rusqlite::Result<Self> {
+    /// Restore a merger from known aliases (alias ID -> canonical ID) and
+    /// pattern templates, so merging continues across restarts. Merges that
+    /// the known patterns already qualify for are passed to `apply`.
+    pub fn restore<E>(
+        threshold: usize,
+        aliases: HashMap<String, String>,
+        templates: impl IntoIterator<Item = (String, String)>,
+        mut apply: impl FnMut(&MergeOp) -> Result<(), E>,
+    ) -> Result<Self, E> {
         let mut m = Self::new(threshold);
-        m.aliases = store.aliases()?;
-        for (id, template) in store.pattern_templates()? {
+        m.aliases = aliases;
+        for (id, template) in templates {
             if let Some(op) = m.observe_new(&id, &template) {
-                store.merge_patterns(&op)?;
+                apply(&op)?;
             }
         }
         Ok(m)

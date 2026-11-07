@@ -4,19 +4,21 @@ pub mod alerts;
 pub mod analysis;
 pub mod api;
 pub mod collector;
+#[cfg(feature = "dashboard")]
 pub mod dashboard;
 pub mod diagnose;
 pub mod export;
 pub mod http;
+#[cfg(feature = "hub")]
 pub mod hub;
 pub mod issues;
-pub mod location;
-pub mod merge;
 pub mod metrics;
-pub mod pattern;
+#[cfg(feature = "prometheus")]
 pub mod prometheus;
 pub mod push;
-pub mod redact;
-pub mod request;
 pub mod server;
 pub mod store;
+
+// The log engine lives in starlist-core; re-exported so `starlist::pattern`
+// and friends keep working.
+pub use starlist_core::{location, merge, pattern, redact, request};

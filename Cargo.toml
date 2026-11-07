@@ -1,18 +1,43 @@
-[package]
-name = "starlist"
+[workspace]
+members = ["core"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+regex = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+sha1_smol = { version = "1", features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[package]
+name = "starlist"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["dashboard", "hub", "prometheus"]
+# Serve the embedded Svelte dashboard at `/` (built from dashboard/ when present).
+dashboard = []
+# The `hub` and `hub-token` commands. Collectors can push to a hub either way.
+hub = ["dep:sha1_smol"]
+# `--prometheus`: serve metrics at `/metrics`.
+prometheus = []
 
 [dependencies]
+starlist-core = { path = "core" }
 rmcp = { version = "3.9", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json.workspace = true
 schemars = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
-regex = "1"
-sha1_smol = { version = "1", features = ["std"] }
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+regex.workspace = true
+sha1_smol = { workspace = true, optional = true }
+chrono.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 axum = "0.8"
 anyhow = "1"
@@ -25,6 +50,14 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 # The MCP client is only used by the example agent and the end-to-end test.
 rmcp = { version = "3.9", features = ["client", "transport-streamable-http-client-reqwest"] }
 reqwest = { version = "0.13", default-features = false }
+
+[[test]]
+name = "dashboard"
+required-features = ["dashboard"]
+
+[[test]]
+name = "hub"
+required-features = ["hub"]
 
 [profile.release]
 opt-level = "s"

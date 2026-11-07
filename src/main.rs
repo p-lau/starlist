@@ -65,6 +65,7 @@ enum Cmd {
     },
     /// Run a hub that collectors push to (`--hub URL --service NAME`), and
     /// serve MCP, the API and the dashboard over all of their services.
+    #[cfg_attr(not(feature = "hub"), command(hide = true))]
     Hub {
         /// Directory for the hub's databases, one per service, and its tokens.
         #[arg(long, default_value = "starlist-hub")]
@@ -85,6 +86,7 @@ enum Cmd {
         mcp: McpArgs,
     },
     /// Create a token a collector uses to push one service to a hub.
+    #[cfg_attr(not(feature = "hub"), command(hide = true))]
     HubToken {
         service: String,
         /// The hub's directory.
@@ -251,9 +253,11 @@ struct McpArgs {
     cors_origins: Vec<String>,
     /// Don't serve the dashboard at http://ADDR/.
     #[arg(long)]
+    #[cfg_attr(not(feature = "dashboard"), arg(hide = true))]
     no_dashboard: bool,
     /// Serve Prometheus metrics at http://ADDR/metrics (same token as the API).
     #[arg(long)]
+    #[cfg_attr(not(feature = "prometheus"), arg(hide = true))]
     prometheus: bool,
     /// MCP tools to offer: "all" (default), "core" (diagnose, whats_new, get_pattern,
     /// get_context, get_request, verify_fix) or a comma-separated list of names. Fewer
@@ -495,6 +499,9 @@ fn http_config(
     alerts: Option<Arc<starlist::alerts::Alerts>>,
 ) -> Result<starlist::http::HttpConfig> {
     let api = !mcp.no_api;
+    if mcp.prometheus && !cfg!(feature = "prometheus") {
+        bail!("--prometheus: this starlist was built without the `prometheus` feature");
+    }
     Ok(starlist::http::HttpConfig {
         token: resolve_token(mcp, db)?,
         allowed_hosts: mcp.allowed_hosts.clone(),
@@ -516,6 +523,7 @@ async fn serve_http(router: axum::Router, mcp: &McpArgs) -> Result<()> {
     eprintln!("starlist: MCP endpoint http://{addr}/mcp");
     if api {
         eprintln!("starlist: JSON API http://{addr}/api/v1");
+        #[cfg(feature = "dashboard")]
         if !mcp.no_dashboard {
             let note = if starlist::dashboard::embedded() {
                 ""
@@ -579,6 +587,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        #[cfg(feature = "hub")]
         Cmd::Hub {
             dir,
             raw_size,
@@ -629,6 +638,7 @@ async fn main() -> Result<()> {
             );
             serve_http(starlist::http::hub_app(hub, cfg), &mcp).await
         }
+        #[cfg(feature = "hub")]
         Cmd::HubToken { service, dir } => {
             let token =
                 starlist::hub::Hub::add_token(&dir, &service).map_err(anyhow::Error::msg)?;
@@ -638,6 +648,10 @@ async fn main() -> Result<()> {
             );
             println!("{token}");
             Ok(())
+        }
+        #[cfg(not(feature = "hub"))]
+        Cmd::Hub { .. } | Cmd::HubToken { .. } => {
+            bail!("this starlist was built without the `hub` feature")
         }
         Cmd::Export { since, db } => {
             let store = open_store(&db)?;

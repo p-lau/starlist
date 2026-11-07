@@ -181,36 +181,39 @@ fn prometheus_and_export() {
     )
     .unwrap();
 
-    let text = starlist::prometheus::render(&s, now).unwrap();
-    assert!(
-        text.contains("starlist_events_total{level=\"INFO\"} 20"),
-        "{text}"
-    );
-    assert!(
-        text.contains("starlist_events_total{level=\"ERROR\"} 1"),
-        "{text}"
-    );
-    assert!(
-        text.contains("starlist_patterns_by_state{state=\"regressed\"} 1"),
-        "{text}"
-    );
-    assert!(
-        text.contains("starlist_patterns_by_state{state=\"open\"} 1"),
-        "{text}"
-    );
-    assert!(
-        text.contains("starlist_field{field=\"duration_ms\",quantile=\"0.5\"}"),
-        "{text}"
-    );
-    assert!(
-        text.contains("starlist_field_count{field=\"duration_ms\"} 20"),
-        "{text}"
-    );
-    assert!(text.contains("# TYPE starlist_db_bytes gauge"));
-    for l in text.lines().filter(|l| !l.starts_with('#')) {
-        let (_, v) = l.rsplit_once(' ').unwrap();
-        v.parse::<f64>()
-            .unwrap_or_else(|_| panic!("bad sample line {l}"));
+    #[cfg(feature = "prometheus")]
+    {
+        let text = starlist::prometheus::render(&s, now).unwrap();
+        assert!(
+            text.contains("starlist_events_total{level=\"INFO\"} 20"),
+            "{text}"
+        );
+        assert!(
+            text.contains("starlist_events_total{level=\"ERROR\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("starlist_patterns_by_state{state=\"regressed\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("starlist_patterns_by_state{state=\"open\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("starlist_field{field=\"duration_ms\",quantile=\"0.5\"}"),
+            "{text}"
+        );
+        assert!(
+            text.contains("starlist_field_count{field=\"duration_ms\"} 20"),
+            "{text}"
+        );
+        assert!(text.contains("# TYPE starlist_db_bytes gauge"));
+        for l in text.lines().filter(|l| !l.starts_with('#')) {
+            let (_, v) = l.rsplit_once(' ').unwrap();
+            v.parse::<f64>()
+                .unwrap_or_else(|_| panic!("bad sample line {l}"));
+        }
     }
 
     let mut buf = vec![];
@@ -298,56 +301,59 @@ async fn fields_api_and_metrics_endpoint() {
     let (c, _) = j(format!("{base}/api/v1/fields/x?pattern_id=nope")).await;
     assert_eq!(c, 404);
 
-    let r = reqwest::get(format!("{base}/metrics")).await.unwrap();
-    assert_eq!(r.status().as_u16(), 200);
-    assert!(
-        r.headers()["content-type"]
-            .to_str()
-            .unwrap()
-            .starts_with("text/plain; version=0.0.4")
-    );
-    assert!(r.text().await.unwrap().contains("starlist_events_total"));
+    #[cfg(feature = "prometheus")]
+    {
+        let r = reqwest::get(format!("{base}/metrics")).await.unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        assert!(
+            r.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain; version=0.0.4")
+        );
+        assert!(r.text().await.unwrap().contains("starlist_events_total"));
 
-    // Off unless asked for, and behind the token like the API.
-    let off = serve(
-        s.clone(),
-        HttpConfig {
-            api: true,
-            ..Default::default()
-        },
-    )
-    .await;
-    assert_eq!(
-        reqwest::get(format!("{off}/metrics"))
+        // Off unless asked for, and behind the token like the API.
+        let off = serve(
+            s.clone(),
+            HttpConfig {
+                api: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            reqwest::get(format!("{off}/metrics"))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            404
+        );
+        let token = "0123456789abcdef0123456789abcdef";
+        let locked = serve(
+            s,
+            HttpConfig {
+                token: Some(token.into()),
+                prometheus: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            reqwest::get(format!("{locked}/metrics"))
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+            401
+        );
+        let ok = reqwest::Client::new()
+            .get(format!("{locked}/metrics"))
+            .bearer_auth(token)
+            .send()
             .await
-            .unwrap()
-            .status()
-            .as_u16(),
-        404
-    );
-    let token = "0123456789abcdef0123456789abcdef";
-    let locked = serve(
-        s,
-        HttpConfig {
-            token: Some(token.into()),
-            prometheus: true,
-            ..Default::default()
-        },
-    )
-    .await;
-    assert_eq!(
-        reqwest::get(format!("{locked}/metrics"))
-            .await
-            .unwrap()
-            .status()
-            .as_u16(),
-        401
-    );
-    let ok = reqwest::Client::new()
-        .get(format!("{locked}/metrics"))
-        .bearer_auth(token)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(ok.status().as_u16(), 200);
+            .unwrap();
+        assert_eq!(ok.status().as_u16(), 200);
+    }
 }

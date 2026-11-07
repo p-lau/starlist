@@ -701,6 +701,17 @@ impl Store {
     }
 
     /// All patterns' IDs and templates, oldest first.
+    /// A pattern merger that continues from the stored patterns and aliases,
+    /// applying merges they already qualify for.
+    pub fn merger(&self, threshold: usize) -> R<crate::merge::Merger> {
+        crate::merge::Merger::restore(
+            threshold,
+            self.aliases()?,
+            self.pattern_templates()?,
+            |op| self.merge_patterns(op),
+        )
+    }
+
     pub fn pattern_templates(&self) -> R<Vec<(String, String)>> {
         let conn = self.conn();
         let mut st = conn.prepare("SELECT id, template FROM patterns ORDER BY first_seen, id")?;

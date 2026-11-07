@@ -59,7 +59,7 @@ impl Pipeline {
         merge_after: Option<usize>,
     ) -> Self {
         let merger = merge_after.map(|t| {
-            Mutex::new(Merger::load(t, &store).unwrap_or_else(|e| {
+            Mutex::new(store.merger(t).unwrap_or_else(|e| {
                 eprintln!("starlist: could not load patterns for merging: {e}");
                 Merger::new(t)
             }))
