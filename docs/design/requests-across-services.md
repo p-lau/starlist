@@ -1,7 +1,7 @@
 # Following a request across services
 
-Status: design note for the optional hub (not built yet). Today `get_request`
-works within one collector, so it shows one service's part of a request.
+Status: built in v0.12.0 (`starlist hub`). This note keeps the reasoning; the
+README describes how to run it.
 
 ## What a single collector does
 
@@ -31,18 +31,22 @@ hub keeps its own bounded buffer keyed by request ID.
 +41ms  [api]      500 Internal Server Error
 ```
 
-Things to settle when the hub exists:
+How each point was settled:
 
 1. **Which ID joins services.** Only IDs that propagate across calls join a
    request: a W3C trace ID does, a per-service request ID usually doesn't. The
    hub should prefer the trace ID when an event has both, which means collectors
-   should keep both rather than the first one found.
+   should keep both rather than the first one found. *Done:* when an event has
+   several IDs, the earliest default key wins, and `trace_id` comes first.
 2. **Clock skew.** Order by timestamp within a service, and by timestamp
    across services only to the precision the hosts' clocks allow. Showing
    per-service offsets avoids implying an order the clocks can't support.
+   *Done:* each service's first and last offset is shown, with a note that
+   order across hosts follows their clocks.
 3. **Sampling and size.** A busy service can log thousands of events per
    request. The hub applies the same `max_chars` budget, keeping each service's
    first and last events and its errors before anything from the middle.
+   *Done.*
 4. **Privacy.** The hub's buffer is raw text from every service, so it gets the
    same `--raw-size` limit and `--no-raw` switch as a collector, and collectors
-   with `--no-raw` send no lines to it.
+   with `--no-raw` send no lines to it. *Done:* `--raw-size` applies per service.

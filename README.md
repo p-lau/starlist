@@ -18,6 +18,9 @@ Release build: ~5 MB static binary, ~11 MB memory while serving.
 | `list_patterns` / `get_pattern` | Find patterns by text or level; counts, hourly histogram, redacted samples with stack traces. |
 | `get_context` | The redacted lines just before and after an error (or any time), so the agent sees what led up to it without the log file. |
 | `get_request` | Every event of one request, in order: the path that led to an error. Findings carry an `example_request` ID to start from. |
+| `set_pattern_state` | Resolve a pattern after a verified fix (it comes back as `regressed` if it occurs again), resolve it from the next release on, ignore it for a while or for a number of events, or reopen it. |
+| `get_release` | A release's report card: new, regressed and resolved patterns, and its error rate against the previous release. |
+| `merge_patterns` | Merge patterns that are really one issue; the other IDs keep working. |
 | `add_marker` / `list_markers` | Name a point in time ("fix-currency"). Deploys are also detected from lines like `Starting api version 1.4.2`. |
 
 Every pattern carries `first_release`: the deploy that was live when it first appeared, so one `whats_new` call answers "which deploy started this error?". Patterns with a stack trace also carry `location`, the app's own frame closest to the failure (`shop/pricing.py:41 in price_cart`), for Python, Java/Kotlin, Node/TypeScript, Go and Rust panics; `get_pattern` lists every location a pattern was raised from, with counts. If the app runs from a different path than your checkout, say `/app` in a container, pass `--source-root /app` so paths match the repository.
@@ -34,7 +37,9 @@ Every answer also has a hard size limit, however noisy the log: 8,000 characters
 2. **Redact** before storing: emails, IPs, bearer tokens, JWTs, API keys (OpenAI, GitHub, Slack, Stripe, AWS), `password=`-style values, Luhn-valid card numbers, private keys, plus your own `--redact REGEX`.
 3. **Pattern**: masks numbers, IDs, UUIDs, hex, quoted strings and timestamps; the pattern ID is a hash of that template, so it is the same across restarts and hosts. The exception type is part of the pattern (`... | KeyError`).
 4. **Merge**: when patterns differ in just one word (a username, a hostname without digits) and that word has taken 5 different values, they are merged into one pattern with `<*>` there (`user=<*>` keeps the key). The oldest pattern's ID stays, and the merged IDs keep resolving to it, so IDs an agent already holds still work. Five values is high enough that status words like `started` / `failed` stay separate. Tune with `--merge-after N`, or `0` to turn it off.
-5. **Store**: SQLite (WAL) with per-10s counts, 5 recent samples per pattern, and markers. Counts kept 7 days by default.
+5. **Group by rule** (optional): `--group 'connection (reset|refused) by (?P<name>\w+)'` puts every matching line into one pattern per `name` value, for errors that rule-based masking splits apart.
+6. **Store**: SQLite (WAL) with per-10s counts, 5 recent samples per pattern, and markers. After 7 days (`--retention`) counts are folded into hourly counts, which are kept for 400 days (`--history`), so a month-over-month question still has an answer.
+7. **Numbers** (optional): `--metric duration_ms` (repeatable) reads that field from each line, in `duration_ms=532`, `latency: 0.53` or JSON, and keeps an hourly histogram per pattern, so p50, p95 and p99 survive for months without the lines. Percentiles are within about 9%; count, mean, min and max are exact.
 
 ## Run it
 
@@ -61,12 +66,55 @@ Agents don't have to poll. starlist exposes `whats_new` as the MCP resource `sta
 
 Without a connected agent, pass `--notify-url https://...` (or `STARLIST_NOTIFY_URL`) to `serve`, `collect` or `mcp`, and each alert is POSTed there as JSON (`summary`, `findings`). `--no-alerts` turns both off.
 
+### Dashboard
+
+`starlist serve` also serves a small dashboard at `http://127.0.0.1:7341/`: log volume by level with deploys marked, what's new, a searchable pattern list with trends, each pattern's samples, locations, surrounding lines and requests, a "did the fix work?" check, and what changed around each deploy. It's about 50 KB, loads nothing from elsewhere, and uses the same token as the API. Release builds include it; see [dashboard/README.md](dashboard/README.md) to build it yourself. `--no-dashboard` turns it off.
+
+### JSON API for your own UI
+
+The same process serves a plain JSON API at `http://127.0.0.1:7341/api/v1`, for dashboards, scripts and custom UIs: status, event counts over time, `whats-new`, patterns, verify, compare, context lines, requests, markers, and a server-sent event stream of alerts. It returns data rather than agent summaries (ISO times, numbers, full samples) and has the same protection as `/mcp`. Calling it from a page on another origin needs `--cors-origin http://localhost:5173`; `--no-api` serves MCP only. See [docs/api.md](docs/api.md).
+
+```sh
+curl -s 'http://127.0.0.1:7341/api/v1/whats-new?window=1h&min_level=WARN'
+```
+
+### History, Prometheus and export
+
+Each pattern costs about 45 bytes for each hour it occurs in, so a pattern seen every hour of a year takes about 400 KB, and most patterns are quiet most hours. Each `--metric` field adds about 200 to 800 bytes per pattern per hour it appears in. (Measured on 50 patterns over 30 days: 1.6 MB of hourly counts, 2 MB of histograms for 10 patterns with one field.)
+
+- `--prometheus` serves `http://127.0.0.1:7341/metrics` for a Prometheus scraper: events per level, patterns per level and issue state, the percentiles of each `--metric` field over the last hour or so, and the database size. It has the same token and Host checks as the API.
+- `starlist export --since 30d --db starlist.db > starlist.ndjson` writes patterns, hourly counts, hourly field percentiles and markers as one JSON object per line, for a warehouse, a spreadsheet or a backup.
+
+### Hub: many services in one place
+
+For more than one app, run a hub, the ground station, and point collectors at it. Every collector keeps working on its own: it still serves its own MCP, API and dashboard, and pushes a copy of what it records.
+
+```sh
+# On the hub host
+starlist hub-token api --dir /var/lib/starlist-hub      # prints a push token for "api"
+starlist hub-token pricing --dir /var/lib/starlist-hub
+starlist hub --dir /var/lib/starlist-hub --http 0.0.0.0:7341
+
+# Next to each app (replicas share one service name)
+STARLIST_HUB_TOKEN=... starlist serve --file app.log \
+  --hub https://hub.internal:7341 --service api --env production
+```
+
+- **What is pushed:** the events a collector records (already redacted and fingerprinted), its markers and its pattern merges. Nothing is pulled from collectors. Each push token can only write its own service and can't read anything; reading the hub uses the hub's own token, as on a collector.
+- **Replicas** of a service add up in one place, because pattern IDs are the same on every host. A deploy reported by every replica is recorded once.
+- **Outages:** a collector queues what it records in its own database and sends it in batches. While the hub is unreachable it keeps retrying and catches up afterwards. The queue is limited to `--hub-buffer` (default 200MB); beyond that the oldest batches are dropped and counted. A batch that is retried is applied only once.
+- **Asking the hub:** the same MCP tools, API and dashboard, with a `service` argument (a picker in the dashboard). `list_services` lists them, and `whats_new` without a service covers every service.
+- **Requests across services:** `get_request` (and `GET /api/v1/requests/{id}`) without a service follows one request through every service in time order, tagged by service, with each service's first and last offset. Order across hosts is only as good as their clocks, and the answer says so. To fit the size limit, it keeps each service's first and last events and the errors longest.
+- **Raw lines** at the hub are capped per service by `--raw-size`, and `--no-raw` keeps none. A collector run with `--no-raw` sends no lines for the hub's buffer either.
+- The hub has no TLS of its own: put it behind a reverse proxy with HTTPS. A collector warns when it pushes to plain `http://` beyond localhost.
+
 ### Security, privacy and time zones
 
-- On localhost (the default) no token is needed, and only loopback `Host` headers are accepted, which blocks DNS-rebinding tricks from a browser.
+- On localhost (the default) no token is needed, and only loopback `Host` headers are accepted, which blocks DNS-rebinding tricks from a browser. The API also refuses writes from other sites' pages.
 - When listening beyond localhost (`--http 0.0.0.0:7341`), a bearer token is required. Pass `--token` or set `STARLIST_TOKEN`. If you don't, one is generated and saved next to the database as `<db>.token` (owner-only permissions). Agents send it as `Authorization: Bearer <token>`, e.g. `claude mcp add --transport http logs http://host:7341/mcp --header "Authorization: Bearer $(cat starlist.token)"`.
-- Request IDs are read from a W3C `traceparent` and fields like `trace_id`, `request_id`, `x-request-id` and `correlation_id` (any spelling, in JSON or `key=value` text). Add your own with `--request-key order_ref`. They're kept out of patterns, and an ID that looks like a secret is ignored. See [docs/design/requests-across-services.md](docs/design/requests-across-services.md) for how this will work across services with the hub.
+- Request IDs are read from a W3C `traceparent` and fields like `trace_id`, `request_id`, `x-request-id` and `correlation_id` (any spelling, in JSON or `key=value` text). Add your own with `--request-key order_ref`. They're kept out of patterns, and an ID that looks like a secret is ignored. When an event has both, the trace ID wins, since it follows a request across services.
 - Raw lines: to answer `get_context` and `get_request`, starlist keeps the most recent events in the database, redacted the same way as samples, up to `--raw-size` (default 20MB; oldest lines are dropped first). Redaction catches common secrets and personal data, but it can't know every sensitive value your app logs, so this buffer holds more of your log text than the pattern summaries do. If that's a concern, add `--redact` rules or run with `--no-raw`, which stores no raw lines and deletes any already kept.
+- `--env production` (or `STARLIST_ENV`) labels what this collector watches; it shows in the release view, the API and the hub.
 - Log timestamps without a zone are read as UTC. If your app logs local time, pass `--log-tz +02:00` (or `-0800`, `UTC`). Timestamps that carry a zone are never shifted.
 
 ## Demo
@@ -86,4 +134,4 @@ cargo run --release --example ask -- http://127.0.0.1:7341/mcp verify_fix '{"pat
 
 - Lines without a timestamp get the time they were read.
 - No TLS of its own: put it behind a reverse proxy (Caddy, nginx) or an SSH tunnel when it leaves the machine.
-- No hub yet for many apps; collectors would push events to one optional hub.
+- A hub has no push alerts or Prometheus endpoint of its own yet; each collector still has both.

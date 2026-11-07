@@ -1423,6 +1423,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "futures-util",
  "getrandom 0.4.3",
  "regex",
  "reqwest",
@@ -1433,6 +1434,7 @@ dependencies = [
  "serde_json",
  "sha1_smol",
  "tokio",
+ "tower",
  "ureq",
 ]
 

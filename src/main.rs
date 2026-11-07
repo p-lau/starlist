@@ -54,6 +54,43 @@ enum Cmd {
         #[command(flatten)]
         opts: PipelineArgs,
     },
+    /// Write patterns, hourly counts, field percentiles and markers as
+    /// newline-delimited JSON to stdout.
+    Export {
+        /// How far back: a duration ("30d"), an ISO time or a marker name.
+        #[arg(long, default_value = "30d")]
+        since: String,
+        #[arg(long, default_value = "starlist.db")]
+        db: PathBuf,
+    },
+    /// Run a hub that collectors push to (`--hub URL --service NAME`), and
+    /// serve MCP, the API and the dashboard over all of their services.
+    Hub {
+        /// Directory for the hub's databases, one per service, and its tokens.
+        #[arg(long, default_value = "starlist-hub")]
+        dir: PathBuf,
+        /// Disk space per service for recent redacted lines (get_request, get_context).
+        #[arg(long, default_value = "20MB", value_parser = parse_size)]
+        raw_size: i64,
+        /// Keep no raw lines from any collector.
+        #[arg(long)]
+        no_raw: bool,
+        /// How long to keep 10-second counts; older ones are kept per hour.
+        #[arg(long, default_value = "7d")]
+        retention: String,
+        /// How long to keep hourly counts and metrics.
+        #[arg(long, default_value = "400d")]
+        history: String,
+        #[command(flatten)]
+        mcp: McpArgs,
+    },
+    /// Create a token a collector uses to push one service to a hub.
+    HubToken {
+        service: String,
+        /// The hub's directory.
+        #[arg(long, default_value = "starlist-hub")]
+        dir: PathBuf,
+    },
     /// Record a named marker (for example a deploy) at the current time.
     Mark {
         name: String,
@@ -133,6 +170,14 @@ struct PipelineArgs {
     /// Keep no raw lines (get_context and get_request are then unavailable) and delete any already stored.
     #[arg(long)]
     no_raw: bool,
+    /// Put every line matching this regex into one pattern, named by its (?P<name>...)
+    /// group if it has one (repeatable). Checked against the redacted first line.
+    #[arg(long = "group")]
+    groups: Vec<String>,
+    /// Numeric field to keep percentiles of, like "duration_ms" or "latency"
+    /// (repeatable). Read from `key=1.5`, `key: 1.5` and JSON.
+    #[arg(long = "metric")]
+    metrics: Vec<String>,
     /// Merge patterns that differ in one word once it has taken this many values (0 turns merging off).
     #[arg(long, default_value_t = starlist::merge::DEFAULT_THRESHOLD)]
     merge_after: usize,
@@ -152,13 +197,31 @@ struct SourceArgs {
     /// Read files from the beginning instead of only new lines.
     #[arg(long)]
     from_start: bool,
-    /// How long to keep counts, like "7d".
+    /// How long to keep 10-second counts, like "7d". Older counts are kept per hour.
     #[arg(long, default_value = "7d")]
     retention: String,
+    /// How long to keep hourly counts and metrics, like "400d".
+    #[arg(long, default_value = "400d")]
+    history: String,
     /// Version of the app being watched, recorded as a deploy marker at startup
     /// (when it differs from the release already live).
     #[arg(long, env = "STARLIST_VERSION")]
     app_version: Option<String>,
+    /// Environment this collector watches, like "production" or "staging".
+    #[arg(long, env = "STARLIST_ENV")]
+    env: Option<String>,
+    /// Also push to this hub, like "https://hub.internal:7341" (see `starlist hub`).
+    #[arg(long, env = "STARLIST_HUB")]
+    hub: Option<String>,
+    /// This app's name at the hub, like "api" or "pricing". Replicas share it.
+    #[arg(long, env = "STARLIST_SERVICE")]
+    service: Option<String>,
+    /// Push token from `starlist hub-token SERVICE`.
+    #[arg(long, env = "STARLIST_HUB_TOKEN", hide_env_values = true)]
+    hub_token: Option<String>,
+    /// Most data kept waiting while the hub is unreachable; the oldest is dropped beyond it.
+    #[arg(long, default_value = "200MB", value_parser = parse_size)]
+    hub_buffer: i64,
     #[command(flatten)]
     opts: PipelineArgs,
 }
@@ -179,6 +242,19 @@ struct McpArgs {
     /// Host-header checks on when listening beyond localhost.
     #[arg(long = "allowed-host")]
     allowed_hosts: Vec<String>,
+    /// Don't serve the JSON API at /api/v1 (MCP only).
+    #[arg(long)]
+    no_api: bool,
+    /// Let a web UI on this origin call the API from a browser, like
+    /// "http://localhost:5173" (repeatable). Off by default.
+    #[arg(long = "cors-origin")]
+    cors_origins: Vec<String>,
+    /// Don't serve the dashboard at http://ADDR/.
+    #[arg(long)]
+    no_dashboard: bool,
+    /// Serve Prometheus metrics at http://ADDR/metrics (same token as the API).
+    #[arg(long)]
+    prometheus: bool,
 }
 
 fn parse_size(s: &str) -> Result<i64, String> {
@@ -264,13 +340,23 @@ fn pipeline(opts: &PipelineArgs, store: Arc<Store>) -> Result<Pipeline> {
     } else {
         Some(Regex::new(&opts.marker_regex).context("bad --marker-regex")?)
     };
+    let groups = opts
+        .groups
+        .iter()
+        .map(|r| Regex::new(r))
+        .collect::<Result<Vec<_>, _>>()
+        .context("bad --group regex")?;
     let merge = (opts.merge_after > 0).then_some(opts.merge_after);
     store.set_raw_cap((!opts.no_raw).then_some(opts.raw_size))?;
     Ok(
         Pipeline::with_merging(store, Redactor::new(!opts.keep_ips, extra), marker, merge)
             .with_log_tz(opts.log_tz.unwrap_or(0))
             .with_source_roots(opts.source_roots.clone())
-            .with_request_keys(&opts.request_keys),
+            .with_request_keys(&opts.request_keys)
+            .with_groups(groups)
+            .with_metrics(
+                starlist::metrics::Fields::new(&opts.metrics).context("bad --metric name")?,
+            ),
     )
 }
 
@@ -282,9 +368,52 @@ fn start_collection(
     if src.files.is_empty() && !src.stdin {
         bail!("nothing to collect: pass --file PATH and/or --stdin");
     }
+    if let Some(url) = src.hub.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+        let service = src
+            .service
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .context("--hub needs --service NAME (or STARLIST_SERVICE)")?;
+        if !starlist::push::valid_service(service) {
+            bail!("--service '{service}': use letters, digits, '-', '_' and '.'");
+        }
+        let token = src
+            .hub_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .context("--hub needs --hub-token (or STARLIST_HUB_TOKEN); create one on the hub with `starlist hub-token SERVICE`")?;
+        if !url.starts_with("https://")
+            && !is_loopback(
+                url.trim_start_matches("http://")
+                    .split('/')
+                    .next()
+                    .unwrap_or(""),
+            )
+        {
+            eprintln!(
+                "starlist: warning: pushing to {url} without TLS; put the hub behind https unless this network is trusted"
+            );
+        }
+        store.enable_outbox(src.hub_buffer, src.opts.no_raw);
+        starlist::push::spawn_pusher(
+            store.clone(),
+            starlist::push::HubTarget {
+                url: url.to_string(),
+                service: service.to_string(),
+                token: token.to_string(),
+            },
+        )
+        .map_err(anyhow::Error::msg)?;
+        eprintln!("starlist: pushing to {url} as service '{service}'");
+    }
     let retention =
         starlist::analysis::parse_duration(&src.retention).context("bad --retention")?;
-    collector::spawn_pruner(store.clone(), retention);
+    let history = starlist::analysis::parse_duration(&src.history)
+        .context("bad --history")?
+        .max(retention);
+    collector::spawn_pruner(store.clone(), retention, history);
     if let Some(v) = src
         .app_version
         .as_deref()
@@ -293,6 +422,9 @@ fn start_collection(
         && store.add_deploy(v, starlist::analysis::now(), None)?
     {
         eprintln!("starlist: deploy marker {v}");
+    }
+    if let Some(env) = src.env.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+        store.set_meta("env", Some(env))?;
     }
     let p = Arc::new(pipeline(&src.opts, store)?);
     static STOP: AtomicBool = AtomicBool::new(false);
@@ -325,15 +457,48 @@ async fn run_mcp(
         svc.waiting().await?;
         return Ok(());
     }
-    let token = resolve_token(mcp, db)?;
-    let router = starlist::http::router(store, token, mcp.allowed_hosts.clone(), alerts);
+    let cfg = http_config(mcp, db, alerts)?;
+    serve_http(starlist::http::app(store, cfg), mcp).await
+}
+
+fn http_config(
+    mcp: &McpArgs,
+    db: &Path,
+    alerts: Option<Arc<starlist::alerts::Alerts>>,
+) -> Result<starlist::http::HttpConfig> {
+    let api = !mcp.no_api;
+    Ok(starlist::http::HttpConfig {
+        token: resolve_token(mcp, db)?,
+        allowed_hosts: mcp.allowed_hosts.clone(),
+        alerts,
+        api,
+        cors_origins: mcp.cors_origins.clone(),
+        dashboard: api && !mcp.no_dashboard,
+        prometheus: mcp.prometheus,
+    })
+}
+
+async fn serve_http(router: axum::Router, mcp: &McpArgs) -> Result<()> {
+    let api = !mcp.no_api;
     let listener = tokio::net::TcpListener::bind(&mcp.http)
         .await
         .with_context(|| format!("binding {}", mcp.http))?;
-    eprintln!(
-        "starlist: MCP endpoint http://{}/mcp",
-        listener.local_addr()?
-    );
+    let addr = listener.local_addr()?;
+    eprintln!("starlist: MCP endpoint http://{addr}/mcp");
+    if api {
+        eprintln!("starlist: JSON API http://{addr}/api/v1");
+        if !mcp.no_dashboard {
+            let note = if starlist::dashboard::embedded() {
+                ""
+            } else {
+                " (not built into this binary; see dashboard/README.md)"
+            };
+            eprintln!("starlist: dashboard http://{addr}/{note}");
+        }
+    }
+    if mcp.prometheus {
+        eprintln!("starlist: Prometheus metrics http://{addr}/metrics");
+    }
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -383,6 +548,77 @@ async fn main() -> Result<()> {
                 collector::tail_file(&p, f.clone(), true, true, &stop);
                 eprintln!("starlist: imported {}", f.display());
             }
+            Ok(())
+        }
+        Cmd::Hub {
+            dir,
+            raw_size,
+            no_raw,
+            retention,
+            history,
+            mcp,
+        } => {
+            let hub = Arc::new(
+                starlist::hub::Hub::open(&dir, (!no_raw).then_some(raw_size))
+                    .map_err(anyhow::Error::msg)?,
+            );
+            let retention =
+                starlist::analysis::parse_duration(&retention).context("bad --retention")?;
+            let history = starlist::analysis::parse_duration(&history)
+                .context("bad --history")?
+                .max(retention);
+            hub.spawn_pruner(retention, history);
+            let names = hub.names();
+            eprintln!(
+                "starlist: hub in {} with {} service(s){}",
+                dir.display(),
+                names.len(),
+                if names.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", names.join(", "))
+                }
+            );
+            if mcp.prometheus {
+                eprintln!("starlist: --prometheus is not available on a hub yet; ignoring it");
+            }
+            if mcp.stdio {
+                eprintln!(
+                    "starlist: serving hub MCP over stdio (collectors can't push over stdio)"
+                );
+                let svc = starlist::hub::HubServer::new(hub)
+                    .serve(rmcp::transport::stdio())
+                    .await?;
+                svc.waiting().await?;
+                return Ok(());
+            }
+            let mut cfg = http_config(&mcp, &dir.join("hub.db"), None)?;
+            cfg.prometheus = false;
+            eprintln!(
+                "starlist: collectors push to http://{}/hub/v1/push",
+                mcp.http
+            );
+            serve_http(starlist::http::hub_app(hub, cfg), &mcp).await
+        }
+        Cmd::HubToken { service, dir } => {
+            let token =
+                starlist::hub::Hub::add_token(&dir, &service).map_err(anyhow::Error::msg)?;
+            eprintln!(
+                "starlist: push token for '{service}' (saved hashed in {}; shown only now):",
+                dir.display()
+            );
+            println!("{token}");
+            Ok(())
+        }
+        Cmd::Export { since, db } => {
+            let store = open_store(&db)?;
+            let now = starlist::analysis::now();
+            let (lo, _) = starlist::analysis::resolve_time(&store, &since, now)
+                .map_err(anyhow::Error::msg)?;
+            let stdout = std::io::stdout();
+            let mut out = std::io::BufWriter::new(stdout.lock());
+            let n = starlist::export::write(&store, lo, &mut out).map_err(anyhow::Error::msg)?;
+            eprintln!("starlist: exported {n} lines");
             Ok(())
         }
         Cmd::Mark {

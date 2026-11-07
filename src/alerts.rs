@@ -102,7 +102,7 @@ impl Detector {
         ) {
             for f in v["findings"].as_array().into_iter().flatten() {
                 let kind = f["kind"].as_str().unwrap_or("");
-                if !matches!(kind, "new" | "returning" | "spike") {
+                if !matches!(kind, "new" | "returning" | "spike" | "regressed") {
                     continue;
                 }
                 let Some(id) = f["pattern_id"].as_str() else {
@@ -161,6 +161,7 @@ fn summarize(findings: &[Value]) -> String {
             match findings[0]["kind"].as_str() {
                 Some("spike") => "Spiking",
                 Some("returning") => "Returning",
+                Some("regressed") => "Regressed",
                 _ => "New",
             }
         ),

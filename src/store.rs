@@ -46,9 +46,77 @@ pub struct Marker {
     pub note: Option<String>,
 }
 
+/// A pattern's issue state as stored. See `issues` for what it means now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StateRow {
+    pub pattern_id: String,
+    /// "resolved", "resolved_next" or "ignored".
+    pub state: String,
+    /// When the state was set.
+    pub since: f64,
+    /// Ignored until this time.
+    pub until_ts: Option<f64>,
+    /// Ignored until this many more events.
+    pub until_count: Option<i64>,
+    /// The pattern's total when the state was set.
+    pub base_total: i64,
+    pub note: Option<String>,
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
     raw: Mutex<RawBuffer>,
+    /// Set when pushing to a hub: what gets recorded is also queued to send.
+    outbox: Mutex<Option<Outbox>>,
+}
+
+struct Outbox {
+    /// Most bytes of queued JSON; the oldest entries are dropped beyond it.
+    cap: i64,
+    /// Bytes queued, counted on first write.
+    bytes: Option<i64>,
+    /// Send events without raw text for the hub's buffer.
+    no_raw: bool,
+}
+
+/// Queue an item for the hub in the current transaction.
+fn queue(tx: &rusqlite::Connection, ob: &mut Outbox, item: &crate::push::Item) -> R<()> {
+    let body = serde_json::to_string(item).unwrap_or_default();
+    if ob.bytes.is_none() {
+        ob.bytes = Some(tx.query_row(
+            "SELECT COALESCE(SUM(length(CAST(body AS BLOB))), 0) FROM outbox",
+            [],
+            |r| r.get(0),
+        )?);
+    }
+    tx.prepare_cached("INSERT INTO outbox(body) VALUES (?1)")?
+        .execute([&body])?;
+    let bytes = ob.bytes.get_or_insert(0);
+    *bytes += body.len() as i64;
+    if *bytes > ob.cap {
+        // Drop the oldest entries until 90% of the cap is used.
+        let target = *bytes - ob.cap * 9 / 10;
+        let mut st =
+            tx.prepare_cached("SELECT seq, length(CAST(body AS BLOB)) FROM outbox ORDER BY seq")?;
+        let mut rows = st.query([])?;
+        let (mut freed, mut upto, mut n) = (0i64, 0i64, 0i64);
+        while freed < target
+            && let Some(r) = rows.next()?
+        {
+            upto = r.get(0)?;
+            freed += r.get::<_, i64>(1)?;
+            n += 1;
+        }
+        drop(rows);
+        tx.execute("DELETE FROM outbox WHERE seq <= ?1", [upto])?;
+        tx.execute(
+            "INSERT INTO meta(key, value) VALUES ('hub_dropped', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + ?1",
+            [n],
+        )?;
+        *bytes -= freed;
+    }
+    Ok(())
 }
 
 /// Default size of the raw-line buffer: the text of recent events, kept so an
@@ -130,6 +198,34 @@ impl Store {
         if !has_req {
             conn.execute_batch("ALTER TABLE raw ADD COLUMN request_id TEXT;")?;
         }
+        // Added in 0.10: issue states and collector settings.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pattern_state(
+                pattern_id TEXT PRIMARY KEY, state TEXT NOT NULL, since REAL NOT NULL,
+                until_ts REAL, until_count INTEGER, base_total INTEGER NOT NULL DEFAULT 0,
+                note TEXT) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;",
+        )?;
+        // Added in 0.11: hourly rollups of old counts, and numeric fields.
+        conn.execute_batch(
+            "-- `bucket` is the hour's first 10-second bucket, so it reads like `counts`.
+             CREATE TABLE IF NOT EXISTS hourly(
+                pattern_id TEXT NOT NULL, bucket INTEGER NOT NULL, n INTEGER NOT NULL,
+                PRIMARY KEY(pattern_id, bucket)) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS hourly_bucket ON hourly(bucket);
+             CREATE TABLE IF NOT EXISTS metric_hourly(
+                pattern_id TEXT NOT NULL, field TEXT NOT NULL, hour INTEGER NOT NULL,
+                n INTEGER NOT NULL, sum REAL NOT NULL, min REAL NOT NULL, max REAL NOT NULL,
+                bins TEXT NOT NULL,
+                PRIMARY KEY(pattern_id, field, hour)) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS metric_hour ON metric_hourly(field, hour);
+             -- What a collector still has to push to its hub.
+             CREATE TABLE IF NOT EXISTS outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL);
+             -- Recent 10-second counts and older hourly ones, read as one table.
+             CREATE TEMP VIEW IF NOT EXISTS allc AS
+                SELECT pattern_id, bucket, n FROM counts
+                UNION ALL SELECT pattern_id, bucket, n FROM hourly;",
+        )?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS raw_req ON raw(request_id, ts) WHERE request_id IS NOT NULL;
              CREATE INDEX IF NOT EXISTS raw_pid_req ON raw(pattern_id, ts) WHERE request_id IS NOT NULL;",
@@ -140,7 +236,66 @@ impl Store {
                 cap: Some(DEFAULT_RAW_BYTES),
                 bytes: None,
             }),
+            outbox: Mutex::new(None),
         })
+    }
+
+    /// Queue everything recorded from now on for a hub, keeping at most
+    /// `cap` bytes queued. `no_raw` sends events without raw text for the
+    /// hub's buffer.
+    pub fn enable_outbox(&self, cap: i64, no_raw: bool) {
+        *self.outbox.lock().unwrap_or_else(|e| e.into_inner()) = Some(Outbox {
+            cap: cap.max(1 << 20),
+            bytes: None,
+            no_raw,
+        });
+    }
+
+    /// The oldest queued items, up to about `max_bytes`: (seq, JSON).
+    pub fn outbox_batch(&self, max_bytes: usize) -> R<Vec<(i64, String)>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached("SELECT seq, body FROM outbox ORDER BY seq LIMIT 2000")?;
+        let mut rows = st.query([])?;
+        let (mut out, mut size) = (vec![], 0usize);
+        while let Some(r) = rows.next()? {
+            let body: String = r.get(1)?;
+            if !out.is_empty() && size + body.len() > max_bytes {
+                break;
+            }
+            size += body.len();
+            out.push((r.get(0)?, body));
+        }
+        Ok(out)
+    }
+
+    /// The hub applied everything up to `seq`.
+    pub fn outbox_ack(&self, seq: i64) -> R<()> {
+        let conn = self.conn();
+        let freed: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(length(CAST(body AS BLOB))), 0) FROM outbox WHERE seq <= ?1",
+            [seq],
+            |r| r.get(0),
+        )?;
+        conn.execute("DELETE FROM outbox WHERE seq <= ?1", [seq])?;
+        if let Some(ob) = self
+            .outbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            && let Some(b) = ob.bytes.as_mut()
+        {
+            *b = (*b - freed).max(0);
+        }
+        Ok(())
+    }
+
+    /// Items waiting to be pushed, and their size in bytes.
+    pub fn outbox_len(&self) -> R<(i64, i64)> {
+        self.conn().query_row(
+            "SELECT COUNT(*), COALESCE(SUM(length(CAST(body AS BLOB))), 0) FROM outbox",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
     }
 
     /// Set the raw-line buffer size in bytes, or turn it off with `None`,
@@ -154,7 +309,54 @@ impl Store {
         }
         Ok(())
     }
+}
 
+/// A histogram from columns n, sum, min, max, bins starting at `i`.
+fn hist_at(r: &rusqlite::Row, i: usize) -> R<crate::metrics::Hist> {
+    Ok(crate::metrics::Hist::from_parts(
+        r.get::<_, i64>(i)? as u64,
+        r.get(i + 1)?,
+        r.get(i + 2)?,
+        r.get(i + 3)?,
+        &r.get::<_, String>(i + 4)?,
+    ))
+}
+
+/// Add a histogram to the stored one for (pattern, field, hour).
+fn add_hist(
+    tx: &rusqlite::Transaction,
+    pid: &str,
+    field: &str,
+    hour: i64,
+    mut h: crate::metrics::Hist,
+) -> R<()> {
+    let old = tx
+        .prepare_cached(
+            "SELECT n, sum, min, max, bins FROM metric_hourly WHERE pattern_id = ?1 AND field = ?2 AND hour = ?3",
+        )?
+        .query_row(params![pid, field, hour], |r| hist_at(r, 0))
+        .optional()?;
+    if let Some(o) = old {
+        h.merge(&o);
+    }
+    tx.prepare_cached(
+        "INSERT OR REPLACE INTO metric_hourly(pattern_id, field, hour, n, sum, min, max, bins)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?
+    .execute(params![
+        pid,
+        field,
+        hour,
+        h.n as i64,
+        h.sum,
+        h.min,
+        h.max,
+        h.bins_text()
+    ])?;
+    Ok(())
+}
+
+impl Store {
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -207,24 +409,47 @@ impl Store {
                 "DELETE FROM samples WHERE pattern_id = ?1 AND id NOT IN
                    (SELECT id FROM samples WHERE pattern_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2)",
             )?;
+            // Patterns merged by hand (or by another process) keep resolving
+            // to the pattern they were merged into.
+            let aliases: std::collections::HashMap<String, String> = tx
+                .prepare_cached("SELECT alias, canonical FROM aliases")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<R<_>>()?;
             for e in events {
                 let ts = e.ts.expect("event timestamp must be set before recording");
-                up_pattern.execute(params![e.pattern_id, e.template, e.level, e.exc_type, ts])?;
-                up_count.execute(params![e.pattern_id, bucket_of(ts)])?;
+                let pid = aliases.get(&e.pattern_id).unwrap_or(&e.pattern_id);
+                up_pattern.execute(params![pid, e.template, e.level, e.exc_type, ts])?;
+                up_count.execute(params![pid, bucket_of(ts)])?;
                 if let Some(l) = &e.location {
-                    up_loc.execute(params![e.pattern_id, l, ts])?;
+                    up_loc.execute(params![pid, l, ts])?;
                 }
-                if raw.cap.is_some() {
+                if raw.cap.is_some() && !e.no_raw {
                     let text = crate::pattern::truncate(&e.body, RAW_EVENT_CHARS);
-                    ins_raw.execute(params![ts, e.pattern_id, text, e.request_id])?;
+                    ins_raw.execute(params![ts, pid, text, e.request_id])?;
                     *raw.bytes.get_or_insert(0) += text.len() as i64;
                 }
-                let last: Option<f64> = last_sample.query_row([&e.pattern_id], |r| r.get(0))?;
+                let last: Option<f64> = last_sample.query_row([pid], |r| r.get(0))?;
                 if last.is_none_or(|l| (ts - l).abs() >= SAMPLE_EVERY_SECS) {
-                    ins_sample.execute(params![e.pattern_id, ts, e.body])?;
-                    set_sample.execute(params![e.pattern_id, ts])?;
-                    prune.execute(params![e.pattern_id, SAMPLES_PER_PATTERN])?;
+                    ins_sample.execute(params![pid, ts, e.body])?;
+                    set_sample.execute(params![pid, ts])?;
+                    prune.execute(params![pid, SAMPLES_PER_PATTERN])?;
                 }
+            }
+            // Numeric fields: one histogram per pattern, field and hour.
+            let mut hists: std::collections::HashMap<(String, String, i64), crate::metrics::Hist> =
+                Default::default();
+            for e in events.iter().filter(|e| !e.metrics.is_empty()) {
+                let ts = e.ts.unwrap_or_default();
+                let pid = aliases.get(&e.pattern_id).unwrap_or(&e.pattern_id);
+                for (f, v) in &e.metrics {
+                    hists
+                        .entry((pid.clone(), f.clone(), (ts / 3600.0).floor() as i64))
+                        .or_default()
+                        .add(*v);
+                }
+            }
+            for ((pid, f, hour), h) in hists {
+                add_hist(&tx, &pid, &f, hour, h)?;
             }
             // Over the cap: drop the oldest lines until 90% of it is used.
             if let (Some(cap), Some(bytes)) = (raw.cap, raw.bytes)
@@ -247,6 +472,21 @@ impl Store {
                     raw.bytes = Some(bytes - freed);
                 }
             }
+        }
+        if let Some(ob) = self
+            .outbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            let no_raw = ob.no_raw || raw.cap.is_none();
+            let item = crate::push::Item::Events {
+                events: events
+                    .iter()
+                    .map(|e| crate::push::WireEvent::from_event(e, no_raw))
+                    .collect(),
+            };
+            queue(&tx, ob, &item)?;
         }
         tx.commit()
     }
@@ -339,13 +579,97 @@ impl Store {
             })
     }
 
-    /// Drop counts and markers older than `before_ts`. Patterns are kept so that
-    /// "first seen" stays accurate.
+    /// Fold counts older than `before_ts` into hourly counts. Patterns are kept
+    /// so that "first seen" stays accurate.
     pub fn prune(&self, before_ts: f64) -> R<usize> {
+        self.rollup(before_ts, None)
+    }
+
+    /// Fold 10-second counts older than `before_ts` into hourly counts, then
+    /// drop hourly counts and metrics older than `history_before`.
+    /// Returns the number of 10-second rows folded.
+    pub fn rollup(&self, before_ts: f64, history_before: Option<f64>) -> R<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let b = bucket_of(before_ts);
+        tx.execute(
+            "INSERT INTO hourly(pattern_id, bucket, n)
+             SELECT pattern_id, bucket / 360 * 360, SUM(n) FROM counts WHERE bucket < ?1 GROUP BY 1, 2
+             ON CONFLICT(pattern_id, bucket) DO UPDATE SET n = n + excluded.n",
+            [b],
+        )?;
+        let folded = tx.execute("DELETE FROM counts WHERE bucket < ?1", [b])?;
+        if let Some(h) = history_before {
+            let hour = (h / 3600.0).floor() as i64;
+            tx.execute("DELETE FROM hourly WHERE bucket < ?1", [hour * 360])?;
+            tx.execute("DELETE FROM metric_hourly WHERE hour < ?1", [hour])?;
+        }
+        tx.commit()?;
+        Ok(folded)
+    }
+
+    /// Histogram of `field` per hour from `lo` to `hi`, for one pattern or all.
+    pub fn metric_hours(
+        &self,
+        field: &str,
+        pattern_id: Option<&str>,
+        lo: f64,
+        hi: f64,
+    ) -> R<Vec<(i64, crate::metrics::Hist)>> {
         let conn = self.conn();
-        conn.execute(
-            "DELETE FROM counts WHERE bucket < ?1",
-            [bucket_of(before_ts)],
+        let mut st = conn.prepare_cached(
+            "SELECT hour, n, sum, min, max, bins FROM metric_hourly
+             WHERE field = ?1 AND (?2 IS NULL OR pattern_id = ?2) AND hour >= ?3 AND hour <= ?4
+             ORDER BY hour",
+        )?;
+        let rows = st.query_map(
+            params![
+                field,
+                pattern_id,
+                (lo / 3600.0).floor() as i64,
+                (hi / 3600.0).floor() as i64
+            ],
+            |r| Ok((r.get::<_, i64>(0)?, hist_at(r, 1)?)),
+        )?;
+        // One entry per hour, patterns combined.
+        let mut out: Vec<(i64, crate::metrics::Hist)> = vec![];
+        for row in rows {
+            let (h, hist) = row?;
+            match out.last_mut() {
+                Some((lh, acc)) if *lh == h => acc.merge(&hist),
+                _ => out.push((h, hist)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fields recorded for a pattern (or any), most used first.
+    pub fn metric_fields(&self, pattern_id: Option<&str>) -> R<Vec<String>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT field FROM metric_hourly WHERE ?1 IS NULL OR pattern_id = ?1
+             GROUP BY field ORDER BY SUM(n) DESC",
+        )?;
+        let rows = st.query_map(params![pattern_id], |r| r.get(0))?;
+        rows.collect()
+    }
+
+    /// Per-level totals since the database began, for counters.
+    pub fn level_totals(&self) -> R<Vec<(String, i64, i64)>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT COALESCE(level, 'INFO'), SUM(total), COUNT(*) FROM patterns GROUP BY 1",
+        )?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect()
+    }
+
+    /// Database file size in bytes.
+    pub fn size_bytes(&self) -> R<i64> {
+        self.conn().query_row(
+            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+            [],
+            |r| r.get(0),
         )
     }
 
@@ -402,6 +726,23 @@ impl Store {
             )?;
             tx.execute("DELETE FROM counts WHERE pattern_id = ?1", [a])?;
             tx.execute(
+                "INSERT INTO hourly(pattern_id, bucket, n) SELECT ?1, bucket, n FROM hourly WHERE pattern_id = ?2 AND true
+                 ON CONFLICT(pattern_id, bucket) DO UPDATE SET n = n + excluded.n",
+                params![c, a],
+            )?;
+            tx.execute("DELETE FROM hourly WHERE pattern_id = ?1", [a])?;
+            let moved: Vec<(String, i64, crate::metrics::Hist)> = {
+                let mut st = tx.prepare_cached(
+                    "SELECT field, hour, n, sum, min, max, bins FROM metric_hourly WHERE pattern_id = ?1",
+                )?;
+                st.query_map([a], |r| Ok((r.get(0)?, r.get(1)?, hist_at(r, 2)?)))?
+                    .collect::<R<_>>()?
+            };
+            for (f, hour, h) in moved {
+                add_hist(&tx, c, &f, hour, h)?;
+            }
+            tx.execute("DELETE FROM metric_hourly WHERE pattern_id = ?1", [a])?;
+            tx.execute(
                 "INSERT INTO locations(pattern_id, location, n, last_seen)
                  SELECT ?1, location, n, last_seen FROM locations WHERE pattern_id = ?2 AND true
                  ON CONFLICT(pattern_id, location) DO UPDATE SET
@@ -426,6 +767,7 @@ impl Store {
                 params![c, a],
             )?;
             tx.execute("DELETE FROM patterns WHERE id = ?1", [a])?;
+            tx.execute("DELETE FROM pattern_state WHERE pattern_id = ?1", [a])?;
             tx.execute(
                 "UPDATE aliases SET canonical = ?1 WHERE canonical = ?2",
                 params![c, a],
@@ -440,6 +782,19 @@ impl Store {
                (SELECT id FROM samples WHERE pattern_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2)",
             params![c, SAMPLES_PER_PATTERN],
         )?;
+        if let Some(ob) = self
+            .outbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            let item = crate::push::Item::Merge {
+                canonical: op.canonical.clone(),
+                template: op.template.clone(),
+                aliases: op.aliases.clone(),
+            };
+            queue(&tx, ob, &item)?;
+        }
         tx.commit()
     }
 
@@ -453,7 +808,7 @@ impl Store {
             "SELECT {PATTERN_COLS},
                     SUM(CASE WHEN c.bucket < ?2 THEN c.n ELSE 0 END),
                     SUM(CASE WHEN c.bucket > ?2 THEN c.n ELSE 0 END)
-             FROM counts c JOIN patterns p ON p.id = c.pattern_id
+             FROM allc c JOIN patterns p ON p.id = c.pattern_id
              WHERE c.bucket >= ?1 AND c.bucket <= ?3
              GROUP BY c.pattern_id"
         ))?;
@@ -469,7 +824,7 @@ impl Store {
 
     pub fn count(&self, pattern_id: &str, lo: f64, hi: f64) -> R<i64> {
         self.conn().query_row(
-            "SELECT COALESCE(SUM(n), 0) FROM counts WHERE pattern_id = ?1 AND bucket >= ?2 AND bucket <= ?3",
+            "SELECT COALESCE(SUM(n), 0) FROM allc WHERE pattern_id = ?1 AND bucket >= ?2 AND bucket <= ?3",
             params![pattern_id, bucket_of(lo), bucket_of(hi)],
             |r| r.get(0),
         )
@@ -480,7 +835,7 @@ impl Store {
         self.conn().query_row(
             "SELECT COALESCE(SUM(CASE WHEN bucket < ?2 THEN n ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN bucket > ?2 THEN n ELSE 0 END), 0)
-             FROM counts WHERE bucket >= ?1 AND bucket <= ?3",
+             FROM allc WHERE bucket >= ?1 AND bucket <= ?3",
             params![bucket_of(lo), bucket_of(split), bucket_of(hi)],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -492,7 +847,7 @@ impl Store {
         let mut out = vec![0i64; slots];
         let conn = self.conn();
         let mut st = conn.prepare_cached(
-            "SELECT bucket, n FROM counts WHERE pattern_id = ?1 AND bucket >= ?2 AND bucket <= ?3",
+            "SELECT bucket, n FROM allc WHERE pattern_id = ?1 AND bucket >= ?2 AND bucket <= ?3",
         )?;
         let rows = st.query_map(params![pattern_id, bucket_of(lo), bucket_of(hi)], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
@@ -504,6 +859,167 @@ impl Store {
             out[i] += n;
         }
         Ok(out)
+    }
+
+    /// Event counts per level per `step` seconds from `lo` up to `hi`, oldest
+    /// first. Lines without a level are reported as INFO, as elsewhere.
+    pub fn level_series(&self, lo: f64, hi: f64, step: f64) -> R<Vec<(String, Vec<i64>)>> {
+        let slots = ((hi - lo) / step).ceil().max(1.0) as usize;
+        let mut out: Vec<(String, Vec<i64>)> = vec![];
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT COALESCE(p.level, 'INFO'), c.bucket, SUM(c.n)
+             FROM allc c JOIN patterns p ON p.id = c.pattern_id
+             WHERE c.bucket >= ?1 AND c.bucket <= ?2
+             GROUP BY 1, c.bucket",
+        )?;
+        let rows = st.query_map(params![bucket_of(lo), bucket_of(hi)], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (level, b, n) = row?;
+            let t = b as f64 * BUCKET_SECS;
+            let i = (((t - lo) / step).floor().max(0.0) as usize).min(slots - 1);
+            let k = match out.iter().position(|(l, _)| *l == level) {
+                Some(k) => k,
+                None => {
+                    out.push((level, vec![0; slots]));
+                    out.len() - 1
+                }
+            };
+            out[k].1[i] += n;
+        }
+        Ok(out)
+    }
+
+    /// Every pattern's stored state (patterns without one are open).
+    pub fn states(&self) -> R<std::collections::HashMap<String, StateRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT pattern_id, state, since, until_ts, until_count, base_total, note FROM pattern_state",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(StateRow {
+                pattern_id: r.get(0)?,
+                state: r.get(1)?,
+                since: r.get(2)?,
+                until_ts: r.get(3)?,
+                until_count: r.get(4)?,
+                base_total: r.get(5)?,
+                note: r.get(6)?,
+            })
+        })?;
+        rows.map(|r| r.map(|s| (s.pattern_id.clone(), s))).collect()
+    }
+
+    /// Set a pattern's state, or clear it (`None` = open).
+    pub fn set_state(&self, pattern_id: &str, row: Option<&StateRow>) -> R<()> {
+        let conn = self.conn();
+        match row {
+            None => conn.execute("DELETE FROM pattern_state WHERE pattern_id = ?1", [pattern_id])?,
+            Some(s) => conn.execute(
+                "INSERT OR REPLACE INTO pattern_state(pattern_id, state, since, until_ts, until_count, base_total, note)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![pattern_id, s.state, s.since, s.until_ts, s.until_count, s.base_total, s.note],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// Start of the first 10-second bucket after `ts` in which the pattern occurred.
+    pub fn first_after(&self, pattern_id: &str, ts: f64) -> R<Option<f64>> {
+        let b: Option<i64> = self.conn().query_row(
+            "SELECT MIN(bucket) FROM allc WHERE pattern_id = ?1 AND bucket > ?2",
+            params![pattern_id, bucket_of(ts)],
+            |r| r.get(0),
+        )?;
+        Ok(b.map(|b| b as f64 * BUCKET_SECS))
+    }
+
+    /// Hourly counts from `lo` on, per pattern, recent 10-second counts
+    /// included, ordered by hour.
+    pub fn hourly_counts(&self, lo: f64, mut f: impl FnMut(&str, i64, i64)) -> R<()> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT pattern_id, bucket / 360, SUM(n) FROM allc WHERE bucket >= ?1
+             GROUP BY 2, 1 ORDER BY 2, 1",
+        )?;
+        let mut rows = st.query(params![bucket_of(lo) / 360 * 360])?;
+        while let Some(r) = rows.next()? {
+            f(&r.get::<_, String>(0)?, r.get(1)?, r.get(2)?);
+        }
+        Ok(())
+    }
+
+    /// Hourly field histograms from `lo` on: (pattern, field, hour, histogram).
+    pub fn metric_rows(
+        &self,
+        lo: f64,
+        mut f: impl FnMut(&str, &str, i64, &crate::metrics::Hist),
+    ) -> R<()> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT pattern_id, field, hour, n, sum, min, max, bins FROM metric_hourly
+             WHERE hour >= ?1 ORDER BY hour, pattern_id, field",
+        )?;
+        let mut rows = st.query(params![(lo / 3600.0).floor() as i64])?;
+        while let Some(r) = rows.next()? {
+            f(
+                &r.get::<_, String>(0)?,
+                &r.get::<_, String>(1)?,
+                r.get(2)?,
+                &hist_at(r, 3)?,
+            );
+        }
+        Ok(())
+    }
+
+    /// Patterns seen at or after `lo`, oldest first.
+    pub fn patterns_seen_since(&self, lo: f64) -> R<Vec<PatternRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(&format!(
+            "SELECT {PATTERN_COLS} FROM patterns p WHERE p.last_seen >= ?1 ORDER BY p.first_seen"
+        ))?;
+        let rows = st.query_map(params![lo], |r| row_to_pattern(r, 0))?;
+        rows.collect()
+    }
+
+    /// Patterns first seen in [lo, hi), oldest first.
+    pub fn patterns_first_seen(&self, lo: f64, hi: f64) -> R<Vec<PatternRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(&format!(
+            "SELECT {PATTERN_COLS} FROM patterns p WHERE p.first_seen >= ?1 AND p.first_seen < ?2 ORDER BY p.first_seen"
+        ))?;
+        let rows = st.query_map(params![lo, hi], |r| row_to_pattern(r, 0))?;
+        rows.collect()
+    }
+
+    pub fn meta(&self, key: &str) -> R<Option<String>> {
+        self.conn()
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .optional()
+    }
+
+    pub fn set_meta(&self, key: &str, value: Option<&str>) -> R<()> {
+        let conn = self.conn();
+        match value {
+            Some(v) => conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)",
+                params![key, v],
+            )?,
+            None => conn.execute("DELETE FROM meta WHERE key = ?1", [key])?,
+        };
+        Ok(())
+    }
+
+    /// Number of patterns (merged ones count once).
+    pub fn pattern_count(&self) -> R<i64> {
+        self.conn()
+            .query_row("SELECT COUNT(*) FROM patterns", [], |r| r.get(0))
     }
 
     /// Code locations of a pattern's events, most frequent first.
@@ -526,11 +1042,41 @@ impl Store {
     }
 
     pub fn add_marker(&self, name: &str, ts: f64, kind: &str, note: Option<&str>) -> R<()> {
-        self.conn().execute(
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO markers(name, ts, kind, note) VALUES (?1, ?2, ?3, ?4)",
             params![name, ts, kind, note],
         )?;
-        Ok(())
+        if let Some(ob) = self
+            .outbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            let item = crate::push::Item::Marker {
+                name: name.to_string(),
+                at: ts,
+                kind: kind.to_string(),
+                note: note.map(str::to_string),
+            };
+            queue(&tx, ob, &item)?;
+        }
+        tx.commit()
+    }
+
+    /// Add a marker unless one with this name, kind and time exists (a hub
+    /// hears about one deploy from every replica).
+    pub fn add_marker_once(&self, name: &str, ts: f64, kind: &str, note: Option<&str>) -> R<bool> {
+        let exists: bool = self.conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM markers WHERE name = ?1 AND kind = ?2 AND abs(ts - ?3) < 0.001)",
+            params![name, kind, ts],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            self.add_marker(name, ts, kind, note)?;
+        }
+        Ok(!exists)
     }
 
     /// Record that release `name` went live at `ts`, unless it was already

@@ -58,7 +58,7 @@ impl RequestKeys {
             .collect();
         let alt: Vec<String> = keys.iter().map(|k| key_regex(k)).collect();
         let text = Regex::new(&format!(
-            r#"(?i)(?:^|[^A-Za-z0-9_])(?:{})["']?\s*[=:]\s*["']?([A-Za-z0-9][A-Za-z0-9._:/-]{{3,127}})"#,
+            r#"(?i)(?:^|[^A-Za-z0-9_])({})["']?\s*[=:]\s*["']?([A-Za-z0-9][A-Za-z0-9._:/-]{{3,127}})"#,
             alt.join("|")
         ))
         .expect("request key regex");
@@ -68,29 +68,45 @@ impl RequestKeys {
         }
     }
 
-    /// The request ID in an event, if any.
+    /// The request ID in an event, if any. When an event has several, the
+    /// one under the earliest key wins: a trace ID, which follows a request
+    /// across services, before a per-service request ID.
     pub fn find(&self, text: &str) -> Option<String> {
         if let Some(c) = TRACEPARENT.captures(text) {
             return Some(c[1].to_string());
         }
+        let rank = |k: &str| {
+            let k = norm(k);
+            self.names
+                .iter()
+                .position(|n| *n == k)
+                .unwrap_or(usize::MAX)
+        };
         let first = text.lines().next().unwrap_or("").trim_start();
         if first.starts_with('{')
             && let Ok(serde_json::Value::Object(m)) = serde_json::from_str(first)
         {
-            for (k, v) in &m {
-                if self.names.contains(&norm(k)) {
+            let best = m
+                .iter()
+                .filter(|(k, _)| self.names.contains(&norm(k)))
+                .filter_map(|(k, v)| {
                     let id = match v {
                         serde_json::Value::String(s) => s.clone(),
                         serde_json::Value::Number(n) => n.to_string(),
-                        _ => continue,
+                        _ => return None,
                     };
-                    if let Some(id) = clean(&id) {
-                        return Some(id);
-                    }
-                }
+                    Some((rank(k), clean(&id)?))
+                })
+                .min_by_key(|(r, _)| *r);
+            if let Some((_, id)) = best {
+                return Some(id);
             }
         }
-        self.text.captures_iter(text).find_map(|c| clean(&c[1]))
+        self.text
+            .captures_iter(text)
+            .filter_map(|c| Some((rank(&c[1]), clean(&c[2])?)))
+            .min_by_key(|(r, _)| *r)
+            .map(|(_, id)| id)
     }
 }
 
