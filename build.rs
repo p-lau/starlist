@@ -19,6 +19,9 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn main() {
+    if std::env::var_os("CARGO_FEATURE_DASHBOARD").is_none() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("dashboard")
         .join("build");

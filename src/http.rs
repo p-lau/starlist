@@ -108,6 +108,7 @@ pub fn app(store: Arc<Store>, cfg: HttpConfig) -> axum::Router {
             }),
         );
     }
+    #[cfg(feature = "prometheus")]
     if cfg.prometheus {
         guarded = guarded.route(
             "/metrics",
@@ -117,6 +118,7 @@ pub fn app(store: Arc<Store>, cfg: HttpConfig) -> axum::Router {
     assemble(mcp, guarded, &cfg)
 }
 
+#[cfg(feature = "hub")]
 /// A hub: the same MCP tools, API and dashboard over every service that
 /// pushes to it, plus `/hub/v1/push` for collectors (with their own tokens).
 pub fn hub_app(hub: Arc<crate::hub::Hub>, cfg: HttpConfig) -> axum::Router {
@@ -179,13 +181,14 @@ fn assemble(mcp: axum::Router, mut guarded: axum::Router, cfg: &HttpConfig) -> a
     // The guard is outside the token check so CORS preflights, which carry no
     // credentials, get an answer.
     let router = mcp.merge(guarded.layer(middleware::from_fn_with_state(guard, guard_api)));
+    #[cfg(feature = "dashboard")]
     if cfg.api && cfg.dashboard {
-        router.fallback(crate::dashboard::serve)
-    } else {
-        router
+        return router.fallback(crate::dashboard::serve);
     }
+    router
 }
 
+#[cfg(feature = "prometheus")]
 async fn prometheus(store: Arc<Store>) -> Response {
     let now = crate::analysis::now();
     match tokio::task::spawn_blocking(move || crate::prometheus::render(&store, now)).await {

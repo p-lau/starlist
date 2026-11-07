@@ -65,6 +65,10 @@ STARLIST_VERSION=v1.4.3 ./target/release/starlist serve --file app.log
 
 Claude Code: `claude mcp add --transport http logs http://127.0.0.1:7341/mcp`
 
+The dashboard, the hub server and the Prometheus exporter are Cargo features, all on by default. For just the MCP collector (it can still push to a hub), build with `cargo build --release --no-default-features`, and add back what you need with `--features dashboard,hub,prometheus`.
+
+The log engine (parsing, pattern IDs and merging, redaction, request IDs and code locations) is the `starlist-core` crate in `core/`, with no storage or server, so other tools can reuse it.
+
 ### Alerts
 
 Agents don't have to poll. starlist exposes `whats_new` as the MCP resource `starlist://whats-new`; a client that subscribes gets `notifications/resources/updated` within seconds of a new, returning or spiking ERROR/FATAL pattern, then reads the resource (it includes `latest_alert`). One incident is one notification: patterns found together are gathered for 10 seconds, alerts are at least a minute apart, and a pattern isn't alerted again for 30 minutes.
@@ -133,7 +137,7 @@ cargo run --release --example ask -- http://127.0.0.1:7341/mcp verify_fix '{"pat
 
 ## Tests
 
-`cargo test`: unit tests (redaction, masking, stack-trace grouping, timestamps), scenario tests for every verdict with controlled time, and an end-to-end test that ingests logs and calls the tools through a real MCP client over HTTP.
+`cargo test --workspace`: unit tests (redaction, masking, stack-trace grouping, timestamps), scenario tests for every verdict with controlled time, and an end-to-end test that ingests logs and calls the tools through a real MCP client over HTTP.
 
 ## Known limits (prototype)
 
