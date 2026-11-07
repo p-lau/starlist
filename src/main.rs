@@ -16,13 +16,47 @@ use std::sync::atomic::AtomicBool;
     version,
     about = "Watches your app's logs and serves distilled, redacted summaries to AI agents over MCP."
 )]
+#[command(args_override_self = true)]
 struct Cli {
+    /// Settings file for serve, collect, mcp, ingest, export and mark. Default:
+    /// ./starlist.toml if there is one (see `starlist init`).
+    #[arg(long, global = true, env = "STARLIST_CONFIG")]
+    config: Option<PathBuf>,
+    /// Don't read starlist.toml.
+    #[arg(long, global = true)]
+    no_config: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Find this project's logs, write starlist.toml, and set up your agent's
+    /// MCP client (Claude Code, Cursor, VS Code, Gemini CLI). Asks before changing
+    /// existing files.
+    Init {
+        /// The project directory.
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        /// Don't ask: use what was found and write everything, overwriting existing
+        /// settings. Without it and without a terminal, only new files are written.
+        #[arg(long, short)]
+        yes: bool,
+        /// Show what would be written, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Clients to set up: claude-code, cursor, vscode, gemini (comma-separated),
+        /// or "none". Default: the ones the project already uses, else Claude Code.
+        #[arg(long)]
+        client: Option<String>,
+        /// Have the agent start starlist itself over stdio instead of connecting to a
+        /// running `starlist serve`.
+        #[arg(long)]
+        stdio: bool,
+        /// Address `starlist serve` listens on.
+        #[arg(long, default_value = "127.0.0.1:7341")]
+        http: String,
+    },
     /// Collect logs and serve MCP from the same process (the usual way to run it).
     Serve {
         #[command(flatten)]
@@ -408,6 +442,9 @@ fn resolve_token(mcp: &McpArgs, db: &Path) -> Result<Option<String>> {
 }
 
 fn open_store(db: &PathBuf) -> Result<Arc<Store>> {
+    if let Some(dir) = db.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
     Ok(Arc::new(
         Store::open(db).with_context(|| format!("opening {}", db.display()))?,
     ))
@@ -734,8 +771,49 @@ async fn serve_http(router: axum::Router, mcp: &McpArgs) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    use clap::CommandFactory;
+    if let Some(path) = starlist::config::apply(&Cli::command(), &mut args)? {
+        eprintln!("starlist: settings from {}", path.display());
+    }
+    let cli = Cli::parse_from(args);
     match cli.cmd {
+        Cmd::Init {
+            dir,
+            yes,
+            dry_run,
+            client,
+            stdio,
+            http,
+        } => {
+            let clients = match client.as_deref().map(str::trim) {
+                None | Some("") => None,
+                Some("none") => Some(vec![]),
+                Some(list) => Some(
+                    list.split(',')
+                        .map(|c| {
+                            starlist::init::Client::parse(c).with_context(|| {
+                                format!("unknown client '{c}'; use claude-code, cursor, vscode or gemini")
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            };
+            let opts = starlist::init::Options {
+                dir,
+                yes,
+                dry_run,
+                clients,
+                stdio,
+                http,
+            };
+            starlist::init::run(
+                &opts,
+                &starlist::init::run_command,
+                &mut starlist::init::Terminal,
+            )?;
+            Ok(())
+        }
         Cmd::Serve { src, mcp, alerts } => {
             if mcp.stdio && src.stdin {
                 bail!(
