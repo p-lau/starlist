@@ -128,6 +128,7 @@ a baseline. Same rules as the `whats_new` tool.
     {
       "kind": "new",
       "note": null,
+      "usual": false,
       "count_window": 27,
       "count_baseline": 0,
       "per_hour_window": 27.0,
@@ -141,6 +142,11 @@ a baseline. Same rules as the `whats_new` tool.
 
 `kind` is `new`, `regressed`, `returning`, `spike`, `rising` or `gone_quiet`. Ignored
 patterns are left out.
+
+`usual` is `true` for a spike or return that is within what the same time of day saw on
+earlier days, such as a nightly job that fails around 02:00. It is still listed, after the
+findings that aren't usual, with a `note` that says so, and push alerts skip it. A spike
+clearly worse than earlier days at that time has `usual: false` and a note saying so.
 
 ### Patterns
 
@@ -206,13 +212,18 @@ The `verify_fix` verdict. `since` is required; `before` is optional.
   "expected_after": 14.2,
   "confidence": "high",
   "wait_minutes": null,
-  "caveat": null
+  "caveat": null,
+  "usual_hours": null
 }
 ```
 
 `verdict` is `fixed`, `reduced`, `still_occurring`, `worse`, `too_early`,
 `appeared_after` or `not_active_before`. `before` is `null` for
 `appeared_after`.
+
+For a pattern that keeps to certain hours of the day, `usual_hours` says which (UTC), and
+a quiet spell outside them doesn't count: the verdict stays `too_early`, with
+`wait_minutes` until those hours have come round since the split.
 
 ### `GET /compare`
 
@@ -255,7 +266,13 @@ Every event of one request in order, from the raw buffer (at most 2,000).
 {"state": "ignored", "ignore_for": "24h"}
 {"state": "ignored", "ignore_count": 100}
 {"state": "open"}
+{"timing": "usual"}
 ```
+
+`timing` overrides the time-of-day rules: `usual` marks a pattern as expected at set times
+(its spikes are labelled usual, and not alerted, unless clearly worse than earlier days),
+`always_alert` never labels it usual, and `auto` (the default) judges from history. It can
+be sent with or without `state`.
 
 Returns the pattern with its new state. A resolved pattern that occurs again
 is reported as `regressed` by `/whats-new`, alerts and the pattern itself.

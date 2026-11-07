@@ -159,7 +159,10 @@ pub struct GetContextArgs {
 pub struct SetPatternStateArgs {
     pub pattern_id: String,
     /// resolved, resolved_next (from the next deploy), ignored or open.
-    pub state: String,
+    pub state: Option<String>,
+    /// usual (expected at set times, like a nightly job: its spikes aren't alerted unless
+    /// worse than earlier days), always_alert, or auto (judge from history, the default).
+    pub timing: Option<String>,
     /// With ignored: for this long, like "24h".
     pub ignore_for: Option<String>,
     /// With ignored: for this many more events.
@@ -454,7 +457,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "Set a pattern's state. A resolved pattern that occurs again is reported as regressed.",
+        description = "Set a pattern's state or timing. A resolved pattern that occurs again is reported as regressed.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -468,7 +471,8 @@ impl LogServer {
         out(analysis::set_pattern_state(
             &self.store,
             &a.pattern_id,
-            &a.state,
+            a.state.as_deref(),
+            a.timing.as_deref(),
             a.ignore_for.as_deref(),
             a.ignore_count,
             a.note.as_deref(),

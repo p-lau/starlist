@@ -313,6 +313,7 @@ pub fn diagnose(
                 "new" => "a new",
                 "regressed" => "a regressed",
                 "returning" => "a returning",
+                "spike" if f.usual => "a spiking (but usual for the time of day)",
                 "spike" => "a spiking",
                 "rising" => "a rising",
                 _ => "a now-silent",

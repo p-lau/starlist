@@ -183,6 +183,44 @@ pub fn set_state(
     Ok((row, eff))
 }
 
+/// Set a pattern's state, its timing override ("usual", "always_alert" or "auto"), or
+/// both. At least one is needed.
+#[allow(clippy::too_many_arguments)]
+pub fn set_state_and_timing(
+    store: &Store,
+    pattern_id: &str,
+    state: Option<&str>,
+    timing: Option<&str>,
+    ignore_for: Option<&str>,
+    ignore_count: Option<i64>,
+    note: Option<&str>,
+    now: f64,
+) -> Result<(PatternRow, Effective), String> {
+    let mode = match timing {
+        Some(t) => Some(
+            crate::timing::Mode::parse(t)
+                .ok_or_else(|| format!("Unknown timing '{t}'. Use usual, always_alert or auto."))?,
+        ),
+        None => None,
+    };
+    let (row, eff) = match state {
+        Some(st) => set_state(store, pattern_id, st, ignore_for, ignore_count, note, now)?,
+        None if mode.is_some() => {
+            let row = store
+                .pattern(pattern_id)
+                .map_err(db)?
+                .ok_or_else(|| format!("Unknown pattern_id '{pattern_id}'."))?;
+            let eff = States::load(store)?.effective(store, &row, now);
+            (row, eff)
+        }
+        None => return Err("Pass a state, a timing, or both.".into()),
+    };
+    if let Some(m) = mode {
+        crate::timing::set_mode(store, &row.id, m)?;
+    }
+    Ok((row, eff))
+}
+
 /// Merge patterns into the first one by hand. The other IDs keep resolving to it.
 pub fn merge(store: &Store, ids: &[String]) -> Result<PatternRow, String> {
     if ids.len() < 2 {
