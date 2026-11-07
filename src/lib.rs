@@ -17,6 +17,7 @@ pub mod metrics;
 pub mod prometheus;
 pub mod push;
 pub mod server;
+pub mod sources;
 pub mod store;
 
 // The log engine lives in starlist-core; re-exported so `starlist::pattern`
