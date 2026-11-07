@@ -42,7 +42,10 @@ LOGS = {
     "raw": "The service's production log for the last 26 hours is at {log}.",
     "starlist": "The service's production logs for the last 26 hours are available through the starlist MCP tools.",
     "none": "The service's logs aren't available.",
+    "subagent": "You can't read the service's production logs (the last 26 hours) yourself; the investigate_logs tool asks a log agent that has them through starlist.",
 }
+
+ARMS = ["raw", "starlist", "none", "subagent"]
 
 # With --no-hint the agent isn't told the symptom and has to find the problem in the logs.
 NO_HINT = "An alert fired after the latest release, but nobody knows yet what is wrong."
@@ -51,7 +54,7 @@ BASE_TOOLS = ["Read", "Edit", "Grep", "Glob"]
 
 
 def prepare(suite: Path, work: Path, scenario: str, arm: str, seed: int, starlist: Path,
-            sim_args: list, hint: bool, tools: str = "all") -> dict:
+            sim_args: list, hint: bool, tools: str = "all", model: str = "") -> dict:
     scenarios = load_scenarios(suite)
     ws, logs = work / "ws", work / "logs"
     shutil.copytree(suite / "app", ws, ignore=shutil.ignore_patterns("__pycache__"))
@@ -78,9 +81,19 @@ def prepare(suite: Path, work: Path, scenario: str, arm: str, seed: int, starlis
         config = {"mcpServers": {"starlist": {
             "command": str(starlist), "args": ["mcp", "--stdio", "--db", str(db), "--no-alerts", "--tools", tools]}}}
         (work / "mcp.json").write_text(json.dumps(config))
-        args += ["--mcp-config", str(work / "mcp.json"),
-                 "--allowedTools", ",".join(BASE_TOOLS + ["mcp__starlist"])]
-        logs_text = LOGS["starlist"]
+        if arm == "subagent":
+            # The main agent gets one tool that asks a separate log agent with starlist.
+            sub = {"mcpServers": {"logs": {
+                "command": sys.executable,
+                "args": [str(HERE / "subagent_mcp.py"), "--mcp-config", str(work / "mcp.json"),
+                         "--work", str(work), "--model", model]}}}
+            (work / "subagent.json").write_text(json.dumps(sub))
+            args += ["--mcp-config", str(work / "subagent.json"),
+                     "--allowedTools", ",".join(BASE_TOOLS + ["mcp__logs"])]
+        else:
+            args += ["--mcp-config", str(work / "mcp.json"),
+                     "--allowedTools", ",".join(BASE_TOOLS + ["mcp__starlist"])]
+        logs_text = LOGS[arm]
     symptom = scenarios.SCENARIOS[scenario]["symptom"] if hint else NO_HINT
     prompt = PROMPT.format(symptom=symptom, logs=logs_text)
     return {"ws": ws, "args": args, "prompt": prompt}
@@ -134,7 +147,7 @@ def measure(transcript: Path) -> dict:
                     x.get("text", "") for x in (c or []) if isinstance(x, dict))
                 call = calls.get(b.get("tool_use_id"), {})
                 name, inp = call.get("name", "?"), json.dumps(call.get("input", {}))
-                if name.startswith("mcp__starlist") or "/logs/" in inp:
+                if name.startswith(("mcp__starlist", "mcp__logs")) or "/logs/" in inp:
                     log_chars += len(text)
                     log_calls += 1
                 else:
@@ -170,27 +183,48 @@ def run_one(job: dict) -> dict:
     work.mkdir(parents=True)
     suite = Path(job["suite_dir"])
     p = prepare(suite, work, job["scenario"], job["arm"], job["seed"], Path(job["starlist"]),
-                job["sim_args"], job["hint"], job.get("tools", "all"))
+                job["sim_args"], job["hint"], job.get("tools", "all"), job["model"])
     log = work / "logs" / "app.log"
     log_bytes = log.stat().st_size if log.exists() else None
     transcript = work / "transcript.jsonl"
-    cmd = ["claude", "-p", p["prompt"], "--output-format", "stream-json", "--verbose",
+    cmd = [os.environ.get("CLAUDE_BIN", "claude"), "-p", p["prompt"], "--output-format", "stream-json", "--verbose",
            "--model", job["model"], "--setting-sources", "", "--max-turns", str(job["max_turns"]),
            *p["args"]]
     started = time.time()
     with open(transcript, "w") as out:
         try:
+            # A log agent's answer can take minutes; don't let the MCP call time out first.
+            env = {**os.environ, "MCP_TOOL_TIMEOUT": str(job["timeout"] * 1000)}
             subprocess.run(cmd, cwd=p["ws"], stdout=out, stderr=subprocess.STDOUT,
-                           timeout=job["timeout"], stdin=subprocess.DEVNULL)
+                           timeout=job["timeout"], stdin=subprocess.DEVNULL, env=env)
             timed_out = False
         except subprocess.TimeoutExpired:
             timed_out = True
     row = {k: job[k] for k in ("suite", "variant", "scenario", "arm", "seed", "model")}
     row.update(measure(transcript))
+    subs = sorted(work.glob("sub-*.jsonl"))
+    if subs:
+        # Count the log agents in the totals, and keep the main agent's own numbers too.
+        ms = [measure(t) for t in subs]
+        row["main"] = {k: row[k] for k in ("total_tokens", "cost_usd", "turns", "peak_context")}
+        row["subagent"] = {
+            "calls": len(ms),
+            "total_tokens": sum(m["total_tokens"] for m in ms),
+            "cost_usd": sum(m["cost_usd"] or 0 for m in ms),
+            "turns": sum(m["turns"] or 0 for m in ms),
+            "peak_context": max(m["peak_context"] for m in ms),
+            "log_output_chars": sum(m["log_output_chars"] for m in ms),
+            "tools_used": sorted({t for m in ms for t in m["tools_used"]}),
+        }
+        for k in ("input", "output", "cache_read", "cache_write"):
+            row["tokens"][k] += sum(m["tokens"][k] for m in ms)
+        row["total_tokens"] += row["subagent"]["total_tokens"]
+        row["cost_usd"] = (row["cost_usd"] or 0) + row["subagent"]["cost_usd"]
+        row["turns"] = (row["turns"] or 0) + row["subagent"]["turns"]
     row.update(grade(suite, work, job["scenario"]))
     if log_bytes:
         row["log_bytes"] = log_bytes
-    if job["arm"] == "starlist" and job.get("tools", "all") != "all":
+    if job["arm"] in ("starlist", "subagent") and job.get("tools", "all") != "all":
         row["starlist_tools"] = job["tools"]
     if not job["keep"]:  # logs and databases are large; keep the transcript and the edit
         shutil.rmtree(work / "logs", ignore_errors=True)
@@ -211,7 +245,8 @@ def main() -> None:
     p.add_argument("--model", default="claude-sonnet-5-5")
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--scenario", action="append", help="Only these (repeatable)")
-    p.add_argument("--arm", action="append", choices=["raw", "starlist", "none"])
+    p.add_argument("--arm", action="append", choices=ARMS,
+                   help="subagent: the main agent asks a separate log agent that has starlist")
     p.add_argument("--parallel", type=int, default=4)
     p.add_argument("--max-turns", type=int, default=40)
     p.add_argument("--timeout", type=int, default=1200, help="Seconds per agent run")

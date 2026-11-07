@@ -18,6 +18,7 @@ Does an agent fix a production bug with fewer tokens when it reads logs through 
   - **raw**: the agent gets the log file's path and reads it with Grep (which has a count mode and a result limit) and Read.
   - **starlist**: the log is ingested with `starlist ingest --source-root /app`, deleted, and served with `starlist mcp --stdio`. The agent sees only starlist's tools.
   - **none** (control): no logs at all, to check whether the bug can be found from the code alone.
+  - **subagent** (not run yet): the main agent has no log tools, only `investigate_logs`, which asks a separate log agent that has starlist's tools and nothing else (no code, no shell) and returns a short finding. The idea is that the main agent stops paying for starlist's tool definitions on every turn. The log agent's tokens and cost are counted in the totals and also reported on their own (`main` and `subagent` in each row). It's a separate headless agent behind a one-tool MCP server (`subagent_mcp.py`) rather than a Claude Code subagent, because some environments skip MCP servers that a subagent defines for itself.
 - **Grading.** When the agent stops, the visible tests and a hidden check run on a copy of its workspace. Each hidden check fails on the code as shipped and passes on a correct fix.
 - **Metrics** (from the agent's stream):
   - total tokens: input, cache reads, cache writes and output, summed over every model call
@@ -135,7 +136,7 @@ python3 report.py results/<file>.jsonl                    # several files are co
 
 Options:
 - `--scenario NAME` (repeatable)
-- `--arm raw|starlist|none`
+- `--arm raw|starlist|none|subagent`
 - `--model`
 - `--parallel`
 - `--starlist PATH` (another build)
