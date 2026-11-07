@@ -170,10 +170,13 @@ cargo run --release --example ask -- http://127.0.0.1:7341/mcp verify_fix '{"pat
 
 ## Tests
 
-`cargo test --workspace`: unit tests (redaction, masking, stack-trace grouping, timestamps), scenario tests for every verdict with controlled time, and an end-to-end test that ingests logs and calls the tools through a real MCP client over HTTP.
+`cargo test --workspace`: unit tests (redaction, masking, stack-trace grouping, timestamps), scenario tests for every verdict with controlled time, and an end-to-end test that ingests logs and calls the tools through a real MCP client over HTTP. `tests/interface.rs` checks the tool names, arguments and output fields against [docs/tools.md](docs/tools.md).
+
+`python bench/load.py` is the load test: it writes a busy log (requests, stack traces, high-cardinality values, rotation) into a file starlist follows, and checks that memory and the database level off and nothing is dropped. At 5,000 lines/s for 5 minutes (1.5M entries, 0.1% of them never-seen-before text), starlist kept up within seconds, peaked at 28 MB of memory, and the database levelled at 63 MB with `--raw-size 16MB`. It also runs weekly in CI.
 
 ## Known limits
 
 - Lines without a timestamp get the time they were read.
+- Patterns are kept for good, so a log where a large share of lines are unlike any other (free text with no IDs or numbers to mask) grows the pattern table without limit and slows ingestion: in the load test with 3% such lines at 5,000 lines/s, 35,000 patterns built up in 5 minutes and starlist fell behind. `--group` rules or `--merge-after` help for known shapes.
 - No TLS of its own: see [Security](#security-privacy-and-time-zones).
 - A hub has no push alerts or Prometheus endpoint of its own yet; each collector still has both.
