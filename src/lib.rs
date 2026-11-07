@@ -4,6 +4,7 @@ pub mod alerts;
 pub mod analysis;
 pub mod api;
 pub mod collector;
+pub mod config;
 #[cfg(feature = "dashboard")]
 pub mod dashboard;
 pub mod diagnose;
@@ -11,6 +12,7 @@ pub mod export;
 pub mod http;
 #[cfg(feature = "hub")]
 pub mod hub;
+pub mod init;
 pub mod issues;
 pub mod metrics;
 #[cfg(feature = "prometheus")]

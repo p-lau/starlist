@@ -46,7 +46,24 @@ Every answer also has a hard size limit, however noisy the log: 8,000 characters
 6. **Store**: SQLite (WAL) with per-10s counts, 5 recent samples per pattern, and markers. After 7 days (`--retention`) counts are folded into hourly counts, which are kept for 400 days (`--history`), so a month-over-month question still has an answer.
 7. **Numbers** (optional): `--metric duration_ms` (repeatable) reads that field from each line, in `duration_ms=532`, `latency: 0.53` or JSON, and keeps an hourly histogram per pattern, so p50, p95 and p99 survive for months without the lines. Percentiles are within about 9%; count, mean, min and max are exact.
 
-## Run it
+## Set it up
+
+```sh
+cd your-app
+starlist init      # finds the logs, writes starlist.toml, sets up your agent
+starlist serve     # reads starlist.toml; leave it running
+```
+
+`starlist init` looks for log files in the project (and `/var/log/<project>`), a Docker Compose project or running containers named after it, systemd units, Kubernetes workloads in your manifests, and an OpenTelemetry SDK in your dependencies. It lists what it found, lets you pick, and writes:
+
+- `starlist.toml`: the sources, the database (`.starlist/starlist.db`, added to `.gitignore` if there is one), and source roots for code locations (the project directory, plus the Dockerfile's `WORKDIR`).
+- The MCP settings of the clients the project already uses, or Claude Code's `.mcp.json` if none: `.mcp.json` (Claude Code), `.cursor/mcp.json`, `.vscode/mcp.json` and `.gemini/settings.json`, keeping any other servers in them. It prints the settings for the rest, Windsurf and Codex included.
+
+It shows the plan before writing and asks before changing a file that exists. In CI or a script there's no prompt: new files are written, existing ones left alone, and `--yes` changes those too. `--dry-run` prints the files instead, `--client cursor,vscode` (or `none`) picks the clients, and `--stdio` has the agent start starlist itself instead of connecting to a running `starlist serve`.
+
+`starlist.toml` holds command-line flags: each key is a flag without the dashes (`file = ["logs/app.log"]`, `from-start = true`). `serve`, `collect`, `mcp`, `ingest`, `export` and `mark` read it from the current directory, or from `--config PATH` (`STARLIST_CONFIG`); `--no-config` skips it. Flags typed on the command line win, lists add to the file's, and relative paths are read from the file's directory.
+
+## Run it by hand
 
 ```sh
 cargo build --release

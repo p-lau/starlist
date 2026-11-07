@@ -58,6 +58,7 @@ getrandom = "0.4"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
 
 [dev-dependencies]
 # The MCP client is only used by the example agent and the end-to-end test.
