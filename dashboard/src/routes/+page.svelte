@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Tip from '#lib/Tip.svelte';
 	import { get, session } from '#lib/api.svelte.ts';
 	import LevelChart from '#lib/LevelChart.svelte';
 	import PatternTitle from '#lib/PatternTitle.svelte';
@@ -56,7 +57,7 @@
 <div class="stack">
 	<section class="tiles">
 		<div class="card tile">
-			<span class="label">Events, last hour</span>
+			<span class="label">Events, last hour<Tip text="Log lines read in the last 60 minutes, at every level." /></span>
 			<span class="value">{num(status?.last_hour.events)}</span>
 		</div>
 		<div class="card tile" class:alarm={(status?.last_hour.errors ?? 0) > 0}>
@@ -64,18 +65,18 @@
 			<span class="value">{num(status?.last_hour.errors)}</span>
 		</div>
 		<div class="card tile">
-			<span class="label">Patterns</span>
+			<span class="label">Patterns<Tip text="Distinct kinds of log line. Lines that differ only in ids, numbers and the like share one template and count as one pattern." /></span>
 			<span class="value">{num(status?.patterns)}</span>
 		</div>
 		<div class="card tile">
-			<span class="label">Live release</span>
+			<span class="label">Live release<Tip text="The latest deploy starlist knows of. It records one from a startup line naming a version, from STARLIST_VERSION, or when you add one under Deploys." /></span>
 			<span class="value mono small">{status?.current_release?.name ?? '—'}</span>
 		</div>
 	</section>
 
 	<section class="card">
 		<div class="head">
-			<h2>Log volume by level</h2>
+			<h2>Log volume by level<Tip text="How many lines arrived over time, stacked by level. Pick the period on the right." /></h2>
 			<div class="seg" role="group" aria-label="Period">
 				{#each RANGES as r (r.v)}
 					<button class:on={range === r.v} aria-pressed={range === r.v} onclick={() => (range = r.v)}>{r.v}</button>
@@ -92,7 +93,7 @@
 	<section class="card">
 		<div class="head">
 			<div>
-				<h2>What's new</h2>
+				<h2>What's new<Tip text="Patterns that changed in the chosen window compared with the day before. New: never seen before. Regressed: was resolved and came back. Returning: back after a long quiet. Spiking or Rising: busier than usual. Gone quiet: stopped. The numbers on the right are the count in the window and its rate per hour against the usual rate." /></h2>
 				{#if news}<p class="muted sub">{news.summary}</p>{/if}
 			</div>
 			<div class="row">

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Tip from '#lib/Tip.svelte';
 	import { page } from '$app/state';
 	import { get, post, refresh, session } from '#lib/api.svelte.ts';
 	import StateBadge from '#lib/StateBadge.svelte';
@@ -127,7 +128,7 @@
 		</section>
 
 		<section class="card stack">
-			<h2>Issue state</h2>
+			<h2>Issue state<Tip text="Resolve a pattern once it is fixed: if it shows up again it is marked regressed and alerts. Resolve in next release waits for the next deploy, for fixes not yet shipped. Ignore keeps it out of What's new and alerts, for good or for a while." /></h2>
 			{#if p.state.state === 'regressed'}
 				<p class="error-box">
 					This was resolved {ago(p.state.resolved_at)} and came back {ago(p.state.regressed_at)}{#if p.state.regressed_in}{' in '}{p.state.regressed_in}{/if}.
@@ -178,7 +179,7 @@
 		</section>
 
 		<section class="card stack">
-			<h2>Did a fix work?</h2>
+			<h2>Did a fix work?<Tip text="Pick a deploy, marker or time and starlist compares this pattern's rate before and after it, then says whether it stopped, dropped or kept going." /></h2>
 			<div class="row">
 				<label for="since" class="muted">Compare before and after</label>
 				<select id="since" bind:value={since}>
@@ -203,7 +204,7 @@
 
 		{#if p.fields?.length}
 			<section class="card">
-				<h2>Numbers in its lines, last 24h</h2>
+				<h2>Numbers in its lines, last 24h<Tip text="Numeric fields found in this pattern's lines, like durations or sizes. p50 is the median, p95 and p99 are the values that 95% and 99% of lines stay under." /></h2>
 				<div class="scroll">
 					<table>
 						<thead>
@@ -238,7 +239,7 @@
 
 		{#if p.locations.length > 1}
 			<section class="card">
-				<h2>Raised from</h2>
+				<h2>Raised from<Tip text="The places in the code (logger or file and line) that wrote this pattern, with how many lines each." /></h2>
 				<table>
 					<tbody>
 						{#each p.locations as l (l.location)}
