@@ -1,0 +1,15 @@
+# The published image: the release workflow's static binaries in a minimal
+# base with CA certificates and a non-root user.
+
+FROM alpine:3 AS dirs
+RUN mkdir /data
+
+FROM gcr.io/distroless/static-debian12:nonroot
+ARG TARGETARCH
+COPY dist/${TARGETARCH}/starlist /usr/local/bin/starlist
+COPY --from=dirs --chown=65532:65532 /data /data
+WORKDIR /data
+VOLUME /data
+EXPOSE 7341
+ENTRYPOINT ["/usr/local/bin/starlist"]
+CMD ["--help"]
