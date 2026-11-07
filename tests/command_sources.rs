@@ -1,21 +1,10 @@
 //! Docker, journald and Kubernetes sources (issue #27), driven by fake
 //! command-line tools.
 
-use starlist::collector::Pipeline;
-use starlist::redact::Redactor;
-use starlist::sources::command::{self, Tool};
+use starlist::sources::command::Tool;
 use starlist::sources::journald::decode_entry;
 use starlist::sources::kubernetes::{Kubectl, selector_from_labels};
 use starlist::sources::{Resume, Start, split_timestamp};
-use starlist::store::Store;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-fn store(name: &str) -> Arc<Store> {
-    let p = std::env::temp_dir().join(format!("starlist-src-{name}-{}.db", std::process::id()));
-    let _ = std::fs::remove_file(&p);
-    Arc::new(Store::open(p).unwrap())
-}
 
 #[test]
 fn timestamps_from_docker_and_kubectl() {
@@ -96,80 +85,97 @@ fn kubernetes_selectors_and_commands() {
     );
 }
 
-/// A fake `docker`: each run prints the same lines (with a stack trace, on
-/// stdout and stderr, plus a message from docker itself) and exits, so the
-/// follower restarts it and must not read anything twice. The second run adds
-/// a line.
+/// Shell scripts stand in for the real tools, so these run on Unix only.
 #[cfg(unix)]
-#[test]
-fn docker_follower_restarts_without_reading_twice() {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = std::env::temp_dir().join(format!("starlist-fake-docker-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let args_file = dir.join("args");
-    let script = dir.join("docker");
-    std::fs::write(
-        &script,
-        format!(
-            r#"#!/bin/sh
-echo "$@" >> "{args}"
-echo "2026-11-07T01:00:00.000000001Z 2026-11-07 01:00:00 ERROR checkout failed order=1"
-echo "2026-11-07T01:00:00.000000002Z Traceback (most recent call last):"
-echo '2026-11-07T01:00:00.000000003Z   File "shop/app.py", line 3, in main'
-echo "2026-11-07T01:00:00.000000004Z KeyError: 'currency'"
-echo "2026-11-07T01:00:01.000000000Z 2026-11-07 01:00:01 WARN slow upstream" >&2
-echo "Error response from daemon: container is restarting" >&2
-if [ "$(wc -l < "{args}")" -ge 2 ]; then
-  echo "2026-11-07T01:00:02.000000000Z 2026-11-07 01:00:02 INFO back up"
-fi
-"#,
-            args = args_file.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+mod fake_tools {
+    use starlist::collector::Pipeline;
+    use starlist::redact::Redactor;
+    use starlist::sources::Start;
+    use starlist::sources::command;
+    use starlist::store::Store;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    let s = store("docker");
-    let p = Pipeline::new(s.clone(), Redactor::default(), None);
-    let tool = starlist::sources::docker::Docker {
-        program: script.display().to_string(),
-    };
-    let alive = Arc::new(AtomicBool::new(true));
-    let stop = AtomicBool::new(false);
-    let a = alive.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(2600));
-        a.store(false, Ordering::Relaxed);
-    });
-    let resume = Default::default();
-    command::follow(&p, &tool, "shop", Start::New, &resume, &alive, &stop);
+    fn store(name: &str) -> Arc<Store> {
+        let p = std::env::temp_dir().join(format!("starlist-src-{name}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        Arc::new(Store::open(p).unwrap())
+    }
 
-    let args = std::fs::read_to_string(&args_file).unwrap();
-    let runs: Vec<&str> = args.lines().collect();
-    assert!(runs.len() >= 2, "{args}");
-    assert_eq!(runs[0], "logs --follow --timestamps --tail 0 shop");
-    // Resumes from the older stream's newest line.
-    assert_eq!(
-        runs[1],
-        "logs --follow --timestamps --since 2026-11-07T01:00:00.000000004Z shop"
-    );
-
-    let patterns = s.patterns_seen_since(0.0).unwrap();
-    let mut seen: Vec<(String, i64)> = patterns
-        .iter()
-        .map(|p| (p.level.clone().unwrap_or_default(), p.total))
-        .collect();
-    seen.sort();
-    assert_eq!(
-        seen,
-        [("ERROR".into(), 1), ("INFO".into(), 1), ("WARN".into(), 1)],
-        "{patterns:?}"
-    );
-    let err = patterns
-        .iter()
-        .find(|p| p.level.as_deref() == Some("ERROR"))
+    /// A fake `docker`: each run prints the same lines (with a stack trace, on
+    /// stdout and stderr, plus a message from docker itself) and exits, so the
+    /// follower restarts it and must not read anything twice. The second run adds
+    /// a line.
+    #[test]
+    fn docker_follower_restarts_without_reading_twice() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("starlist-fake-docker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let args_file = dir.join("args");
+        let script = dir.join("docker");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+    echo "$@" >> "{args}"
+    echo "2026-11-07T01:00:00.000000001Z 2026-11-07 01:00:00 ERROR checkout failed order=1"
+    echo "2026-11-07T01:00:00.000000002Z Traceback (most recent call last):"
+    echo '2026-11-07T01:00:00.000000003Z   File "shop/app.py", line 3, in main'
+    echo "2026-11-07T01:00:00.000000004Z KeyError: 'currency'"
+    echo "2026-11-07T01:00:01.000000000Z 2026-11-07 01:00:01 WARN slow upstream" >&2
+    echo "Error response from daemon: container is restarting" >&2
+    if [ "$(wc -l < "{args}")" -ge 2 ]; then
+      echo "2026-11-07T01:00:02.000000000Z 2026-11-07 01:00:02 INFO back up"
+    fi
+    "#,
+                args = args_file.display()
+            ),
+        )
         .unwrap();
-    assert_eq!(err.exc_type.as_deref(), Some("KeyError"));
-    assert_eq!(err.location.as_deref(), Some("shop/app.py:3 in main"));
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let s = store("docker");
+        let p = Pipeline::new(s.clone(), Redactor::default(), None);
+        let tool = starlist::sources::docker::Docker {
+            program: script.display().to_string(),
+        };
+        let alive = Arc::new(AtomicBool::new(true));
+        let stop = AtomicBool::new(false);
+        let a = alive.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(2600));
+            a.store(false, Ordering::Relaxed);
+        });
+        let resume = Default::default();
+        command::follow(&p, &tool, "shop", Start::New, &resume, &alive, &stop);
+
+        let args = std::fs::read_to_string(&args_file).unwrap();
+        let runs: Vec<&str> = args.lines().collect();
+        assert!(runs.len() >= 2, "{args}");
+        assert_eq!(runs[0], "logs --follow --timestamps --tail 0 shop");
+        // Resumes from the older stream's newest line.
+        assert_eq!(
+            runs[1],
+            "logs --follow --timestamps --since 2026-11-07T01:00:00.000000004Z shop"
+        );
+
+        let patterns = s.patterns_seen_since(0.0).unwrap();
+        let mut seen: Vec<(String, i64)> = patterns
+            .iter()
+            .map(|p| (p.level.clone().unwrap_or_default(), p.total))
+            .collect();
+        seen.sort();
+        assert_eq!(
+            seen,
+            [("ERROR".into(), 1), ("INFO".into(), 1), ("WARN".into(), 1)],
+            "{patterns:?}"
+        );
+        let err = patterns
+            .iter()
+            .find(|p| p.level.as_deref() == Some("ERROR"))
+            .unwrap();
+        assert_eq!(err.exc_type.as_deref(), Some("KeyError"));
+        assert_eq!(err.location.as_deref(), Some("shop/app.py:3 in main"));
+    }
 }
