@@ -196,7 +196,61 @@ struct SourceArgs {
     /// With --stdin, also print the logs to stdout.
     #[arg(long)]
     tee: bool,
-    /// Read files from the beginning instead of only new lines.
+    /// Docker container to follow, by name or ID (repeatable). Survives restarts
+    /// and re-creation. `STARLIST_DOCKER=podman` uses Podman.
+    #[arg(long = "docker")]
+    #[cfg_attr(not(feature = "docker"), arg(hide = true))]
+    docker: Vec<String>,
+    /// Follow every running container with this label, "KEY" or "KEY=VALUE"
+    /// (repeatable), including containers started later.
+    #[arg(long = "docker-label")]
+    #[cfg_attr(not(feature = "docker"), arg(hide = true))]
+    docker_labels: Vec<String>,
+    /// systemd unit to follow through journald, like "api.service" (repeatable).
+    #[arg(long = "journald")]
+    #[cfg_attr(not(feature = "journald"), arg(hide = true))]
+    journald: Vec<String>,
+    /// Kubernetes pods to follow (repeatable): "deployment/NAME" (also
+    /// statefulset/, daemonset/, job/) or a label selector like "app=api".
+    /// New pods are picked up, restarted containers followed again.
+    #[arg(long = "k8s")]
+    #[cfg_attr(not(feature = "kubernetes"), arg(hide = true))]
+    k8s: Vec<String>,
+    /// Namespace for --k8s; default is the kubectl context's.
+    #[arg(long = "k8s-namespace")]
+    #[cfg_attr(not(feature = "kubernetes"), arg(hide = true))]
+    k8s_namespace: Option<String>,
+    /// Receive OTLP logs over HTTP at this address, like "127.0.0.1:4318"
+    /// (exporters send to http://ADDR/v1/logs).
+    #[arg(long)]
+    #[cfg_attr(not(feature = "otel"), arg(hide = true))]
+    otlp: Option<String>,
+    /// Require `Authorization: Bearer TOKEN` on --otlp. Needed beyond localhost.
+    #[arg(long, env = "STARLIST_OTLP_TOKEN", hide_env_values = true)]
+    #[cfg_attr(not(feature = "otel"), arg(hide = true))]
+    otlp_token: Option<String>,
+    /// Loki to read logs from, like "http://loki:3100" (with --loki-query).
+    #[arg(long, env = "STARLIST_LOKI_URL")]
+    #[cfg_attr(not(feature = "loki"), arg(hide = true))]
+    loki: Option<String>,
+    /// LogQL log query for --loki, like '{app="api"}'.
+    #[arg(long)]
+    #[cfg_attr(not(feature = "loki"), arg(hide = true))]
+    loki_query: Option<String>,
+    /// Token for --loki: sent as a bearer token, or as the password with --loki-user.
+    #[arg(long, env = "STARLIST_LOKI_TOKEN", hide_env_values = true)]
+    #[cfg_attr(not(feature = "loki"), arg(hide = true))]
+    loki_token: Option<String>,
+    /// User for basic auth to --loki (Grafana Cloud uses this).
+    #[arg(long)]
+    #[cfg_attr(not(feature = "loki"), arg(hide = true))]
+    loki_user: Option<String>,
+    /// Tenant for a multi-tenant Loki (X-Scope-OrgID).
+    #[arg(long)]
+    #[cfg_attr(not(feature = "loki"), arg(hide = true))]
+    loki_org: Option<String>,
+    /// Read from the beginning instead of only new lines: whole files, all of a
+    /// container's or pod's logs, a unit's journal, the last hour of Loki.
     #[arg(long)]
     from_start: bool,
     /// How long to keep 10-second counts, like "7d". Older counts are kept per hour.
@@ -396,9 +450,7 @@ fn start_collection(
     src: &SourceArgs,
     store: Arc<Store>,
 ) -> Result<Option<std::thread::JoinHandle<()>>> {
-    if src.files.is_empty() && !src.stdin {
-        bail!("nothing to collect: pass --file PATH and/or --stdin");
-    }
+    check_sources(src)?;
     if let Some(url) = src.hub.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
         let service = src
             .service
@@ -464,6 +516,7 @@ fn start_collection(
         eprintln!("starlist: following {}", f.display());
         std::thread::spawn(move || collector::tail_file(&p, f, from_start, false, &STOP));
     }
+    start_sources(src, &p, &STOP)?;
     if src.stdin {
         let (p, tee) = (p.clone(), src.tee);
         return Ok(Some(std::thread::spawn(move || {
@@ -471,6 +524,141 @@ fn start_collection(
         })));
     }
     Ok(None)
+}
+
+/// Fail early on sources that weren't built in or are missing a setting.
+fn check_sources(src: &SourceArgs) -> Result<()> {
+    let none = src.files.is_empty()
+        && !src.stdin
+        && src.docker.is_empty()
+        && src.docker_labels.is_empty()
+        && src.journald.is_empty()
+        && src.k8s.is_empty()
+        && src.otlp.is_none()
+        && src.loki.is_none();
+    if none {
+        bail!(
+            "nothing to collect: pass --file PATH, --stdin, --docker NAME, --docker-label KEY=VALUE, \
+             --journald UNIT, --k8s TARGET, --otlp ADDR or --loki URL"
+        );
+    }
+    let missing = [
+        (
+            !src.docker.is_empty() || !src.docker_labels.is_empty(),
+            cfg!(feature = "docker"),
+            "--docker",
+            "docker",
+        ),
+        (
+            !src.journald.is_empty(),
+            cfg!(feature = "journald"),
+            "--journald",
+            "journald",
+        ),
+        (
+            !src.k8s.is_empty(),
+            cfg!(feature = "kubernetes"),
+            "--k8s",
+            "kubernetes",
+        ),
+        (src.otlp.is_some(), cfg!(feature = "otel"), "--otlp", "otel"),
+        (src.loki.is_some(), cfg!(feature = "loki"), "--loki", "loki"),
+    ];
+    if let Some((_, _, flag, feature)) = missing.iter().find(|(used, built, ..)| *used && !*built) {
+        bail!("{flag}: this starlist was built without the `{feature}` feature");
+    }
+    if src.loki.is_some()
+        && src
+            .loki_query
+            .as_deref()
+            .is_none_or(|q| q.trim().is_empty())
+    {
+        bail!("--loki needs --loki-query, like '{{app=\"api\"}}'");
+    }
+    if let Some(addr) = &src.otlp
+        && !is_loopback(addr)
+        && src
+            .otlp_token
+            .as_deref()
+            .is_none_or(|t| t.trim().len() < 16)
+    {
+        bail!("--otlp beyond localhost needs --otlp-token (at least 16 characters)");
+    }
+    Ok(())
+}
+
+/// Start the sources other than files and stdin.
+#[allow(unused_variables)]
+fn start_sources(src: &SourceArgs, p: &Arc<Pipeline>, stop: &'static AtomicBool) -> Result<()> {
+    use starlist::sources::Start;
+    let first = if src.from_start {
+        Start::All
+    } else {
+        Start::New
+    };
+    #[cfg(feature = "docker")]
+    {
+        for name in &src.docker {
+            let (p, name) = (p.clone(), name.clone());
+            std::thread::spawn(move || {
+                starlist::sources::docker::follow_container(p, name, first, stop)
+            });
+        }
+        for label in &src.docker_labels {
+            let (p, label) = (p.clone(), label.clone());
+            std::thread::spawn(move || {
+                starlist::sources::docker::follow_label(p, label, first, stop)
+            });
+        }
+    }
+    #[cfg(feature = "journald")]
+    for unit in &src.journald {
+        let (p, unit) = (p.clone(), unit.clone());
+        std::thread::spawn(move || starlist::sources::journald::follow_unit(p, unit, first, stop));
+    }
+    #[cfg(feature = "kubernetes")]
+    for target in &src.k8s {
+        let (p, target, ns) = (p.clone(), target.clone(), src.k8s_namespace.clone());
+        std::thread::spawn(move || {
+            starlist::sources::kubernetes::follow(p, target, ns, first, stop)
+        });
+    }
+    #[cfg(feature = "loki")]
+    if let Some(url) = &src.loki {
+        let cfg = starlist::sources::loki::LokiConfig {
+            url: url.trim().to_string(),
+            query: src.loki_query.clone().unwrap_or_default(),
+            token: src.loki_token.clone().filter(|t| !t.trim().is_empty()),
+            user: src.loki_user.clone().filter(|u| !u.trim().is_empty()),
+            org: src.loki_org.clone().filter(|o| !o.trim().is_empty()),
+        };
+        let (p, from_start) = (p.clone(), src.from_start);
+        std::thread::spawn(move || starlist::sources::loki::follow(&p, cfg, from_start, stop));
+    }
+    #[cfg(feature = "otel")]
+    if let Some(addr) = &src.otlp {
+        let listener =
+            std::net::TcpListener::bind(addr).with_context(|| format!("binding --otlp {addr}"))?;
+        listener.set_nonblocking(true)?;
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        eprintln!(
+            "starlist: receiving OTLP logs at http://{}/v1/logs",
+            listener.local_addr()?
+        );
+        let token = src
+            .otlp_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+        let app = starlist::sources::otel::router(p.clone(), token);
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, app).await {
+                eprintln!("starlist: OTLP receiver stopped: {e}");
+            }
+        });
+    }
+    Ok(())
 }
 
 async fn run_mcp(

@@ -38,7 +38,7 @@ Every answer also has a hard size limit, however noisy the log: 8,000 characters
 
 ## How it works
 
-1. **Collect**: follows files like `tail -F` (rotation-safe) or reads stdin; groups stack-trace lines with the log line that produced them.
+1. **Collect**: follows files like `tail -F` (rotation-safe), reads stdin, follows Docker containers, journald units and Kubernetes pods, receives OpenTelemetry logs, or reads a Loki stream; groups stack-trace lines with the log line that produced them.
 2. **Redact** before storing: emails, IPs, bearer tokens, JWTs, API keys (OpenAI, GitHub, Slack, Stripe, AWS), `password=`-style values, Luhn-valid card numbers, private keys, plus your own `--redact REGEX`.
 3. **Pattern**: masks numbers, IDs, UUIDs, hex, quoted strings and timestamps; the pattern ID is a hash of that template, so it is the same across restarts and hosts. The exception type is part of the pattern (`... | KeyError`).
 4. **Merge**: when patterns differ in just one word (a username, a hostname without digits) and that word has taken 5 different values, they are merged into one pattern with `<*>` there (`user=<*>` keeps the key). The oldest pattern's ID stays, and the merged IDs keep resolving to it, so IDs an agent already holds still work. Five values is high enough that status words like `started` / `failed` stay separate. Tune with `--merge-after N`, or `0` to turn it off.
@@ -57,6 +57,10 @@ npm start | ./target/release/starlist serve --stdin --tee
 # Or let the agent launch it over stdio (reads the DB a collector writes)
 ./target/release/starlist collect --file app.log &
 ./target/release/starlist mcp --stdio
+# Or read from Docker, journald, Kubernetes, OpenTelemetry or Loki
+./target/release/starlist serve --docker shop-api
+./target/release/starlist serve --k8s deployment/api --k8s-namespace shop
+./target/release/starlist serve --otlp 127.0.0.1:4318
 # Record the release without a log line: at startup...
 STARLIST_VERSION=v1.4.3 ./target/release/starlist serve --file app.log
 # ...or from a deploy script
@@ -65,7 +69,9 @@ STARLIST_VERSION=v1.4.3 ./target/release/starlist serve --file app.log
 
 Claude Code: `claude mcp add --transport http logs http://127.0.0.1:7341/mcp`
 
-The dashboard, the hub server and the Prometheus exporter are Cargo features, all on by default. For just the MCP collector (it can still push to a hub), build with `cargo build --release --no-default-features`, and add back what you need with `--features dashboard,hub,prometheus`.
+See [docs/sources.md](docs/sources.md) for every log source: Docker containers by name or label, journald units, the pods of a Kubernetes deployment across restarts, OTLP logs over HTTP (keeping trace IDs for `get_request`), and LogQL streams from Loki.
+
+The dashboard, the hub server, the Prometheus exporter and each log source beyond files and stdin are Cargo features, all on by default. For just the MCP collector reading files and stdin (it can still push to a hub), build with `cargo build --release --no-default-features`, and add back what you need with `--features dashboard,hub,prometheus,docker,journald,kubernetes,otel,loki`.
 
 The log engine (parsing, pattern IDs and merging, redaction, request IDs and code locations) is the `starlist-core` crate in `core/`, with no storage or server, so other tools can reuse it.
 

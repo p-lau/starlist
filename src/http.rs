@@ -16,7 +16,11 @@ pub fn same_secret(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-async fn require_bearer(State(token): State<Arc<String>>, req: Request, next: Next) -> Response {
+pub(crate) async fn require_bearer(
+    State(token): State<Arc<String>>,
+    req: Request,
+    next: Next,
+) -> Response {
     let ok = req
         .headers()
         .get(header::AUTHORIZATION)

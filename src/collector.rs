@@ -1,4 +1,5 @@
-//! The always-on part: reads log lines from files or stdin, groups them into
+//! The always-on part: reads log lines from files or stdin (other sources are
+//! in `sources`), groups them into
 //! events, redacts, and records them in the store.
 
 use crate::merge::Merger;
@@ -21,7 +22,7 @@ pub const DEFAULT_MARKER_REGEX: &str =
 
 const BATCH: usize = 500;
 const IDLE_FLUSH: Duration = Duration::from_millis(800);
-const POLL: Duration = Duration::from_millis(250);
+pub(crate) const POLL: Duration = Duration::from_millis(250);
 
 pub struct Pipeline {
     pub store: Arc<Store>,
@@ -194,7 +195,7 @@ impl Pipeline {
 }
 
 /// Reads lines from any source, groups them into events and ingests in batches.
-struct Feeder<'a> {
+pub(crate) struct Feeder<'a> {
     pipeline: &'a Pipeline,
     asm: Assembler,
     batch: Vec<String>,
@@ -202,7 +203,7 @@ struct Feeder<'a> {
 }
 
 impl<'a> Feeder<'a> {
-    fn new(pipeline: &'a Pipeline) -> Self {
+    pub(crate) fn new(pipeline: &'a Pipeline) -> Self {
         Self {
             pipeline,
             asm: Assembler::default(),
@@ -210,7 +211,7 @@ impl<'a> Feeder<'a> {
             last_line: Instant::now(),
         }
     }
-    fn line(&mut self, l: &str) {
+    pub(crate) fn line(&mut self, l: &str) {
         self.last_line = Instant::now();
         if let Some(ev) = self.asm.feed(l) {
             self.batch.push(ev);
@@ -220,7 +221,7 @@ impl<'a> Feeder<'a> {
         }
     }
     /// Called when the source is idle: finish a pending event if nothing new arrived for a while.
-    fn idle(&mut self, force: bool) {
+    pub(crate) fn idle(&mut self, force: bool) {
         if self.asm.has_pending() && (force || self.last_line.elapsed() >= IDLE_FLUSH) {
             self.batch.extend(self.asm.flush());
         }
