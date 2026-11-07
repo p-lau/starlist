@@ -52,8 +52,8 @@ fn whats_new_names_the_release_that_introduced_a_pattern() {
 
     let v = whats_new(
         &s,
-        "1h",
-        "24h",
+        Some("1h"),
+        Some("24h"),
         None,
         &Page::first(10, Detail::Brief),
         Detail::Brief,

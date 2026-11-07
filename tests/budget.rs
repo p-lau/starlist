@@ -107,7 +107,15 @@ fn every_tool_stays_within_its_default_budget() {
         let checks = [
             (
                 "whats_new",
-                whats_new(&s, "1h", "24h", None, &Page::first(50, d), d, NOW),
+                whats_new(
+                    &s,
+                    Some("1h"),
+                    Some("24h"),
+                    None,
+                    &Page::first(50, d),
+                    d,
+                    NOW,
+                ),
             ),
             (
                 "compare_deploy",
@@ -155,7 +163,7 @@ fn a_smaller_budget_is_respected_and_says_what_was_cut() {
     let s = noisy_store();
     let d = Detail::Brief;
     let (page, now) = Page::from_args(50, None, Some(2500), d, NOW).unwrap();
-    let v = whats_new(&s, "1h", "24h", None, &page, d, now).unwrap();
+    let v = whats_new(&s, Some("1h"), Some("24h"), None, &page, d, now).unwrap();
     assert!(len(&v) <= 2500, "{} chars: {v}", len(&v));
     let trimmed = v["trimmed"].as_str().unwrap();
     assert!(trimmed.contains("next page"), "{trimmed}");

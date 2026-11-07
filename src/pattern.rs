@@ -49,6 +49,11 @@ static CONTINUATION: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
+/// The line that ends a Python traceback: the exception's (possibly dotted) name, then
+/// `: message` or nothing. Python exceptions are often named without an Error suffix
+/// (`NotFound`, `GatewayTimeout`), so inside a traceback any such name counts.
+static PY_EXC_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([A-Za-z_][\w.]*)(?::\s|:?$)").unwrap());
 static EXC_TYPE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"([A-Za-z_][\w.$]*(?:Error|Exception|Exit|Interrupt|Fault))(?::|\s*$)").unwrap()
 });
@@ -212,9 +217,22 @@ fn detect_level(message: &str) -> Option<&'static str> {
 
 fn exception_type<'a>(lines: impl Iterator<Item = &'a str>) -> Option<String> {
     let mut found = None;
+    let mut in_py_traceback = false;
     for line in lines {
         let t = line.trim();
+        if t == "Traceback (most recent call last):" {
+            in_py_traceback = true;
+            continue;
+        }
         if t.starts_with("File ") || t.starts_with("at ") {
+            continue;
+        }
+        if in_py_traceback
+            && !line.starts_with(char::is_whitespace)
+            && let Some(c) = PY_EXC_LINE.captures(t)
+        {
+            found = Some(c[1].to_string());
+            in_py_traceback = false;
             continue;
         }
         if let Some(c) = EXC_TYPE.captures(t) {
@@ -385,7 +403,9 @@ impl Assembler {
         if line.trim().is_empty() {
             return None;
         }
-        if !self.pending.is_empty() && Self::is_continuation(line) {
+        if !self.pending.is_empty()
+            && (Self::is_continuation(line) || self.ends_python_traceback(line))
+        {
             if self.pending.len() < MAX_EVENT_LINES {
                 self.pending.push(line.to_string());
             }
@@ -394,6 +414,21 @@ impl Assembler {
         let done = self.flush();
         self.pending.push(line.to_string());
         done
+    }
+
+    /// The exception line right after a Python traceback's last frame, whatever the
+    /// exception is called.
+    fn ends_python_traceback(&self, line: &str) -> bool {
+        let after_frame = self
+            .pending
+            .last()
+            .is_some_and(|l| l.starts_with(char::is_whitespace));
+        after_frame
+            && PY_EXC_LINE.is_match(line)
+            && self
+                .pending
+                .iter()
+                .any(|l| l == "Traceback (most recent call last):")
     }
 
     pub fn has_pending(&self) -> bool {
@@ -449,6 +484,36 @@ mod tests {
             r#"user "alice smith" req 3f2b1c9e-1d2a-4c3b-9a8f-0b1c2d3e4f5a on db-3.internal took 12.5ms"#,
         );
         assert_eq!(t, r#"user "<STR>" req <UUID> on <ID> took <NUM>"#);
+    }
+
+    #[test]
+    fn python_exception_without_error_suffix_stays_with_its_traceback() {
+        let mut asm = Assembler::default();
+        let lines = [
+            "2026-11-06T10:00:00.123Z ERROR shop.http unhandled error on POST /checkout",
+            "Traceback (most recent call last):",
+            "  File \"/app/shop/orders.py\", line 21, in checkout",
+            "    product = catalog.get_product(item[\"sku\"])",
+            "  File \"/app/shop/catalog.py\", line 26, in get_product",
+            "    raise NotFound(sku)",
+            "shop.catalog.NotFound: 9999",
+            "2026-11-06T10:00:00.124Z INFO shop.http POST /checkout 500 12ms",
+        ];
+        let mut events = vec![];
+        for l in lines {
+            if let Some(e) = asm.feed(l) {
+                events.push(e);
+            }
+        }
+        events.extend(asm.flush());
+        assert_eq!(events.len(), 2, "{events:?}");
+        let e = ev(&events[0]);
+        assert_eq!(e.exc_type.as_deref(), Some("shop.catalog.NotFound"));
+        assert!(
+            e.template.ends_with("| shop.catalog.NotFound"),
+            "{}",
+            e.template
+        );
     }
 
     #[test]

@@ -93,8 +93,8 @@ impl Detector {
         let page = Page::first(20, Detail::Brief);
         if let Ok(v) = analysis::whats_new(
             store,
-            &self.cfg.window,
-            "24h",
+            Some(&self.cfg.window),
+            Some("24h"),
             Some("ERROR"),
             &page,
             Detail::Brief,

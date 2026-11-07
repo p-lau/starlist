@@ -42,8 +42,8 @@ fn errors(s: &Store, text: &str, from: f64, to: f64, n: usize) -> String {
 fn kinds(s: &Store, now: f64) -> Vec<(String, String)> {
     let v = whats_new(
         s,
-        "1h",
-        "24h",
+        Some("1h"),
+        Some("24h"),
         None,
         &Page::first(20, Detail::Brief),
         Detail::Brief,
@@ -118,8 +118,8 @@ fn a_resolved_error_that_comes_back_is_reported_as_regressed() {
 
     let v = whats_new(
         &s,
-        "1h",
-        "24h",
+        Some("1h"),
+        Some("24h"),
         None,
         &Page::first(5, Detail::Brief),
         Detail::Brief,

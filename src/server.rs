@@ -20,160 +20,152 @@ use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 
 const INSTRUCTIONS: &str = "\
-Distilled, redacted view of one app's logs. Lines are grouped into patterns with stable IDs.
-Flow: whats_new -> get_pattern (get_context for surrounding lines, get_request for one request's path) -> ship a fix -> add_marker (deploys are also auto-detected) -> verify_fix(pattern_id, since=marker).
-Patterns show first_release, the deploy live when they first appeared. After a fix is verified, set_pattern_state(resolved); if it returns, whats_new reports it as regressed. get_release summarizes a deploy.
-Times: '30m', '2h', ISO time, or marker name. Output is brief by default; pass detail='full' for more.";
+Redacted log patterns with stable IDs. Start with whats_new, then get_pattern; get_request follows one request. After a fix: verify_fix, then set_pattern_state resolved.
+Times: '30m', ISO time or a marker (deploys are detected). Optional on most tools: detail 'full', max_chars, and cursor (a previous next_cursor).";
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WhatsNewArgs {
-    /// Recent period to inspect, as a duration like "15m", "1h" or "1d". Default "1h".
+    /// Recent period, like "15m" or "1h". Default: since the latest deploy if it was in the last 6h, else "1h".
     pub window: Option<String>,
-    /// Period before the window used as "normal", like "24h". Default "24h".
+    /// Period before it taken as normal. Default "24h".
     pub baseline: Option<String>,
-    /// Only report patterns at or above this level: DEBUG, INFO, WARN, ERROR, FATAL.
+    /// DEBUG, INFO, WARN, ERROR or FATAL.
     pub min_level: Option<String>,
-    /// Maximum findings to return. Default 10.
+    /// Default 10.
     pub limit: Option<usize>,
-    /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
+    /// "brief" (default) or "full".
     pub detail: Option<String>,
-    /// Continue a previous answer: pass its next_cursor unchanged.
+    /// A previous answer's next_cursor.
     pub cursor: Option<String>,
-    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    /// Answer size limit in characters.
     pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct VerifyFixArgs {
-    /// Pattern to check, from whats_new or list_patterns.
     pub pattern_id: String,
-    /// When the fix went live: a marker name (e.g. "v1.4.3" or "fix-currency"), an ISO time, or a duration back from now like "20m".
+    /// When the fix went live: marker, ISO time or "20m".
     pub since: String,
-    /// How far before the split to measure the old rate, like "2h". Default: as long as the time since the split, at least 1h.
+    /// Period before the split to compare with. Default: as long as since the split, at least 1h.
     pub before: Option<String>,
-    /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
+    /// "brief" (default) or "full".
     pub detail: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CompareDeployArgs {
-    /// The deploy or change point: a marker name, an ISO time, or a duration back from now. Default: the latest deploy.
+    /// Marker, ISO time or "30m". Default: the latest deploy.
     pub at: Option<String>,
-    /// How far before the split to compare against, like "2h". Default: as long as the time since the split, at least 1h.
+    /// Period before the split to compare with. Default: as long as since the split, at least 1h.
     pub before: Option<String>,
-    /// Maximum findings to return. Default 10.
+    /// Default 10.
     pub limit: Option<usize>,
-    /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
+    /// "brief" (default) or "full".
     pub detail: Option<String>,
-    /// Continue a previous answer: pass its next_cursor unchanged.
+    /// A previous answer's next_cursor.
     pub cursor: Option<String>,
-    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    /// Answer size limit in characters.
     pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListPatternsArgs {
-    /// Start of the period, like "24h" (back from now), an ISO time or a marker name. Default "24h".
+    /// Default "24h".
     pub since: Option<String>,
-    /// Only patterns at or above this level.
     pub min_level: Option<String>,
-    /// Case-insensitive text the pattern template must contain.
+    /// Text the template contains (any case).
     pub contains: Option<String>,
-    /// Maximum patterns to return. Default 20.
+    /// Default 20.
     pub limit: Option<usize>,
-    /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
+    /// "brief" (default) or "full".
     pub detail: Option<String>,
-    /// Continue a previous answer: pass its next_cursor unchanged.
+    /// A previous answer's next_cursor.
     pub cursor: Option<String>,
-    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    /// Answer size limit in characters.
     pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetPatternArgs {
     pub pattern_id: String,
-    /// Number of redacted sample events, 1 to 5. Default 1 (brief) or 3 (full).
+    /// 1 to 5. Default 1 (brief) or 3 (full).
     pub samples: Option<i64>,
-    /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
+    /// "brief" (default) or "full".
     pub detail: Option<String>,
-    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    /// Answer size limit in characters.
     pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddMarkerArgs {
-    /// Short unique name, e.g. "fix-currency-keyerror" or "v1.4.3".
+    /// Like "fix-currency" or "v1.4.3".
     pub name: String,
-    /// What changed, for later reference.
     pub note: Option<String>,
-    /// When it happened, if not now: ISO time or a duration back from now.
+    /// If not now: ISO time or "5m".
     pub at: Option<String>,
-    /// True if this is a release going live; patterns first seen after it are attributed to it.
+    /// A release going live.
     pub deploy: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetRequestArgs {
-    /// Request or trace ID, e.g. a finding's example_request. A full traceparent also works.
+    /// Like a finding's example_request; a traceparent works too.
     pub request_id: String,
-    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    /// Answer size limit in characters.
     pub max_chars: Option<usize>,
-    /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
+    /// "brief" (default) or "full".
     pub detail: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetContextArgs {
-    /// Center on the latest occurrence of this pattern (at or before `at`, if given).
+    /// Center on its latest occurrence (before `at`, if given).
     pub pattern_id: Option<String>,
-    /// Center on this time: a duration back from now like "5m", an ISO time or a marker name.
+    /// Center on this time.
     pub at: Option<String>,
-    /// Lines before the anchor, 0 to 200. Default 20.
+    /// Lines before, 0 to 200. Default 20.
     pub before: Option<i64>,
-    /// Lines after the anchor, 0 to 200. Default 20.
+    /// Lines after, 0 to 200. Default 20.
     pub after: Option<i64>,
-    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    /// Answer size limit in characters.
     pub max_chars: Option<usize>,
-    /// "brief" (default, compact) or "full" (absolute times, raw numbers, untrimmed samples).
+    /// "brief" (default) or "full".
     pub detail: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetPatternStateArgs {
     pub pattern_id: String,
-    /// "resolved" (occurrences after now reopen it as regressed), "resolved_next"
-    /// (resolved from the next deploy on), "ignored" (left out of whats_new and
-    /// alerts), or "open".
+    /// resolved, resolved_next (from the next deploy), ignored or open.
     pub state: String,
-    /// With "ignored": only for this long, like "24h".
+    /// With ignored: for this long, like "24h".
     pub ignore_for: Option<String>,
-    /// With "ignored": only for this many more events.
+    /// With ignored: for this many more events.
     pub ignore_count: Option<i64>,
-    /// Why, for later reference.
     pub note: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetReleaseArgs {
-    /// Release (deploy marker) name. Default: the live release.
+    /// Default: the live release.
     pub name: Option<String>,
-    /// "brief" (default, compact) or "full" (absolute times, more patterns).
+    /// "brief" (default) or "full".
     pub detail: Option<String>,
-    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    /// Answer size limit in characters.
     pub max_chars: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MergePatternsArgs {
-    /// Two or more pattern IDs; the first is kept and the others resolve to it.
+    /// The first is kept; the others resolve to it.
     pub pattern_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListMarkersArgs {
-    /// Maximum markers to return, newest first. Default 20.
+    /// Default 20.
     pub limit: Option<i64>,
-    /// Upper bound on the answer size in characters (min 1000). Default 8000 brief, 16000 full.
+    /// Answer size limit in characters.
     pub max_chars: Option<usize>,
 }
 
@@ -213,7 +205,11 @@ impl LogServer {
 
     /// The tools, as listed to clients.
     pub fn new_tools() -> Vec<rmcp::model::Tool> {
-        Self::tool_router().list_all()
+        Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(compact_tool)
+            .collect()
     }
 
     /// Let clients subscribe to the whats_new resource and get alerts.
@@ -227,8 +223,8 @@ impl LogServer {
         let now = analysis::now();
         let mut v = analysis::whats_new(
             &self.store,
-            "1h",
-            "24h",
+            None,
+            None,
             None,
             &Page::first(10, Detail::Brief),
             Detail::Brief,
@@ -241,7 +237,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "Start here. Patterns that are new, returning, spiking (beyond overall traffic) or gone quiet in a recent window vs a baseline. Errors first.",
+        description = "Start here. What is new, returning, spiking or gone quiet: since the latest deploy when it is recent, else the last window vs a baseline. Errors first.",
         annotations(read_only_hint = true)
     )]
     fn whats_new(&self, Parameters(a): Parameters<WhatsNewArgs>) -> Result<String, String> {
@@ -255,8 +251,8 @@ impl LogServer {
         )?;
         out(analysis::whats_new(
             &self.store,
-            a.window.as_deref().unwrap_or("1h"),
-            a.baseline.as_deref().unwrap_or("24h"),
+            a.window.as_deref(),
+            a.baseline.as_deref(),
             a.min_level.as_deref(),
             &page,
             d,
@@ -265,7 +261,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "Did a pattern stop after a fix/deploy? Verdict: fixed, reduced, still_occurring, worse, too_early (+wait_minutes), appeared_after, not_active_before.",
+        description = "Did a pattern stop after a fix or deploy? Gives a verdict (fixed, reduced, still_occurring, too_early...).",
         annotations(read_only_hint = true)
     )]
     fn verify_fix(&self, Parameters(a): Parameters<VerifyFixArgs>) -> Result<String, String> {
@@ -280,7 +276,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "What changed around a deploy: new_after (likely regressions), increased, stopped, decreased.",
+        description = "What changed around a deploy: new, increased, stopped, decreased.",
         annotations(read_only_hint = true)
     )]
     fn compare_deploy(
@@ -306,7 +302,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "Find patterns by text or level, with counts. Most severe, then most frequent first.",
+        description = "Find patterns by text or level, with counts.",
         annotations(read_only_hint = true)
     )]
     fn list_patterns(&self, Parameters(a): Parameters<ListPatternsArgs>) -> Result<String, String> {
@@ -330,7 +326,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "One pattern: template, exception, issue state, counts, 24h hourly counts, percentiles of numeric fields read from its lines (with --metric), redacted samples with app stack frames.",
+        description = "One pattern: counts, hourly history, code location, samples with stack frames.",
         annotations(read_only_hint = true)
     )]
     fn get_pattern(&self, Parameters(a): Parameters<GetPatternArgs>) -> Result<String, String> {
@@ -345,7 +341,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "The redacted raw lines just before and after an occurrence of a pattern or a point in time, from a buffer of recent events.",
+        description = "Raw lines around an occurrence of a pattern or a time.",
         annotations(read_only_hint = true)
     )]
     fn get_context(&self, Parameters(a): Parameters<GetContextArgs>) -> Result<String, String> {
@@ -363,7 +359,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "Every event of one request, in order, redacted: the path that led to an error. Findings carry example_request IDs.",
+        description = "Every event of one request, in order.",
         annotations(read_only_hint = true)
     )]
     fn get_request(&self, Parameters(a): Parameters<GetRequestArgs>) -> Result<String, String> {
@@ -378,7 +374,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "Name a point in time (e.g. a fix going live) for verify_fix/compare_deploy.",
+        description = "Name a point in time, like a fix going live.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -397,7 +393,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "Mark a pattern resolved (it reopens as 'regressed' if it occurs again), resolved_next (from the next deploy), ignored, or open. Use after verify_fix says fixed.",
+        description = "Set a pattern's state. A resolved pattern that occurs again is reported as regressed.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -420,7 +416,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "What a release changed: new, regressed and resolved patterns, and its error rate vs the previous release. Default: the live release.",
+        description = "What a release changed, and its error rate vs the previous one.",
         annotations(read_only_hint = true)
     )]
     fn get_release(&self, Parameters(a): Parameters<GetReleaseArgs>) -> Result<String, String> {
@@ -435,7 +431,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "Merge patterns that are really the same issue into the first ID; the other IDs keep resolving to it.",
+        description = "Merge patterns that are the same issue.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -450,7 +446,7 @@ impl LogServer {
     }
 
     #[tool(
-        description = "Markers (auto-detected deploys and manual), newest first.",
+        description = "Deploys and other markers, newest first.",
         annotations(read_only_hint = true)
     )]
     fn list_markers(&self, Parameters(a): Parameters<ListMarkersArgs>) -> Result<String, String> {
@@ -463,8 +459,46 @@ impl LogServer {
     }
 }
 
+/// Tool definitions are sent with every model call an agent makes, so they are kept small:
+/// no `$schema`, plain types instead of `["string", "null"]`, no number formats, and the
+/// options every tool shares (detail, max_chars, cursor) explained once in the instructions.
+fn compact_tool(mut tool: rmcp::model::Tool) -> rmcp::model::Tool {
+    use serde_json::Value;
+    let mut schema = (*tool.input_schema).clone();
+    schema.remove("$schema");
+    if let Some(Value::Object(props)) = schema.get_mut("properties") {
+        for (name, prop) in props.iter_mut() {
+            let Value::Object(prop) = prop else { continue };
+            if let Some(Value::Array(types)) = prop.get("type") {
+                let kept: Vec<Value> = types.iter().filter(|t| *t != "null").cloned().collect();
+                if kept.len() == 1 {
+                    prop.insert("type".into(), kept[0].clone());
+                }
+            }
+            prop.remove("format");
+            prop.remove("minimum");
+            if matches!(name.as_str(), "detail" | "max_chars" | "cursor") {
+                prop.remove("description");
+            }
+        }
+    }
+    tool.input_schema = Arc::new(schema);
+    tool
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for LogServer {
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, McpError> {
+        Ok(rmcp::model::ListToolsResult {
+            tools: Self::new_tools(),
+            ..Default::default()
+        })
+    }
+
     fn get_info(&self) -> ServerConfig {
         let caps = if self.alerts.is_some() {
             ServerCapabilities::builder()
