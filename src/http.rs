@@ -52,6 +52,8 @@ pub struct HttpConfig {
     pub dashboard: bool,
     /// Serve Prometheus metrics at `/metrics`.
     pub prometheus: bool,
+    /// Offer only these MCP tools; `None` offers them all.
+    pub tools: Option<Vec<String>>,
 }
 
 /// The `/mcp` endpoint only (and the API, which is on by default).
@@ -71,6 +73,7 @@ pub fn router(
             cors_origins: vec![],
             dashboard: false,
             prometheus: false,
+            tools: None,
         },
     )
 }
@@ -88,8 +91,11 @@ pub fn router(
 pub fn app(store: Arc<Store>, cfg: HttpConfig) -> axum::Router {
     let alerts = cfg.alerts.clone();
     let mcp_store = store.clone();
+    let tools = cfg.tools.clone();
     let mcp = mcp_service(&cfg, move || {
-        Ok(LogServer::new(mcp_store.clone()).with_alerts(alerts.clone()))
+        Ok(LogServer::new(mcp_store.clone())
+            .with_alerts(alerts.clone())
+            .with_tools(tools.as_deref()))
     });
     let mut guarded = axum::Router::new();
     if cfg.api {

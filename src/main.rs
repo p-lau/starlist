@@ -255,6 +255,33 @@ struct McpArgs {
     /// Serve Prometheus metrics at http://ADDR/metrics (same token as the API).
     #[arg(long)]
     prometheus: bool,
+    /// MCP tools to offer: "all" (default), "core" (diagnose, whats_new, get_pattern,
+    /// get_context, get_request, verify_fix) or a comma-separated list of names. Fewer
+    /// tools cost an agent fewer tokens on every turn.
+    #[arg(long, default_value = "all")]
+    tools: String,
+}
+
+impl McpArgs {
+    /// The tools to offer, or None for all of them.
+    fn tool_set(&self) -> Result<Option<Vec<String>>> {
+        let all = LogServer::tool_names();
+        let wanted: Vec<String> = match self.tools.trim() {
+            "" | "all" => return Ok(None),
+            "core" => starlist::server::CORE_TOOLS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            list => list.split(',').map(|s| s.trim().to_string()).collect(),
+        };
+        if let Some(bad) = wanted.iter().find(|w| !all.contains(w)) {
+            bail!(
+                "unknown tool '{bad}' in --tools; tools are: {}",
+                all.join(", ")
+            );
+        }
+        Ok(Some(wanted))
+    }
 }
 
 fn parse_size(s: &str) -> Result<i64, String> {
@@ -452,6 +479,7 @@ async fn run_mcp(
         eprintln!("starlist: serving MCP over stdio");
         let svc = LogServer::new(store)
             .with_alerts(alerts)
+            .with_tools(mcp.tool_set()?.as_deref())
             .serve(rmcp::transport::stdio())
             .await?;
         svc.waiting().await?;
@@ -475,6 +503,7 @@ fn http_config(
         cors_origins: mcp.cors_origins.clone(),
         dashboard: api && !mcp.no_dashboard,
         prometheus: mcp.prometheus,
+        tools: mcp.tool_set()?,
     })
 }
 

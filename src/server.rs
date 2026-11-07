@@ -20,8 +20,19 @@ use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 
 const INSTRUCTIONS: &str = "\
-Redacted log patterns with stable IDs. Start with whats_new, then get_pattern; get_request follows one request. After a fix: verify_fix, then set_pattern_state resolved.
+Runtime evidence from the app's logs, as redacted patterns with stable IDs. If a stack trace or clear symptom already points at recent code, read the code first. Use starlist when the symptom is unknown, nothing was deployed, the codebase is large, or the cause may be outside the code (upstream, data, config, clients); prefer it over raw log files.
+Start with diagnose; whats_new lists every change, get_pattern and get_request go deeper. After a fix: verify_fix, then set_pattern_state resolved.
 Times: '30m', ISO time or a marker (deploys are detected). Optional on most tools: detail 'full', max_chars, and cursor (a previous next_cursor).";
+
+/// The tools `--tools core` keeps: enough to find a problem and check a fix.
+pub const CORE_TOOLS: &[&str] = &[
+    "diagnose",
+    "whats_new",
+    "get_pattern",
+    "get_context",
+    "get_request",
+    "verify_fix",
+];
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WhatsNewArgs {
@@ -38,6 +49,17 @@ pub struct WhatsNewArgs {
     /// A previous answer's next_cursor.
     pub cursor: Option<String>,
     /// Answer size limit in characters.
+    pub max_chars: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DiagnoseArgs {
+    /// Like "1h". Default: since a deploy in the last 6h, else 1h.
+    pub window: Option<String>,
+    pub min_level: Option<String>,
+    /// Causes to explain. Default 3.
+    pub limit: Option<usize>,
+    pub detail: Option<String>,
     pub max_chars: Option<usize>,
 }
 
@@ -212,6 +234,28 @@ impl LogServer {
             .collect()
     }
 
+    /// Every tool's name.
+    pub fn tool_names() -> Vec<String> {
+        Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect()
+    }
+
+    /// Offer only these tools (`None` keeps them all). Each tool definition is sent with
+    /// every model call, so a smaller set costs an agent less per turn.
+    pub fn with_tools(mut self, keep: Option<&[String]>) -> Self {
+        if let Some(keep) = keep {
+            for name in Self::tool_names() {
+                if !keep.contains(&name) {
+                    self.tool_router.remove_route(&name);
+                }
+            }
+        }
+        self
+    }
+
     /// Let clients subscribe to the whats_new resource and get alerts.
     pub fn with_alerts(mut self, alerts: Option<Arc<Alerts>>) -> Self {
         self.alerts = alerts;
@@ -237,7 +281,24 @@ impl LogServer {
     }
 
     #[tool(
-        description = "Start here. What is new, returning, spiking or gone quiet: since the latest deploy when it is recent, else the last window vs a baseline. Errors first.",
+        description = "Start here. Likely causes of what is wrong now, ranked: why each stands out (new, spiking, slowly rising...), the deploy it started with, code location, sample lines.",
+        annotations(read_only_hint = true)
+    )]
+    fn diagnose(&self, Parameters(a): Parameters<DiagnoseArgs>) -> Result<String, String> {
+        let d = detail(&a.detail)?;
+        out(crate::diagnose::diagnose(
+            &self.store,
+            a.window.as_deref(),
+            a.min_level.as_deref(),
+            a.limit.unwrap_or(3).clamp(1, 10),
+            budget(a.max_chars, d),
+            d,
+            analysis::now(),
+        ))
+    }
+
+    #[tool(
+        description = "Every pattern that is new, returning, spiking, rising or gone quiet in a window vs a baseline.",
         annotations(read_only_hint = true)
     )]
     fn whats_new(&self, Parameters(a): Parameters<WhatsNewArgs>) -> Result<String, String> {
@@ -494,7 +555,12 @@ impl ServerHandler for LogServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, McpError> {
         Ok(rmcp::model::ListToolsResult {
-            tools: Self::new_tools(),
+            tools: self
+                .tool_router
+                .list_all()
+                .into_iter()
+                .map(compact_tool)
+                .collect(),
             ..Default::default()
         })
     }
@@ -514,7 +580,11 @@ impl ServerHandler for LogServer {
         };
         ServerConfig::new(caps)
             .with_server_info(Implementation::new("starlist", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(if self.tool_router.has_route("set_pattern_state") {
+                INSTRUCTIONS.to_string()
+            } else {
+                INSTRUCTIONS.replace(", then set_pattern_state resolved", "")
+            })
     }
 
     async fn list_resources(

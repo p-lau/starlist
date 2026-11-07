@@ -85,9 +85,25 @@ Event counts over time, per level or for one pattern, with the markers in range.
 `counts[i]` covers `from + i * step_seconds`. Series are ordered most severe
 first. With `pattern_id`, the one series has `pattern_id` and `level`.
 
+### `GET /diagnose`
+
+The likely causes of what is wrong now, most likely first. The same answer as
+the `diagnose` tool, in full detail and without a size limit.
+
+| Parameter | Default |
+|---|---|
+| `window` | since a deploy in the last 6h, else `1h` |
+| `min_level` | all |
+| `limit` | 5 (up to 20) |
+
+Each cause has `pattern_id`, `kind` (as in `/whats-new`), `level`, `template`,
+`why`, `started_with` (a deploy), `location`, `samples` and `request_id`; the
+first also has `request`, the lines of that request. With nothing new,
+`ongoing` lists the busiest warnings and errors.
+
 ### `GET /whats-new`
 
-What is new, returning, spiking or gone quiet in a recent window compared with
+What is new, returning, spiking, rising or gone quiet in a recent window compared with
 a baseline. Same rules as the `whats_new` tool.
 
 | Parameter | Default |
@@ -102,7 +118,7 @@ a baseline. Same rules as the `whats_new` tool.
   "window": {"from": "...", "to": "..."},
   "baseline": {"from": "...", "to": "..."},
   "summary": "1 new, 0 returning, 0 spiking, 0 gone quiet. 812 events across 9 patterns in the window.",
-  "counts": {"new": 1, "returning": 0, "spike": 0, "gone_quiet": 0},
+  "counts": {"new": 1, "returning": 0, "spike": 0, "rising": 0, "gone_quiet": 0},
   "traffic": {"events_window": 812, "events_baseline": 19003, "ratio": 1.0},
   "current_release": "v1.4.3",
   "markers": [],
@@ -123,7 +139,7 @@ a baseline. Same rules as the `whats_new` tool.
 }
 ```
 
-`kind` is `new`, `regressed`, `returning`, `spike` or `gone_quiet`. Ignored
+`kind` is `new`, `regressed`, `returning`, `spike`, `rising` or `gone_quiet`. Ignored
 patterns are left out.
 
 ### Patterns

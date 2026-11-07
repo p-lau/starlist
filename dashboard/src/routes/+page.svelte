@@ -18,6 +18,7 @@
 		regressed: 'Regressed',
 		returning: 'Returning',
 		spike: 'Spiking',
+		rising: 'Rising',
 		gone_quiet: 'Gone quiet'
 	};
 
@@ -220,7 +221,8 @@
 	.kind.returning {
 		color: var(--error);
 	}
-	.kind.spike {
+	.kind.spike,
+	.kind.rising {
 		color: var(--warn);
 	}
 	.kind.gone_quiet {

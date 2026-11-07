@@ -5,6 +5,7 @@ pub mod analysis;
 pub mod api;
 pub mod collector;
 pub mod dashboard;
+pub mod diagnose;
 pub mod export;
 pub mod http;
 pub mod hub;

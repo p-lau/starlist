@@ -60,7 +60,7 @@ export interface Sample {
 }
 
 export interface Finding {
-	kind: 'new' | 'regressed' | 'returning' | 'spike' | 'gone_quiet';
+	kind: 'new' | 'regressed' | 'returning' | 'spike' | 'rising' | 'gone_quiet';
 	note: string | null;
 	count_window: number;
 	count_baseline: number;
@@ -74,7 +74,7 @@ export interface WhatsNew {
 	window: { from: string; to: string };
 	baseline: { from: string; to: string };
 	summary: string;
-	counts: { new: number; regressed: number; returning: number; spike: number; gone_quiet: number };
+	counts: { new: number; regressed: number; returning: number; spike: number; rising: number; gone_quiet: number };
 	traffic: { events_window: number; events_baseline: number; ratio: number };
 	current_release: string | null;
 	markers: Marker[];

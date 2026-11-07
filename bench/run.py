@@ -51,7 +51,7 @@ BASE_TOOLS = ["Read", "Edit", "Grep", "Glob"]
 
 
 def prepare(suite: Path, work: Path, scenario: str, arm: str, seed: int, starlist: Path,
-            sim_args: list, hint: bool) -> dict:
+            sim_args: list, hint: bool, tools: str = "all") -> dict:
     scenarios = load_scenarios(suite)
     ws, logs = work / "ws", work / "logs"
     shutil.copytree(suite / "app", ws, ignore=shutil.ignore_patterns("__pycache__"))
@@ -76,7 +76,7 @@ def prepare(suite: Path, work: Path, scenario: str, arm: str, seed: int, starlis
                        check=True, capture_output=True)
         shutil.rmtree(logs)  # the agent only gets what starlist serves
         config = {"mcpServers": {"starlist": {
-            "command": str(starlist), "args": ["mcp", "--stdio", "--db", str(db), "--no-alerts"]}}}
+            "command": str(starlist), "args": ["mcp", "--stdio", "--db", str(db), "--no-alerts", "--tools", tools]}}}
         (work / "mcp.json").write_text(json.dumps(config))
         args += ["--mcp-config", str(work / "mcp.json"),
                  "--allowedTools", ",".join(BASE_TOOLS + ["mcp__starlist"])]
@@ -170,7 +170,7 @@ def run_one(job: dict) -> dict:
     work.mkdir(parents=True)
     suite = Path(job["suite_dir"])
     p = prepare(suite, work, job["scenario"], job["arm"], job["seed"], Path(job["starlist"]),
-                job["sim_args"], job["hint"])
+                job["sim_args"], job["hint"], job.get("tools", "all"))
     log = work / "logs" / "app.log"
     log_bytes = log.stat().st_size if log.exists() else None
     transcript = work / "transcript.jsonl"
@@ -190,6 +190,8 @@ def run_one(job: dict) -> dict:
     row.update(grade(suite, work, job["scenario"]))
     if log_bytes:
         row["log_bytes"] = log_bytes
+    if job["arm"] == "starlist" and job.get("tools", "all") != "all":
+        row["starlist_tools"] = job["tools"]
     if not job["keep"]:  # logs and databases are large; keep the transcript and the edit
         shutil.rmtree(work / "logs", ignore_errors=True)
         for f in work.glob("starlist.db*"):
@@ -220,6 +222,8 @@ def main() -> None:
     p.add_argument("--no-hint", action="store_true",
                    help="Don't tell the agent the symptom; it has to find it in the logs")
     p.add_argument("--keep", action="store_true", help="Keep logs and databases after each run")
+    p.add_argument("--tools", default="all",
+                   help="starlist's --tools: all, core or a comma-separated list")
     p.add_argument("--out", help="Results file (default results/<time>-<model>.jsonl)")
     a = p.parse_args()
 
@@ -239,7 +243,7 @@ def main() -> None:
                              "suite_dir": str(SUITES[a.suite]),
                              "scenario": scenario, "arm": arm, "seed": seed, "model": a.model,
                              "starlist": a.starlist, "max_turns": a.max_turns,
-                             "timeout": a.timeout,
+                             "timeout": a.timeout, "tools": a.tools,
                              "work": f"{a.work}/{stamp}-{a.suite}-{variant}/{scenario}-{arm}-{seed}"})
     with ThreadPoolExecutor(a.parallel) as pool, open(out, "a") as f:
         for row in pool.map(run_one, jobs):
