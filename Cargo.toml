@@ -5,6 +5,7 @@ members = ["core"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/p-lau/starlist"
 
 [workspace.dependencies]
 regex = "1"
@@ -14,9 +15,16 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 
 [package]
 name = "starlist"
+description = "Watches your app's logs and serves distilled, redacted summaries to AI agents over MCP."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["mcp", "logs", "observability", "ai-agents", "redaction"]
+categories = ["command-line-utilities", "development-tools::debugging"]
+# Not needed to build the crate, so kept out of the crates.io package.
+exclude = ["bench/", "site/", "docs/design/"]
 
 [features]
 default = ["dashboard", "hub", "prometheus", "docker", "journald", "kubernetes", "otel", "loki"]

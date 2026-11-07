@@ -1,0 +1,16 @@
+name: Feature request
+description: A new tool, log source, format, redaction rule or other improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you or your agent are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you'd like it to work. A sample of the logs involved helps, with secrets replaced.
