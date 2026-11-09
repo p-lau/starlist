@@ -71,11 +71,11 @@ jobs:
       - name: Smoke test
         run: |
           docker run --rm starlist:ci --version
-          docker run -d --name sl -p 127.0.0.1:7341:7341 -e STARLIST_TOKEN=ci starlist:ci \
+          docker run -d --name sl -p 127.0.0.1:7341:7341 -e STARLIST_TOKEN=ci-smoke-test-token-0123456789 starlist:ci \
             serve --file /data/app.log --http 0.0.0.0:7341 --db /data/starlist.db
           for i in $(seq 30); do
-            curl -sf -H "Authorization: Bearer ci" http://127.0.0.1:7341/api/v1/status > /dev/null && break
+            curl -sf -H "Authorization: Bearer ci-smoke-test-token-0123456789" http://127.0.0.1:7341/api/v1/status > /dev/null && break
             sleep 1
           done
-          curl -sf -H "Authorization: Bearer ci" http://127.0.0.1:7341/api/v1/status
+          curl -sf -H "Authorization: Bearer ci-smoke-test-token-0123456789" http://127.0.0.1:7341/api/v1/status || { docker logs sl; exit 1; }
           docker logs sl
