@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Tip from '#lib/Tip.svelte';
 	import { get, session } from '#lib/api.svelte.ts';
 	import Load from '#lib/Load.svelte';
 	import PatternTitle from '#lib/PatternTitle.svelte';
@@ -39,7 +40,7 @@
 
 <div class="stack">
 	<div class="row filters">
-		<h1>Patterns</h1>
+		<h1>Patterns<Tip text="Every kind of log line starlist has seen. Parts that change, like ids and numbers, become placeholders, so similar lines group together. Click one for its details." /></h1>
 		<input type="search" placeholder="Search templates" bind:value={text} aria-label="Search templates" />
 		<select bind:value={level} aria-label="Level">
 			<option value="">All levels</option>

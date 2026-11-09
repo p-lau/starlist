@@ -159,10 +159,17 @@ fn prometheus_and_export() {
     let s = store();
     let p = pipeline(&s);
     let now = starlist::analysis::now();
+    // Keep the 20 lines inside one hour, or the export has two field rows.
+    let hour = |t: f64| (t / 3600.0).floor();
+    let start = if hour(now - 600.0) == hour(now - 581.0) {
+        now - 600.0
+    } else {
+        now - 660.0
+    };
     let mut evs = vec![];
     for i in 0..20 {
-        let mut e = p.parse(&format!("INFO served duration_ms={}", 100 + i), now - 600.0);
-        e.ts = Some(now - 600.0 + i as f64);
+        let mut e = p.parse(&format!("INFO served duration_ms={}", 100 + i), start);
+        e.ts = Some(start + i as f64);
         evs.push(e);
     }
     let mut err = p.parse("ERROR \"quoted\" failure", now - 30.0);

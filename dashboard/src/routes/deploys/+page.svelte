@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Tip from '#lib/Tip.svelte';
 	import { get, post, refresh, session } from '#lib/api.svelte.ts';
 	import Load from '#lib/Load.svelte';
 	import PatternTitle from '#lib/PatternTitle.svelte';
@@ -89,7 +90,7 @@
 
 <div class="layout">
 	<aside class="stack">
-		<h1>Deploys and markers</h1>
+		<h1>Deploys and markers<Tip text="A deploy is a release going live. A marker is any moment you want to compare around, like a config change. Pick one to see which patterns appeared, grew, shrank or stopped after it." /></h1>
 		{#if !markers}
 			<Load {error} loading={!markers} />
 		{:else if markers.length === 0}

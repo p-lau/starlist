@@ -5,6 +5,8 @@
 	import { ago } from '#lib/format.ts';
 	import type { Status } from '#lib/types.ts';
 	import { onMount } from 'svelte';
+	import Guide from '#lib/Guide.svelte';
+	import { guide, toggleGuide } from '#lib/guide.svelte.ts';
 
 	let { children } = $props();
 	let status: Status | null = $state(null);
@@ -59,6 +61,9 @@
 			{#if status?.current_release}
 				<span class="release" title="Live since {status.current_release.at}">{status.current_release.name}</span>
 			{/if}
+			<button class="help" aria-label="Guide" aria-pressed={guide.open} onclick={toggleGuide}
+				><span class="full">Guide</span><span class="short" aria-hidden="true">?</span></button
+			>
 			<span class="live" class:off={session.offline} title={session.updated ? `Updated ${session.updated.toLocaleTimeString()}` : ''}>
 				<i></i>{session.offline ? 'Offline' : 'Live'}
 			</span>
@@ -97,6 +102,7 @@
 			</div>
 		</form>
 	{:else}
+		{#if guide.open}<Guide />{/if}
 		{@render children()}
 	{/if}
 </main>
@@ -173,6 +179,14 @@
 		border: 1px solid var(--line-strong);
 		border-radius: 999px;
 	}
+	.help {
+		padding: 2px 10px;
+		font-size: 0.82rem;
+		border-radius: 999px;
+	}
+	.help .short {
+		display: none;
+	}
 	.live {
 		display: inline-flex;
 		align-items: center;
@@ -238,6 +252,19 @@
 		}
 		.release {
 			display: none;
+		}
+		/* Keep the nav readable: the guide button shrinks to a "?". */
+		.help {
+			width: 26px;
+			height: 26px;
+			padding: 0;
+			font-weight: 700;
+		}
+		.help .full {
+			display: none;
+		}
+		.help .short {
+			display: inline;
 		}
 	}
 </style>
