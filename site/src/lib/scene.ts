@@ -1,0 +1,285 @@
+// The hero scene's geometry: a star seen close up, and satellites that really
+// orbit it. Everything here is plain 3D maths that ends in SVG path strings, so
+// the same code draws the first frame on the server and every frame after.
+//
+// World: the star's centre is the origin, x right, y up, z toward the viewer.
+
+type V = [number, number, number];
+
+/** Size of the drawing (the SVG viewBox is SIZE x SIZE). */
+export const SIZE = 520;
+/** Where the star's centre sits in the drawing: low and left, mostly off-screen. */
+export const CX = 177;
+export const CY = 512;
+/** The star's radius. */
+export const R = 374;
+/** Distance from the viewer to the star's centre. Smaller means stronger perspective. */
+const CAMERA = 1500;
+
+const add = (a: V, b: V): V => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const mul = (a: V, k: number): V => [a[0] * k, a[1] * k, a[2] * k];
+const dot = (a: V, b: V) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const rotX = ([x, y, z]: V, a: number): V => {
+	const c = Math.cos(a);
+	const s = Math.sin(a);
+	return [x, y * c - z * s, y * s + z * c];
+};
+const rotZ = ([x, y, z]: V, a: number): V => {
+	const c = Math.cos(a);
+	const s = Math.sin(a);
+	return [x * c - y * s, x * s + y * c, z];
+};
+
+const n = (v: number) => v.toFixed(1);
+
+/** Perspective: things nearer the viewer are drawn larger and further from the centre. */
+function project(v: V): [number, number, number] {
+	const s = CAMERA / (CAMERA - v[2]);
+	return [CX + v[0] * s, CY - v[1] * s, s];
+}
+const at = (v: V) => {
+	const p = project(v);
+	return `${n(p[0])} ${n(p[1])}`;
+};
+const poly = (pts: V[], close = true) => 'M' + pts.map(at).join('L') + (close ? 'Z' : '');
+const seg = (a: V, b: V) => `M${at(a)}L${at(b)}`;
+
+// ---------------------------------------------------------------- the star
+
+// The star's axis leans toward the viewer and to the right, so its pole is in view.
+const tiltStar = (v: V) => rotZ(rotX(v, 0.62), -0.42);
+
+/**
+ * The star's grid of meridians and parallels, turned by `spin` radians about
+ * its axis. Only the half facing the viewer is drawn.
+ */
+export function starGrid(spin: number): string {
+	let d = '';
+	const curve = (point: (i: number) => V, steps: number) => {
+		let pen = false;
+		for (let i = 0; i <= steps; i++) {
+			const p = tiltStar(point(i));
+			if (p[2] <= 0) {
+				pen = false;
+				continue;
+			}
+			d += `${pen ? 'L' : 'M'}${n(CX + p[0] * R)} ${n(CY - p[1] * R)}`;
+			pen = true;
+		}
+	};
+	const MERIDIANS = 18;
+	for (let m = 0; m < MERIDIANS; m++) {
+		const lon = spin + (m / MERIDIANS) * Math.PI * 2;
+		curve((i) => {
+			const lat = -Math.PI / 2 + (i / 28) * Math.PI;
+			return [Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon)];
+		}, 28);
+	}
+	for (const deg of [-40, -20, 0, 20, 40, 60, 78]) {
+		const lat = (deg * Math.PI) / 180;
+		curve((i) => {
+			const lon = (i / 72) * Math.PI * 2;
+			return [Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon)];
+		}, 72);
+	}
+	return d;
+}
+
+/** Short rays standing off the star's edge, with lengths that look irregular. */
+export function coronaRays(): string {
+	let d = '';
+	for (let i = 0; i < 150; i++) {
+		const a = (i / 150) * Math.PI * 2;
+		const len = 6 + 34 * Math.abs(Math.sin(i * 12.9898) * Math.cos(i * 4.1414)) ** 1.6;
+		const r0 = R + 13;
+		const x = Math.cos(a);
+		const y = Math.sin(a);
+		d += `M${n(CX + x * r0)} ${n(CY - y * r0)}L${n(CX + x * (r0 + len))} ${n(CY - y * (r0 + len))}`;
+	}
+	return d;
+}
+
+/** Loops of plasma arching off the edge at a few places (angles in degrees from the right). */
+export function prominences(): string {
+	let d = '';
+	for (const [deg, width, height] of [
+		[38, 7, 30],
+		[63, 5, 20],
+		[97, 8, 36]
+	]) {
+		const a0 = ((deg - width) * Math.PI) / 180;
+		const a1 = ((deg + width) * Math.PI) / 180;
+		const am = (deg * Math.PI) / 180;
+		const p = (a: number, r: number) => `${n(CX + Math.cos(a) * r)} ${n(CY - Math.sin(a) * r)}`;
+		d += `M${p(a0, R)}Q${p(am, R + height * 2)} ${p(a1, R)}`;
+		d += `M${p(a0 + 0.02, R)}Q${p(am, R + height * 1.3)} ${p(a1 - 0.02, R)}`;
+	}
+	return d;
+}
+
+// ---------------------------------------------------------- the satellites
+
+export type Orbit = {
+	/** Orbit radius. */
+	radius: number;
+	/** How far the orbit is tipped toward the viewer, then rolled, in radians. */
+	tip: number;
+	roll: number;
+	/** Seconds for one lap. */
+	period: number;
+	/** Size of its satellites. */
+	scale: number;
+	/** Where on the lap each of its satellites starts (0 to 1). */
+	phases: number[];
+};
+
+// A low orbit that crosses in front of the star's face, and a higher one that
+// passes through the sky above its edge. Several satellites share each orbit,
+// so one is nearly always in view.
+export const orbits: Orbit[] = [
+	{ radius: 425, tip: -0.5, roll: -0.3, period: 36, scale: 0.8, phases: [0.25, 0.5, 0.75, 0] },
+	{ radius: 520, tip: -0.95, roll: -0.45, period: 52, scale: 0.5, phases: [0.2, 0.53, 0.87] }
+];
+
+/** Every satellite: which orbit it is on and where it starts. */
+export const fleet = orbits.flatMap((orbit, index) => orbit.phases.map((phase) => ({ orbit, index, phase })));
+
+const frameOf = (o: Orbit) => (v: V) => rotZ(rotX(v, o.tip), o.roll);
+
+/** The orbit's line, split into the part behind the star and the part in front. */
+export function orbitTrack(o: Orbit): { back: string; front: string } {
+	const turn = frameOf(o);
+	const out = { back: '', front: '' };
+	let last: 'back' | 'front' | undefined;
+	const STEPS = 120;
+	for (let i = 0; i <= STEPS; i++) {
+		const a = (i / STEPS) * Math.PI * 2;
+		const p = turn([Math.cos(a) * o.radius, 0, Math.sin(a) * o.radius]);
+		const side = p[2] > 0 ? 'front' : 'back';
+		out[side] += (last === side ? 'L' : 'M') + at(p);
+		last = side;
+	}
+	return out;
+}
+
+// The satellite, in its own coordinates: x along the solar panels, y the way
+// it is flying, z toward the star. Half-sizes of the body:
+const BX = 13;
+const BY = 13;
+const BZ = 17;
+
+export type Part = { kind: 'panel' | 'body' | 'dish' | 'rig'; d: string };
+export type Satellite = {
+	/** In front of the star (true) or behind it. */
+	front: boolean;
+	/** How large it appears, for line widths. */
+	size: number;
+	/** Its parts, furthest first, so nearer parts cover them. */
+	parts: Part[];
+	/** A line from the satellite down to the surface below it. */
+	link: string;
+};
+
+/** Where a satellite is at `time` seconds and what it looks like from here. */
+export function satellite(o: Orbit, phase: number, time: number): Satellite {
+	const turn = frameOf(o);
+	const a = (time / o.period + phase) * Math.PI * 2;
+	const out: V = turn([Math.cos(a), 0, Math.sin(a)]);
+	const pos = mul(out, o.radius);
+
+	// Nothing to draw while it is out of the picture or behind the star.
+	const [sx, sy, ss] = project(pos);
+	const margin = 130 * o.scale * ss;
+	const hidden = pos[2] <= 0 && Math.hypot(sx - CX, sy - CY) < R - margin;
+	if (hidden || sx < -margin || sx > SIZE + margin || sy < -margin || sy > SIZE + margin) {
+		return { front: pos[2] > 0, size: 1, parts: [], link: '' };
+	}
+
+	// It keeps one face to the star, as real ones do: so as it goes round we
+	// see its front, then its side, then its back.
+	const X = turn([0, 1, 0]);
+	const Y = turn([-Math.sin(a), 0, Math.cos(a)]);
+	const Z = mul(out, -1);
+	const k = o.scale;
+	const w = (x: number, y: number, z: number): V =>
+		add(pos, add(add(mul(X, x * k), mul(Y, y * k)), mul(Z, z * k)));
+	const eye: V = [0, 0, CAMERA];
+	const depth = (p: V) => p[2];
+
+	const items: { z: number; part: Part }[] = [];
+
+	// Solar panels: a frame, the lines between cells, and the boom that holds it.
+	for (const side of [-1, 1]) {
+		const x0 = side * 24;
+		const x1 = side * 88;
+		let d = poly([w(x0, -17, 0), w(x1, -17, 0), w(x1, 17, 0), w(x0, 17, 0)]);
+		for (let c = 1; c < 6; c++) {
+			const x = x0 + ((x1 - x0) * c) / 6;
+			d += seg(w(x, -17, 0), w(x, 17, 0));
+		}
+		d += seg(w(x0, 0, 0), w(x1, 0, 0));
+		items.push({ z: depth(w((x0 + x1) / 2, 0, 0)), part: { kind: 'panel', d } });
+	}
+
+	// Booms and antenna.
+	let rig = seg(w(-BX, 0, 0), w(-24, 0, 0)) + seg(w(BX, 0, 0), w(24, 0, 0));
+	rig += seg(w(-BX, -6, 0), w(-24, 0, 0)) + seg(w(BX, -6, 0), w(24, 0, 0));
+	rig += seg(w(-BX, 6, 0), w(-24, 0, 0)) + seg(w(BX, 6, 0), w(24, 0, 0));
+	const tip = w(7, BY + 26, -8);
+	rig += seg(w(7, BY, -8), tip);
+	rig += poly([w(7, BY + 26, -11), w(10, BY + 29, -8), w(7, BY + 32, -8), w(4, BY + 29, -8)]);
+	items.push({ z: depth(pos) - 0.5, part: { kind: 'rig', d: rig } });
+
+	// Body: a box. Only the faces turned toward the viewer are drawn, which is
+	// what makes it read as solid.
+	let body = '';
+	const faces: [V, V, V][] = [
+		[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+		[[-1, 0, 0], [0, 1, 0], [0, 0, 1]],
+		[[0, 1, 0], [1, 0, 0], [0, 0, 1]],
+		[[0, -1, 0], [1, 0, 0], [0, 0, 1]],
+		[[0, 0, 1], [1, 0, 0], [0, 1, 0]],
+		[[0, 0, -1], [1, 0, 0], [0, 1, 0]]
+	];
+	const half: V = [BX, BY, BZ];
+	for (const [normal, e1, e2] of faces) {
+		const corner = (s1: number, s2: number, inset = 1): V => {
+			const l: V = [0, 0, 0];
+			for (let i = 0; i < 3; i++) l[i] = (normal[i] + e1[i] * s1 * inset + e2[i] * s2 * inset) * half[i];
+			return w(l[0], l[1], l[2]);
+		};
+		const centre = w(normal[0] * BX, normal[1] * BY, normal[2] * BZ);
+		const facing = add(add(mul(X, normal[0]), mul(Y, normal[1])), mul(Z, normal[2]));
+		if (dot(facing, add(centre, mul(eye, -1))) >= 0) continue;
+		body += poly([corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)]);
+		body += poly([corner(-1, -1, 0.62), corner(1, -1, 0.62), corner(1, 1, 0.62), corner(-1, 1, 0.62)]);
+	}
+	items.push({ z: depth(pos), part: { kind: 'body', d: body } });
+
+	// Dish, on the side away from the star: a rim, a throat and the feed.
+	const ring = (radius: number, z: number) => {
+		const pts: V[] = [];
+		for (let i = 0; i < 20; i++) {
+			const t = (i / 20) * Math.PI * 2;
+			pts.push(w(Math.cos(t) * radius, Math.sin(t) * radius, z));
+		}
+		return pts;
+	};
+	const rim = ring(17, -BZ - 11);
+	const throat = ring(5, -BZ);
+	let dish = poly(rim) + poly(throat);
+	for (let i = 0; i < 20; i += 5) dish += seg(throat[i], rim[i]);
+	dish += seg(w(0, 0, -BZ), w(0, 0, -BZ - 21));
+	for (let i = 2; i < 20; i += 7) dish += seg(rim[i], w(0, 0, -BZ - 21));
+	items.push({ z: depth(w(0, 0, -BZ - 12)), part: { kind: 'dish', d: dish } });
+
+	items.sort((p, q) => p.z - q.z);
+
+	const front = pos[2] > 0;
+	return {
+		front,
+		size: project(pos)[2] * k,
+		parts: items.map((i) => i.part),
+		link: front ? seg(w(0, 0, BZ), mul(out, R)) : ''
+	};
+}
