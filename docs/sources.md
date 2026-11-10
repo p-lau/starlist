@@ -49,7 +49,7 @@ Anyone who can reach the Docker socket controls the host, so keep that container
 starlist serve --journald api.service --journald worker.service
 ```
 
-starlist runs `journalctl --follow --output=json --unit UNIT` and uses each entry's own time. An entry with a non-default priority (warning, error, critical) is given that level unless the message already starts with one; entries at the default priority keep whatever level your app wrote. The user running starlist needs to be able to read the journal, for example by being in the `systemd-journal` group. `STARLIST_JOURNALCTL` overrides the program.
+starlist runs `journalctl --follow --output=json --unit UNIT` and uses each entry's own time. journald stores every line an app writes as its own entry; a stack trace's lines are put back together into one event. An entry with a non-default priority (warning, error, critical) is given that level unless the message already starts with one; entries at the default priority keep whatever level your app wrote. The user running starlist needs to be able to read the journal, for example by being in the `systemd-journal` group. `STARLIST_JOURNALCTL` overrides the program.
 
 ## Kubernetes
 
@@ -61,7 +61,7 @@ starlist serve --k8s deployment/api --k8s-namespace shop
 starlist serve --k8s 'app=api,tier=web'
 ```
 
-starlist looks up the workload's selector, lists its pods every 5 seconds and runs `kubectl logs --follow --timestamps --all-containers` for each. New pods from a rollout, a scale-up or a rescheduling are read from their first line. When a container restarts, its pod is followed again from where it left off, so a crash loop's last lines and the new container's first lines both arrive. Pods that are gone are dropped.
+starlist looks up the workload's selector, lists its pods every 5 seconds and runs `kubectl logs --follow --timestamps --all-containers --prefix` for each. Each container is read as its own stream, so a sidecar's lines don't land in the middle of the app's stack traces. New pods from a rollout, a scale-up or a rescheduling are read from their first line. When a container restarts, its pod is followed again from where it left off, so a crash loop's last lines and the new container's first lines both arrive. Pods that are gone are dropped.
 
 It uses your current kubectl context and needs `get` and `list` on pods and the workload, and `get` on `pods/log`. Run in the cluster, give its service account a Role like this:
 
@@ -122,6 +122,6 @@ starlist serve --loki https://logs-prod-012.grafana.net --loki-user 123456 \
   --loki-token "$GRAFANA_TOKEN" --loki-query '{service_name="api"}'
 ```
 
-starlist asks `query_range` every 2 seconds for the lines since the last ones it read, looking back 15 seconds more so lines that reach Loki late aren't missed, and skipping lines it already has. The query has to be a log query (a selector, optionally with filters like `|= "error"`), not a metric query. Lines from different streams are grouped into events separately, so two pods' stack traces don't mix. `--loki-token` alone is sent as a bearer token; `--loki-org` sets `X-Scope-OrgID` for a multi-tenant Loki.
+starlist asks `query_range` every 2 seconds for the lines since the last ones it read, looking back 15 seconds more so lines that reach Loki late aren't missed, and skipping lines it already has. The query has to be a log query (a selector, optionally with filters like `|= "error"`), not a metric query. Lines from different streams are grouped into events separately, so two pods' stack traces don't mix. Streams are told apart by their own labels only, not by labels Loki adds per line (like Loki 3's `detected_level`) or labels the query parses, so a stack trace stays in one stream. `--loki-token` alone is sent as a bearer token; `--loki-org` sets `X-Scope-OrgID` for a multi-tenant Loki.
 
 If Loki already holds your logs, this lets an agent get starlist's patterns, `whats_new` and `verify_fix` over them without changing how they're shipped.

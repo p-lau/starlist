@@ -14,9 +14,37 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// What each output stream (stdout, stderr) has read so far. They are kept
-/// apart because the two pipes can deliver lines out of order.
-pub type Resumes = [Resume; 2];
+/// What each stream (stdout and stderr, or each container of a pod) has read
+/// so far. They are kept apart because they can deliver lines out of order.
+pub type Resumes = HashMap<String, Resume>;
+
+/// One log entry read from a tool's output.
+#[derive(Debug, PartialEq)]
+pub struct Entry {
+    /// Unix nanoseconds.
+    pub ts: i64,
+    /// Put in front of the entry's first line when that line starts a new
+    /// event, like journald's time and level. Left off a line that continues
+    /// the event before it (a stack frame logged as its own entry), so stack
+    /// traces stay together.
+    pub head: String,
+    /// The log text; it may hold several lines.
+    pub text: String,
+    /// Which stream it came from when one output carries several, like each
+    /// container of a pod. `None` means the output's own (stdout or stderr).
+    pub stream: Option<String>,
+}
+
+impl Entry {
+    pub fn new(ts: i64, text: impl Into<String>) -> Self {
+        Self {
+            ts,
+            head: String::new(),
+            text: text.into(),
+            stream: None,
+        }
+    }
+}
 
 /// How often targets are listed again.
 pub const DISCOVER_EVERY: Duration = Duration::from_secs(5);
@@ -27,9 +55,9 @@ pub trait Tool: Send + Sync + 'static {
     fn label(&self, target: &str) -> String;
     /// The command that follows `target` from `start`.
     fn command(&self, target: &str, start: Start) -> Command;
-    /// A line of output: its time (Unix nanoseconds) and the log text, or `None` for a message
-    /// from the tool itself (printed, not ingested). Text may hold several lines.
-    fn decode(&self, line: &str, stderr: bool) -> Option<(i64, String)>;
+    /// A line of output as a log entry, or `None` for a message from the tool
+    /// itself (printed, not ingested).
+    fn decode(&self, line: &str, stderr: bool) -> Option<Entry>;
 }
 
 /// Follow one target until `alive` turns false (or `stop` is set), restarting
@@ -49,7 +77,7 @@ pub fn follow(
     while alive.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
         // Resume from the older of the two streams' newest lines; each stream
         // skips what it already read.
-        let start = match lock(resume).iter().filter_map(|r| r.last).min() {
+        let start = match lock(resume).values().filter_map(|r| r.last).min() {
             Some(t) => Start::Since(t),
             None => first,
         };
@@ -91,22 +119,33 @@ pub fn follow(
         })
         .collect();
         drop(tx);
-        // Docker passes a container's stdout and stderr on separately; keep
-        // their multi-line events apart.
-        let mut out = Feeder::new(pipeline);
-        let mut err = Feeder::new(pipeline);
+        // Docker passes a container's stdout and stderr on separately, and
+        // kubectl interleaves a pod's containers; keep their multi-line events
+        // apart.
+        let mut feeders: HashMap<String, Feeder> = HashMap::new();
         let mut got_lines = false;
         loop {
             match rx.recv_timeout(POLL) {
                 Ok((is_err, line)) => match tool.decode(&line, is_err) {
-                    Some((ts, text)) => {
-                        if !lock(resume)[is_err as usize].admit(ts, &text) {
+                    Some(e) => {
+                        let key = e.stream.clone().unwrap_or_else(|| {
+                            if is_err { "stderr" } else { "stdout" }.to_string()
+                        });
+                        if !lock(resume)
+                            .entry(key.clone())
+                            .or_default()
+                            .admit(e.ts, &e.text)
+                        {
                             continue;
                         }
                         got_lines = true;
-                        let f = if is_err { &mut err } else { &mut out };
-                        for l in text.lines() {
-                            f.line(l);
+                        let f = feeders.entry(key).or_insert_with(|| Feeder::new(pipeline));
+                        for (i, l) in e.text.lines().enumerate() {
+                            if i == 0 && !e.head.is_empty() && !f.continues(l) {
+                                f.line(&format!("{}{l}", e.head));
+                            } else {
+                                f.line(l);
+                            }
                         }
                     }
                     None => {
@@ -118,8 +157,9 @@ pub fn follow(
                     }
                 },
                 Err(RecvTimeoutError::Timeout) => {
-                    out.idle(false);
-                    err.idle(false);
+                    for f in feeders.values_mut() {
+                        f.idle(false);
+                    }
                     if !alive.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) {
                         let _ = child.kill();
                     }
@@ -127,8 +167,9 @@ pub fn follow(
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
-        out.idle(true);
-        err.idle(true);
+        for f in feeders.values_mut() {
+            f.idle(true);
+        }
         let _ = child.wait();
         for r in readers {
             let _ = r.join();

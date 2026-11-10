@@ -4,7 +4,7 @@
 //! followed from its first line, and a restarted container is followed again
 //! where it left off. Uses the current kubectl context.
 
-use super::command::{self, Tool};
+use super::command::{self, Entry, Tool};
 use super::{Start, rfc3339, split_timestamp};
 use crate::collector::Pipeline;
 use std::process::Command;
@@ -81,6 +81,9 @@ impl Tool for Kubectl {
             "--timestamps",
             "--all-containers=true",
             "--ignore-errors=true",
+            // `[pod/NAME/CONTAINER] ` in front of each line, so each container
+            // is read as its own stream.
+            "--prefix=true",
         ]);
         match start {
             Start::New => {
@@ -95,12 +98,29 @@ impl Tool for Kubectl {
         c
     }
 
-    fn decode(&self, line: &str, stderr: bool) -> Option<(i64, String)> {
+    fn decode(&self, line: &str, stderr: bool) -> Option<Entry> {
         if stderr {
             return None;
         }
-        split_timestamp(line).map(|(t, rest)| (t, rest.to_string()))
+        let (container, line) = split_prefix(line);
+        let (t, rest) = split_timestamp(line)?;
+        let mut e = Entry::new(t, rest);
+        e.stream = container.map(str::to_string);
+        Some(e)
     }
+}
+
+/// Split kubectl's `--prefix` (`[pod/api-7d9f/app] `) off a line, returning the
+/// container's name.
+pub fn split_prefix(line: &str) -> (Option<&str>, &str) {
+    if let Some(rest) = line.strip_prefix('[')
+        && let Some((prefix, line)) = rest.split_once("] ")
+        && let Some(container) = prefix.rsplit('/').next()
+        && prefix.contains('/')
+    {
+        return (Some(container), line);
+    }
+    (None, line)
 }
 
 /// Follow every pod of `target` (a `deployment/NAME` or a label selector).

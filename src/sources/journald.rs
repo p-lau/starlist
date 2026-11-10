@@ -1,7 +1,7 @@
 //! journald: follow a systemd unit through `journalctl -f -o json`.
 
 use super::Start;
-use super::command::{self, Tool};
+use super::command::{self, Entry, Tool};
 use crate::collector::Pipeline;
 use serde_json::Value;
 use std::process::Command;
@@ -44,7 +44,7 @@ impl Tool for Journald {
         c
     }
 
-    fn decode(&self, line: &str, stderr: bool) -> Option<(i64, String)> {
+    fn decode(&self, line: &str, stderr: bool) -> Option<Entry> {
         if stderr {
             return None;
         }
@@ -52,14 +52,16 @@ impl Tool for Journald {
     }
 }
 
-/// One `journalctl -o json` entry as a log line: its time, and the message
-/// prefixed by that time and, when the entry says so, a level. Entries at the
-/// default priority (info) keep the level the app wrote, if any.
-pub fn decode_entry(line: &str) -> Option<(i64, String)> {
+/// One `journalctl -o json` entry: its time, its message, and a head of that
+/// time and, when the entry says so, a level. Entries at the default priority
+/// (info) keep the level the app wrote, if any. journald stores each line an
+/// app writes as its own entry, so the head is only put on lines that start an
+/// event; a stack trace's frames stay with the line that logged it.
+pub fn decode_entry(line: &str) -> Option<Entry> {
     let v: Value = serde_json::from_str(line).ok()?;
     let us: i64 = v.get("__REALTIME_TIMESTAMP")?.as_str()?.parse().ok()?;
     let ts = us.checked_mul(1000)?;
-    let msg = match v.get("MESSAGE")? {
+    let text = match v.get("MESSAGE")? {
         Value::String(s) => s.clone(),
         // Not valid UTF-8: journald sends the bytes.
         Value::Array(bytes) => {
@@ -78,21 +80,20 @@ pub fn decode_entry(line: &str) -> Option<(i64, String)> {
         Some("7") => Some("DEBUG"),
         _ => None,
     };
-    let mut lines = msg.lines();
-    let first = lines.next().unwrap_or_default();
-    let mut text = format!("{} ", super::rfc3339(ts));
+    let first = text.lines().next().unwrap_or_default();
+    let mut head = format!("{} ", super::rfc3339(ts));
     if let Some(l) = level
         && crate::pattern::normalize_level(first.split_whitespace().next().unwrap_or("")).is_none()
     {
-        text.push_str(l);
-        text.push(' ');
+        head.push_str(l);
+        head.push(' ');
     }
-    text.push_str(first);
-    for l in lines {
-        text.push('\n');
-        text.push_str(l);
-    }
-    Some((ts, text))
+    Some(Entry {
+        ts,
+        head,
+        text,
+        stream: None,
+    })
 }
 
 /// Follow a systemd unit, like `api.service`.

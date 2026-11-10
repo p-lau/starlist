@@ -397,15 +397,20 @@ impl Assembler {
         CONTINUATION.is_match(line)
     }
 
+    /// True when `line` would be added to the pending event (a stack frame,
+    /// `Caused by:`, a traceback's exception line) rather than start a new one.
+    pub fn continues(&self, line: &str) -> bool {
+        !self.pending.is_empty()
+            && (Self::is_continuation(line) || self.ends_python_traceback(line))
+    }
+
     /// Feed one line; returns a finished event's text when this line starts a new one.
     pub fn feed(&mut self, line: &str) -> Option<String> {
         let line = line.trim_end_matches(['\n', '\r']);
         if line.trim().is_empty() {
             return None;
         }
-        if !self.pending.is_empty()
-            && (Self::is_continuation(line) || self.ends_python_traceback(line))
-        {
+        if self.continues(line) {
             if self.pending.len() < MAX_EVENT_LINES {
                 self.pending.push(line.to_string());
             }

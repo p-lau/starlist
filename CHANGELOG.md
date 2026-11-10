@@ -4,6 +4,12 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- journald: a stack trace an app writes line by line (each line its own journal entry) is kept as one event again, instead of one pattern per frame.
+- Loki: Loki 3 labels each line with a `detected_level`, which split a stream's stack traces across patterns. Streams are now read by their own labels (`categorize-labels`), also when the query parses labels with `| json` or `| logfmt`.
+- Kubernetes: each container of a pod is read as its own stream, so a sidecar's lines no longer break the app's stack traces, and lines that arrive slightly out of time order from different containers are no longer skipped.
+
 ## [1.0.0] - 2026-11-10
 
 The first public release. Everything below is new.

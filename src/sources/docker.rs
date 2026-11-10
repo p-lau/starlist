@@ -1,7 +1,7 @@
 //! Docker: follow containers by name, or every container with a label, through
 //! `docker logs -f --timestamps`. `STARLIST_DOCKER=podman` uses Podman instead.
 
-use super::command::{self, Tool};
+use super::command::{self, Entry, Tool};
 use super::{Start, rfc3339, split_timestamp};
 use crate::collector::Pipeline;
 use std::process::Command;
@@ -48,9 +48,9 @@ impl Tool for Docker {
         c
     }
 
-    fn decode(&self, line: &str, _stderr: bool) -> Option<(i64, String)> {
+    fn decode(&self, line: &str, _stderr: bool) -> Option<Entry> {
         // Every container line has a timestamp; anything else is from docker.
-        split_timestamp(line).map(|(t, rest)| (t, rest.to_string()))
+        split_timestamp(line).map(|(t, rest)| Entry::new(t, rest))
     }
 }
 

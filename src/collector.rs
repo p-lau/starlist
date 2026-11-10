@@ -220,6 +220,10 @@ impl<'a> Feeder<'a> {
             }
         }
     }
+    /// True when `l` would continue the pending event (see `Assembler::continues`).
+    pub(crate) fn continues(&self, l: &str) -> bool {
+        self.asm.continues(l)
+    }
     /// Called when the source is idle: finish a pending event if nothing new arrived for a while.
     pub(crate) fn idle(&mut self, force: bool) {
         if self.asm.has_pending() && (force || self.last_line.elapsed() >= IDLE_FLUSH) {
