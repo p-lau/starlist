@@ -1,0 +1,63 @@
+name: starlist-ci
+description: Keep each run's log, and when a run fails, report what its log says that the last passing run's didn't.
+branding:
+  icon: star
+  color: blue
+
+inputs:
+  log:
+    description: The log file this job wrote, for example with `cargo test 2>&1 | tee test.log`.
+    required: true
+  status:
+    description: The job's status (the `job.status` expression). The log is always kept; it is compared only when this is `failure`.
+    required: true
+  name:
+    description: Name of the log artifact. Give each job (and matrix entry) its own.
+    default: starlist-log-${{ github.job }}
+  baseline-branch:
+    description: Branch whose last passing run is the baseline. Defaults to a pull request's base branch, otherwise the current branch.
+    default: ""
+  comment:
+    description: Also post the report on the pull request, updating it on later failures. Needs `pull-requests: write`.
+    default: "false"
+  version:
+    description: starlist-ci version to use, like `1.1.0`. By default, the version of the action's tag, or the latest release.
+    default: ""
+  retention-days:
+    description: How long to keep each run's log artifact.
+    default: "14"
+  token:
+    description: Token for finding the baseline run and downloading its log. Needs `actions: read`.
+    default: ${{ github.token }}
+
+outputs:
+  report:
+    description: Path of the Markdown report, when one was made.
+    value: ${{ steps.compare.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Keep this run's log
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.log }}
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: warn
+        overwrite: true
+
+    - name: Compare with the last passing run
+      id: compare
+      if: inputs.status == 'failure'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        LOG: ${{ inputs.log }}
+        NAME: ${{ inputs.name }}
+        BASELINE_BRANCH: ${{ inputs.baseline-branch }}
+        COMMENT: ${{ inputs.comment }}
+        VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+        PR: ${{ github.event.pull_request.number }}
+      run: bash "$GITHUB_ACTION_PATH/action.sh"
