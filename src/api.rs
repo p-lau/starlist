@@ -251,6 +251,19 @@ async fn status(State(s): State<ApiState>) -> ApiResult {
             .map(|(_, c)| c.iter().sum::<i64>())
             .sum();
         let (raw_n, raw_oldest) = store.raw_span().map_err(analysis::db)?;
+        let last_minute: i64 = store
+            .level_series(now - 60.0, now, 60.0)
+            .map_err(analysis::db)?
+            .iter()
+            .map(|(_, c)| c.iter().sum::<i64>())
+            .sum();
+        let meta_num = |k: &str| {
+            store
+                .meta(k)
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse::<f64>().ok())
+        };
         Ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
             "now": iso(now),
@@ -261,6 +274,15 @@ async fn status(State(s): State<ApiState>) -> ApiResult {
             "last_hour": {"events": events, "errors": errors},
             "raw": {"events": raw_n, "oldest": raw_oldest.map(iso)},
             "alerts": alerts_on,
+            "health": {
+                "db_bytes": store.disk_bytes().map_err(analysis::db)?,
+                "memory_bytes": process_memory(),
+                "events_per_sec": last_minute as f64 / 60.0,
+                "new_patterns_last_hour": store.new_pattern_count(now - 3600.0).map_err(analysis::db)?,
+                "hub_dropped": meta_num("hub_dropped").unwrap_or(0.0) as i64,
+                "retention_secs": meta_num("retention_secs"),
+                "history_secs": meta_num("history_secs"),
+            },
         }))
     })
     .await
@@ -1054,4 +1076,18 @@ async fn field_series(
         }))
     })
     .await
+}
+
+/// Resident memory of this process, where the OS makes it cheap to read (Linux).
+fn process_memory() -> Option<u64> {
+    let s = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb: u64 = s
+        .lines()
+        .find_map(|l| l.strip_prefix("VmRSS:"))?
+        .trim()
+        .trim_end_matches("kB")
+        .trim()
+        .parse()
+        .ok()?;
+    Some(kb * 1024)
 }

@@ -87,6 +87,14 @@ async fn reads_status_patterns_and_timeline() {
     assert_eq!(st["patterns"], 3);
     assert_eq!(st["last_hour"]["errors"], 12);
     assert!(st["raw"]["events"].as_i64().unwrap() > 0);
+    let h = &st["health"];
+    assert!(h["db_bytes"].as_u64().unwrap() > 0, "{h}");
+    assert!(h["events_per_sec"].as_f64().unwrap() >= 0.0);
+    assert!(h["new_patterns_last_hour"].as_i64().unwrap() <= 3);
+    assert_eq!(h["hub_dropped"], 0);
+    if cfg!(target_os = "linux") {
+        assert!(h["memory_bytes"].as_u64().unwrap() > 0);
+    }
 
     let (code, ps) = get(&format!("{base}/api/v1/patterns?min_level=ERROR")).await;
     assert_eq!(code, 200, "{ps}");

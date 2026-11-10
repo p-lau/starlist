@@ -159,6 +159,13 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 - `--env production` (or `STARLIST_ENV`) labels what this collector watches; it shows in the release view, the API and the hub.
 - Log timestamps without a zone are read as UTC. If your app logs local time, pass `--log-tz +02:00` (or `-0800`, `UTC`). Timestamps that carry a zone are never shifted.
 
+## Footprint
+
+- **Binary:** about 5 MB on Linux (static), about 7 MB on Windows.
+- **Memory:** about 11 MB while serving a quiet app; 28 MB peak at 5,000 lines/s in the load test.
+- **Database:** levelled at 63 MB at 5,000 lines/s with `--raw-size 16MB`. Most of it is the raw-line buffer, which `--raw-size` caps (or `--no-raw` removes). The rest is 10-second counts kept for `--retention` (7 days), hourly counts kept for `--history` (400 days), and the patterns themselves, which are never deleted (see [Known limits](#known-limits)).
+- **Watching it live:** the dashboard footer and `GET /api/v1/status` (`health`) show the database size, memory (Linux), lines per second, new patterns in the last hour, and hub batches dropped. A steady stream of new patterns, or any dropped batches, is the sign to act.
+
 ## Demo
 
 ```sh
