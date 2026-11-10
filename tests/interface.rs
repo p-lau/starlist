@@ -183,6 +183,11 @@ async fn tool_interface_matches_docs() -> anyhow::Result<()> {
             json!({"pattern_ids": [error_id, warn_id]}),
             Value::Null,
         ),
+        (
+            "split_pattern",
+            json!({"pattern_id": error_id, "pattern_ids": [warn_id]}),
+            Value::Null,
+        ),
     ];
 
     let mut tools = LogServer::new_tools();

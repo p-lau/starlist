@@ -9,6 +9,9 @@
 //!
 //! The threshold guards against merging lines that differ in meaning, like
 //! "job started" / "job failed": a status word rarely has five values.
+//!
+//! Patterns that were split back out of a merge by hand are kept apart: the
+//! merger never folds them into another pattern or generalizes them again.
 
 use crate::pattern::Event;
 use std::collections::{HashMap, HashSet};
@@ -45,6 +48,7 @@ pub struct Merger {
     variants: HashMap<(String, usize), Variants>,
     aliases: HashMap<String, String>,
     templates: HashMap<String, String>,
+    kept_apart: HashSet<String>,
 }
 
 fn tokens(t: &str) -> Vec<String> {
@@ -94,6 +98,7 @@ impl Merger {
             variants: HashMap::new(),
             aliases: HashMap::new(),
             templates: HashMap::new(),
+            kept_apart: HashSet::new(),
         }
     }
 
@@ -104,10 +109,23 @@ impl Merger {
         threshold: usize,
         aliases: HashMap<String, String>,
         templates: impl IntoIterator<Item = (String, String)>,
+        apply: impl FnMut(&MergeOp) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        Self::restore_kept_apart(threshold, aliases, HashSet::new(), templates, apply)
+    }
+
+    /// Like [`Merger::restore`], also leaving alone the pattern IDs in
+    /// `kept_apart` (patterns split out of a merge by hand).
+    pub fn restore_kept_apart<E>(
+        threshold: usize,
+        aliases: HashMap<String, String>,
+        kept_apart: HashSet<String>,
+        templates: impl IntoIterator<Item = (String, String)>,
         mut apply: impl FnMut(&MergeOp) -> Result<(), E>,
     ) -> Result<Self, E> {
         let mut m = Self::new(threshold);
         m.aliases = aliases;
+        m.kept_apart = kept_apart;
         for (id, template) in templates {
             if let Some(op) = m.observe_new(&id, &template) {
                 apply(&op)?;
@@ -124,6 +142,11 @@ impl Merger {
             return None;
         }
         if self.templates.contains_key(&e.pattern_id) {
+            return None;
+        }
+        if self.kept_apart.contains(&e.pattern_id) {
+            self.templates
+                .insert(e.pattern_id.clone(), e.template.clone());
             return None;
         }
         let toks = tokens(&e.template);
@@ -154,6 +177,10 @@ impl Merger {
 
     /// Register a pattern seen for the first time; may trigger a merge.
     fn observe_new(&mut self, id: &str, template: &str) -> Option<MergeOp> {
+        if self.kept_apart.contains(id) {
+            self.templates.insert(id.to_string(), template.to_string());
+            return None;
+        }
         let toks = tokens(template);
         let k = key(&toks);
         let group = self.groups.entry(k.clone()).or_default();
@@ -276,5 +303,40 @@ mod tests {
             op = op.or(m.resolve(&mut ev(&format!("WARN login throttled user={n}"))));
         }
         assert_eq!(op.unwrap().template, "WARN login throttled user=<*>");
+    }
+
+    #[test]
+    fn leaves_kept_apart_patterns_alone() {
+        let names = ["alice", "bob", "carol", "dave", "erin", "frank"];
+        let evs: Vec<Event> = names
+            .iter()
+            .map(|n| ev(&format!("INFO user {n} logged in")))
+            .collect();
+        // bob was split out by hand: the other five still merge, bob doesn't.
+        let bob = evs[1].pattern_id.clone();
+        let templates = evs
+            .iter()
+            .map(|e| (e.pattern_id.clone(), e.template.clone()));
+        let mut ops = vec![];
+        let mut m = Merger::restore_kept_apart(
+            5,
+            HashMap::new(),
+            HashSet::from([bob.clone()]),
+            templates,
+            |op| {
+                ops.push(op.clone());
+                Ok::<_, ()>(())
+            },
+        )
+        .unwrap();
+        assert_eq!(ops.len(), 1);
+        assert!(!ops[0].aliases.contains(&bob));
+        let mut late = ev("INFO user bob logged in");
+        assert!(m.resolve(&mut late).is_none());
+        assert_eq!(late.pattern_id, bob);
+        assert_eq!(late.template, "INFO user bob logged in");
+        let mut zed = ev("INFO user zed logged in");
+        m.resolve(&mut zed);
+        assert_eq!(zed.pattern_id, evs[0].pattern_id);
     }
 }

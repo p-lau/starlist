@@ -4,6 +4,10 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- `split_pattern` MCP tool and `POST /api/v1/patterns/split`: undo a merge, automatic or by hand. Split patterns count on their own again, get their template from before the merge back where known, and aren't merged automatically again.
+
 ## [1.0.0] - 2026-11-10
 
 The first public release. Everything below is new.
