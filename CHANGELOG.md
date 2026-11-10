@@ -4,12 +4,15 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-10
+
 The first public release. Everything below is new.
 
 ### MCP tools
 
 - `diagnose`, `whats_new`, `verify_fix`, `compare_deploy`, `list_patterns`, `get_pattern`, `get_context`, `get_request`, `set_pattern_state`, `get_release`, `merge_patterns`, `add_marker` and `list_markers`, with brief and full detail, a hard answer size limit and paging. Their arguments and output fields are listed in [docs/tools.md](docs/tools.md).
 - `--tools core` or any list of tools, to offer agents fewer definitions.
+- Errors that recur at the same time of day are marked `usual` and not alerted on, `verify_fix` waits for a pattern's usual hours, and `set_pattern_state` takes a `timing` override.
 
 ### Collecting
 
@@ -28,4 +31,5 @@ The first public release. Everything below is new.
 - Seven days of 10-second counts and 400 days of hourly history, with a bounded buffer of redacted raw lines (`--raw-size`, `--no-raw`).
 - The log engine as a separate crate, `starlist-core`.
 
-[Unreleased]: https://github.com/p-lau/starlist/commits/main
+[Unreleased]: https://github.com/p-lau/starlist/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/p-lau/starlist/releases/tag/v1.0.0

@@ -2,7 +2,7 @@
 members = ["core"]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/p-lau/starlist"
@@ -59,13 +59,13 @@ otel = ["dep:flate2"]
 loki = []
 
 [dependencies]
-starlist-core = { path = "core", version = "0.1.0" }
+starlist-core = { path = "core", version = "1.0.0" }
 rmcp = { version = "3.9", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 schemars = "1"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 regex.workspace = true
 sha1_smol = { workspace = true, optional = true }
 chrono.workspace = true
@@ -77,7 +77,7 @@ getrandom = "0.4"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
-toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
+toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
 
 [dev-dependencies]
 # The MCP client is only used by the example agent and the end-to-end test.

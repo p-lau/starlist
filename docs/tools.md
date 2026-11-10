@@ -284,7 +284,8 @@ Output fields:
 
 Arguments:
 - `pattern_id` (required)
-- `state` (required)
+- `state`
+- `timing`
 - `ignore_for`
 - `ignore_count`
 - `note`
@@ -294,6 +295,7 @@ Output fields:
 - `pattern_id`
 - `state`
 - `template`
+- `timing`
 
 ## `merge_patterns`
 
