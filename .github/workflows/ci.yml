@@ -52,3 +52,30 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings
       - name: Tests (no default features)
         run: cargo test --workspace --locked --no-default-features
+
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          load: true
+          tags: starlist:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test
+        run: |
+          docker run --rm starlist:ci --version
+          docker run -d --name sl -p 127.0.0.1:7341:7341 -e STARLIST_TOKEN=ci-smoke-test-token-0123456789 starlist:ci \
+            serve --file /data/app.log --http 0.0.0.0:7341 --db /data/starlist.db
+          for i in $(seq 30); do
+            curl -sf -H "Authorization: Bearer ci-smoke-test-token-0123456789" http://127.0.0.1:7341/api/v1/status > /dev/null && break
+            sleep 1
+          done
+          curl -sf -H "Authorization: Bearer ci-smoke-test-token-0123456789" http://127.0.0.1:7341/api/v1/status || { docker logs sl; exit 1; }
+          docker logs sl

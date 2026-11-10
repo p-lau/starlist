@@ -1,0 +1,27 @@
+name: Load test
+
+# Sustained log volume with bounded memory and disk (bench/load.py).
+on:
+  workflow_dispatch:
+    inputs:
+      rate:
+        description: Lines per second
+        default: "5000"
+      seconds:
+        description: How long to write
+        default: "600"
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - run: python3 bench/load.py --rate ${{ inputs.rate || '5000' }} --seconds ${{ inputs.seconds || '600' }}

@@ -5,6 +5,7 @@ members = ["core"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/p-lau/starlist"
 
 [workspace.dependencies]
 regex = "1"
@@ -14,9 +15,27 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 
 [package]
 name = "starlist"
+description = "Watches your app's logs and serves distilled, redacted summaries to AI agents over MCP."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["mcp", "logs", "observability", "ai-agents", "redaction"]
+categories = ["command-line-utilities", "development-tools::debugging"]
+# What goes into the crates.io package. Listing it also takes in the built
+# dashboard, which .gitignore would otherwise leave out: build it first.
+include = [
+    "/src/**",
+    "/build.rs",
+    "/examples/**",
+    "/tests/**",
+    "/docs/tools.md",
+    "/dashboard/build/**",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+]
 
 [features]
 default = ["dashboard", "hub", "prometheus", "docker", "journald", "kubernetes", "otel", "loki"]
@@ -40,7 +59,7 @@ otel = ["dep:flate2"]
 loki = []
 
 [dependencies]
-starlist-core = { path = "core" }
+starlist-core = { path = "core", version = "0.1.0" }
 rmcp = { version = "3.9", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

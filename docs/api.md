@@ -16,7 +16,7 @@ UI.
   now (`30m`, `2h`, `1d`), an ISO time, or a marker name such as `v1.4.3`.
 - `service` names the service on a hub, and is `null` on a single collector. See [On a hub](#on-a-hub).
 
-Until 1.0.0 fields may still change. From 1.0.0, `/api/v1` only gains fields.
+Until 1.0.0 fields may still change. From 1.0.0, `/api/v1` only gains fields; see [versioning.md](versioning.md).
 
 ## Access
 

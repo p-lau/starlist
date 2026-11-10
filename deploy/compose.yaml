@@ -1,0 +1,39 @@
+# starlist as a sidecar: the app writes its log to a shared volume, and
+# starlist follows it and serves MCP on port 7341.
+#
+#   STARLIST_TOKEN=$(openssl rand -hex 32) docker compose -f deploy/compose.yaml up
+#   claude mcp add --transport http logs http://localhost:7341/mcp \
+#     --header "Authorization: Bearer $STARLIST_TOKEN"
+
+services:
+  app:
+    # Your app, writing its log to /var/log/app/app.log. This stand-in prints
+    # a line every few seconds.
+    image: busybox
+    command: sh -c 'i=0; while true; do i=$$((i+1)); echo "$$(date -u +%FT%TZ) INFO handled request $$i" >> /var/log/app/app.log; sleep 2; done'
+    volumes:
+      - app-logs:/var/log/app
+
+  starlist:
+    image: ghcr.io/p-lau/starlist:1
+    command:
+      - serve
+      - --file=/var/log/app/app.log
+      - --http=0.0.0.0:7341
+      - --db=/data/starlist.db
+      - --env=production
+    environment:
+      # Required, since it listens beyond localhost inside the container.
+      STARLIST_TOKEN: ${STARLIST_TOKEN:?set STARLIST_TOKEN}
+      # STARLIST_VERSION: v1.4.3   # the app's release, if its logs don't say
+    volumes:
+      - app-logs:/var/log/app:ro
+      - starlist-data:/data
+    ports:
+      # Only on this machine; put a TLS proxy in front to reach it from elsewhere.
+      - 127.0.0.1:7341:7341
+    restart: unless-stopped
+
+volumes:
+  app-logs:
+  starlist-data:

@@ -1,7 +1,5 @@
 # starlist
 
-> Prototype.
-
 Your applications are stars. starlist sends a small satellite to orbit each one: it watches the star's logs and sends back only what matters. For large fleets, an optional hub acts as the ground station that gathers every satellite's reports.
 
 A small Rust collector that runs next to your app, watches its logs, and answers AI agents over MCP with **distilled, redacted summaries** instead of raw lines. It works with any language: it only reads the text your app already writes (plain lines or JSON, including Python and Java stack traces).
@@ -46,6 +44,12 @@ Every answer also has a hard size limit, however noisy the log: 8,000 characters
 6. **Store**: SQLite (WAL) with per-10s counts, 5 recent samples per pattern, and markers. After 7 days (`--retention`) counts are folded into hourly counts, which are kept for 400 days (`--history`), so a month-over-month question still has an answer.
 7. **Numbers** (optional): `--metric duration_ms` (repeatable) reads that field from each line, in `duration_ms=532`, `latency: 0.53` or JSON, and keeps an hourly histogram per pattern, so p50, p95 and p99 survive for months without the lines. Percentiles are within about 9%; count, mean, min and max are exact.
 
+## Install
+
+- **Prebuilt binary**: download the archive for your platform from the [latest release](https://github.com/p-lau/starlist/releases/latest) (Linux x86_64 and arm64, static; macOS Intel and Apple silicon; Windows x86_64), unpack it and put `starlist` on your `PATH`. `SHA256SUMS` lists the checksums.
+- **Cargo**: `cargo install starlist` (dashboard included).
+- **Container**: `ghcr.io/p-lau/starlist:1` for Linux amd64 and arm64. See [deploy/](deploy/) for a Docker Compose and a Kubernetes sidecar.
+
 ## Set it up
 
 ```sh
@@ -58,6 +62,8 @@ starlist serve     # reads starlist.toml; leave it running
 
 - `starlist.toml`: the sources, the database (`.starlist/starlist.db`, added to `.gitignore` if there is one), and source roots for code locations (the project directory, plus the Dockerfile's `WORKDIR`).
 - The MCP settings of the clients the project already uses, or Claude Code's `.mcp.json` if none: `.mcp.json` (Claude Code), `.cursor/mcp.json`, `.vscode/mcp.json` and `.gemini/settings.json`, keeping any other servers in them. It prints the settings for the rest, Windsurf and Codex included.
+
+Other MCP clients connect to `http://127.0.0.1:7341/mcp` (streamable HTTP) while `starlist serve` runs, or launch `starlist mcp --stdio` from the project directory themselves if they only speak stdio (it reads `starlist.toml` for the database).
 
 It shows the plan before writing and asks before changing a file that exists. In CI or a script there's no prompt: new files are written, existing ones left alone, and `--yes` changes those too. `--dry-run` prints the files instead, `--client cursor,vscode` (or `none`) picks the clients, and `--stdio` has the agent start starlist itself instead of connecting to a running `starlist serve`.
 
@@ -140,8 +146,12 @@ STARLIST_HUB_TOKEN=... starlist serve --file app.log \
 - **Raw lines** at the hub are capped per service by `--raw-size`, and `--no-raw` keeps none. A collector run with `--no-raw` sends no lines for the hub's buffer either.
 - The hub has no TLS of its own: put it behind a reverse proxy with HTTPS. A collector warns when it pushes to plain `http://` beyond localhost.
 
-### Security, privacy and time zones
+## Security, privacy and time zones
 
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+- Redaction happens before anything is stored, so what it recognizes never reaches the database, the tools, the API or a hub: emails, IPs, bearer tokens, JWTs, common API keys, `password=`-style values, card numbers and private keys, plus your own `--redact` rules.
+- starlist has no TLS of its own. On one machine, keep the default `127.0.0.1` address. To reach it from elsewhere, listen on localhost or a private network and put a TLS-terminating proxy in front, for example Caddy with `reverse_proxy 127.0.0.1:7341`, or use an SSH tunnel (`ssh -L 7341:127.0.0.1:7341 host`). The same goes for a hub.
 - On localhost (the default) no token is needed, and only loopback `Host` headers are accepted, which blocks DNS-rebinding tricks from a browser. The API also refuses writes from other sites' pages.
 - When listening beyond localhost (`--http 0.0.0.0:7341`), a bearer token is required. Pass `--token` or set `STARLIST_TOKEN`. If you don't, one is generated and saved next to the database as `<db>.token` (owner-only permissions). Agents send it as `Authorization: Bearer <token>`, e.g. `claude mcp add --transport http logs http://host:7341/mcp --header "Authorization: Bearer $(cat starlist.token)"`.
 - Request IDs are read from a W3C `traceparent` and fields like `trace_id`, `request_id`, `x-request-id` and `correlation_id` (any spelling, in JSON or `key=value` text). Add your own with `--request-key order_ref`. They're kept out of patterns, and an ID that looks like a secret is ignored. When an event has both, the trace ID wins, since it follows a request across services.
@@ -160,10 +170,13 @@ cargo run --release --example ask -- http://127.0.0.1:7341/mcp verify_fix '{"pat
 
 ## Tests
 
-`cargo test --workspace`: unit tests (redaction, masking, stack-trace grouping, timestamps), scenario tests for every verdict with controlled time, and an end-to-end test that ingests logs and calls the tools through a real MCP client over HTTP.
+`cargo test --workspace`: unit tests (redaction, masking, stack-trace grouping, timestamps), scenario tests for every verdict with controlled time, and an end-to-end test that ingests logs and calls the tools through a real MCP client over HTTP. `tests/interface.rs` checks the tool names, arguments and output fields against [docs/tools.md](docs/tools.md).
 
-## Known limits (prototype)
+`python bench/load.py` is the load test: it writes a busy log (requests, stack traces, high-cardinality values, rotation) into a file starlist follows, and checks that memory and the database level off and nothing is dropped. At 5,000 lines/s for 5 minutes (1.5M entries, 0.1% of them never-seen-before text), starlist kept up within seconds, peaked at 28 MB of memory, and the database levelled at 63 MB with `--raw-size 16MB`. It also runs weekly in CI.
+
+## Known limits
 
 - Lines without a timestamp get the time they were read.
-- No TLS of its own: put it behind a reverse proxy (Caddy, nginx) or an SSH tunnel when it leaves the machine.
+- Patterns are kept for good, so a log where a large share of lines are unlike any other (free text with no IDs or numbers to mask) grows the pattern table without limit and slows ingestion: in the load test with 3% such lines at 5,000 lines/s, 35,000 patterns built up in 5 minutes and starlist fell behind. `--group` rules or `--merge-after` help for known shapes.
+- No TLS of its own: see [Security](#security-privacy-and-time-zones).
 - A hub has no push alerts or Prometheus endpoint of its own yet; each collector still has both.

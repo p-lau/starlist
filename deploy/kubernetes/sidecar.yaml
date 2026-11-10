@@ -1,0 +1,63 @@
+# starlist as a sidecar in your app's pod: the app writes its log to a shared
+# emptyDir, and starlist follows it and serves MCP on port 7341.
+#
+#   kubectl create secret generic starlist --from-literal=token=$(openssl rand -hex 32)
+#   kubectl apply -f deploy/kubernetes/sidecar.yaml
+#   kubectl port-forward deploy/api 7341
+#
+# Each replica keeps its own database. To see all replicas together, run a
+# hub and add --hub and --service (see the README).
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: api }
+  template:
+    metadata:
+      labels: { app: api }
+    spec:
+      containers:
+        - name: api
+          # Your app, writing its log to /var/log/app/app.log.
+          image: busybox
+          command: ["sh", "-c", "i=0; while true; do i=$((i+1)); echo \"$(date -u +%FT%TZ) INFO handled request $i\" >> /var/log/app/app.log; sleep 2; done"]
+          volumeMounts:
+            - { name: app-logs, mountPath: /var/log/app }
+
+        - name: starlist
+          image: ghcr.io/p-lau/starlist:1
+          args:
+            - serve
+            - --file=/var/log/app/app.log
+            - --http=0.0.0.0:7341
+            - --db=/data/starlist.db
+          env:
+            - name: STARLIST_TOKEN
+              valueFrom:
+                secretKeyRef: { name: starlist, key: token }
+            - name: STARLIST_ENV
+              value: production
+          ports:
+            - { name: mcp, containerPort: 7341 }
+          volumeMounts:
+            - { name: app-logs, mountPath: /var/log/app, readOnly: true }
+            - { name: starlist-data, mountPath: /data }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+
+      volumes:
+        - name: app-logs
+          emptyDir: {}
+        # Use a PersistentVolumeClaim to keep history across pod restarts.
+        - name: starlist-data
+          emptyDir: { sizeLimit: 512Mi }

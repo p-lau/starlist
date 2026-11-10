@@ -4,6 +4,9 @@ description = "Log parsing, pattern clustering, redaction and code locations sha
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords = ["logs", "redaction", "log-parsing", "clustering"]
+categories = ["parser-implementations", "development-tools::debugging"]
 
 [dependencies]
 regex.workspace = true
