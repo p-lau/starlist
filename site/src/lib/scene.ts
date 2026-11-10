@@ -88,11 +88,12 @@ export function starGrid(spin: number): string {
 	return d;
 }
 
-/** Short rays standing off the star's edge, with lengths that look irregular. */
-export function coronaRays(): string {
+/** Short rays standing off the star's edge, with lengths that look irregular.
+ *  `set` 0 or 1 picks every other ray, so the two halves can flicker in turn. */
+export function coronaRays(set: 0 | 1): string {
 	let d = '';
 	// Only the top of the circle is ever in view (60 to 140 degrees from the right).
-	for (let i = 0; i <= 260; i++) {
+	for (let i = set; i <= 260; i += 2) {
 		const a = ((60 + (i / 260) * 80) * Math.PI) / 180;
 		const len = 6 + 40 * Math.abs(Math.sin(i * 12.9898) * Math.cos(i * 4.1414)) ** 1.6;
 		const r0 = R + 18;
@@ -176,7 +177,8 @@ const BX = 13;
 const BY = 13;
 const BZ = 17;
 
-export type Part = { kind: 'panel' | 'body' | 'dish' | 'rig'; d: string };
+/** One drawn part. `light` (0 to 1) is how much starlight falls on it as seen from here. */
+export type Part = { kind: 'panel' | 'face' | 'dish' | 'rig'; d: string; light: number };
 export type Satellite = {
 	/** In front of the star (true) or behind it. */
 	front: boolean;
@@ -184,9 +186,13 @@ export type Satellite = {
 	size: number;
 	/** Its parts, furthest first, so nearer parts cover them. */
 	parts: Part[];
-	/** A line from the satellite down to the surface below it. */
-	link: string;
+	/** The path it just flew, in pieces that fade with age: newest first. */
+	trail: { d: string; fade: number }[];
+	/** Where its beacon is, and how large. */
+	beacon: [number, number, number];
 };
+
+const EMPTY = { size: 1, parts: [], trail: [], beacon: [0, 0, 0] as [number, number, number] };
 
 /** Where a satellite is at `time` seconds and what it looks like from here. */
 export function where(o: Orbit, phase: number, time: number) {
@@ -206,7 +212,7 @@ export function satellite(o: Orbit, phase: number, time: number): Satellite {
 	const margin = 130 * o.scale * ss;
 	const hidden = pos[2] <= 0 && Math.hypot(sx - CX, sy - CY) < R - margin;
 	if (hidden || sx < -margin || sx > W + margin || sy < -margin || sy > H + margin) {
-		return { front: pos[2] > 0, size: 1, parts: [], link: '' };
+		return { front: pos[2] > 0, ...EMPTY };
 	}
 
 	// It keeps one face to the star, as real ones do: so as it goes round we
@@ -232,7 +238,11 @@ export function satellite(o: Orbit, phase: number, time: number): Satellite {
 			d += seg(w(x, -17, 0), w(x, 17, 0));
 		}
 		d += seg(w(x0, 0, 0), w(x1, 0, 0));
-		items.push({ z: depth(w((x0 + x1) / 2, 0, 0)), part: { kind: 'panel', d } });
+		// The cells face the star. When we see that side, the starlight glints off them.
+		const centre = w((x0 + x1) / 2, 0, 0);
+		const toEye = add(eye, mul(centre, -1));
+		const glint = Math.max(0, dot(Z, toEye) / Math.hypot(...toEye));
+		items.push({ z: depth(centre), part: { kind: 'panel', d, light: glint } });
 	}
 
 	// Booms and antenna.
@@ -242,11 +252,11 @@ export function satellite(o: Orbit, phase: number, time: number): Satellite {
 	const tip = w(7, BY + 26, -8);
 	rig += seg(w(7, BY, -8), tip);
 	rig += poly([w(7, BY + 26, -11), w(10, BY + 29, -8), w(7, BY + 32, -8), w(4, BY + 29, -8)]);
-	items.push({ z: depth(pos) - 0.5, part: { kind: 'rig', d: rig } });
+	items.push({ z: depth(pos) - 0.5, part: { kind: 'rig', d: rig, light: 0 } });
 
 	// Body: a box. Only the faces turned toward the viewer are drawn, which is
-	// what makes it read as solid.
-	let body = '';
+	// what makes it read as solid. Faces turned toward the star below are lit
+	// warm by it; faces turned away stay dark.
 	const faces: [V, V, V][] = [
 		[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
 		[[-1, 0, 0], [0, 1, 0], [0, 0, 1]],
@@ -265,10 +275,12 @@ export function satellite(o: Orbit, phase: number, time: number): Satellite {
 		const centre = w(normal[0] * BX, normal[1] * BY, normal[2] * BZ);
 		const facing = add(add(mul(X, normal[0]), mul(Y, normal[1])), mul(Z, normal[2]));
 		if (dot(facing, add(centre, mul(eye, -1))) >= 0) continue;
-		body += poly([corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)]);
-		body += poly([corner(-1, -1, 0.62), corner(1, -1, 0.62), corner(1, 1, 0.62), corner(-1, 1, 0.62)]);
+		const d =
+			poly([corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)]) +
+			poly([corner(-1, -1, 0.62), corner(1, -1, 0.62), corner(1, 1, 0.62), corner(-1, 1, 0.62)]);
+		const light = Math.max(0, dot(facing, Z)) * 0.85 + 0.15 * (1 - Math.abs(dot(facing, Y)));
+		items.push({ z: depth(centre), part: { kind: 'face', d, light } });
 	}
-	items.push({ z: depth(pos), part: { kind: 'body', d: body } });
 
 	// Dish, on the side away from the star: a rim, a throat and the feed.
 	const ring = (radius: number, z: number) => {
@@ -285,15 +297,34 @@ export function satellite(o: Orbit, phase: number, time: number): Satellite {
 	for (let i = 0; i < 20; i += 5) dish += seg(throat[i], rim[i]);
 	dish += seg(w(0, 0, -BZ), w(0, 0, -BZ - 21));
 	for (let i = 2; i < 20; i += 7) dish += seg(rim[i], w(0, 0, -BZ - 21));
-	items.push({ z: depth(w(0, 0, -BZ - 12)), part: { kind: 'dish', d: dish } });
+	items.push({ z: depth(w(0, 0, -BZ - 12)), part: { kind: 'dish', d: dish, light: 0 } });
 
 	items.sort((p, q) => p.z - q.z);
 
-	const front = pos[2] > 0;
+	// Trail: where it was over the last few seconds, as short pieces that fade
+	// out with age. Pieces behind the star are left out, as the star hides them.
+	const trail: Satellite['trail'] = [];
+	const PIECES = 16;
+	const step = o.period * 0.0035;
+	const at = (t: number): V => mul(turn([Math.cos(t), 0, Math.sin(t)]), o.radius);
+	const behind = (p: V) => {
+		const [x, y] = project(p);
+		return p[2] < 0 && Math.hypot(x - CX, y - CY) < R;
+	};
+	let prev = at(a - (0.6 * step * Math.PI * 2) / o.period);
+	for (let i = 1; i <= PIECES; i++) {
+		const next = at(a - ((i + 0.6) * step * Math.PI * 2) / o.period);
+		if (!behind(prev) && !behind(next)) trail.push({ d: seg(prev, next), fade: 1 - i / (PIECES + 1) });
+		prev = next;
+	}
+
+	// The beacon sits on the antenna's tip, so nothing ever covers it.
+	const lamp = project(w(7, BY + 33, -8));
 	return {
-		front,
+		front: pos[2] > 0,
 		size: project(pos)[2] * k,
 		parts: items.map((i) => i.part),
-		link: front ? seg(w(0, 0, BZ), mul(out, R)) : ''
+		trail,
+		beacon: [lamp[0], lamp[1], 2.6 * k * lamp[2]]
 	};
 }

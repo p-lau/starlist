@@ -17,7 +17,8 @@
 
 	const SPIN = 0.045; // radians a second
 	const tracks = orbits.map(orbitTrack);
-	const rays = coronaRays();
+	const rays = coronaRays(0);
+	const flicker = coronaRays(1);
 	const loops = prominences();
 
 	// The first frame is worked out here, so the server sends a finished picture.
@@ -63,10 +64,16 @@
 	{#each sats as sat}
 		{#if sat.front === front && sat.parts.length}
 			<g class="sat s{sat.orbit}" style="--k:{sat.size.toFixed(2)}">
-				{#if sat.link}<path class="link" d={sat.link} />{/if}
+				{#each sat.trail as piece}
+					<path class="trail" d={piece.d} stroke-opacity={(piece.fade ** 2 * 0.7).toFixed(2)} />
+				{/each}
 				{#each sat.parts as part}
 					<path class={part.kind} d={part.d} />
+					{#if part.light > 0.05}
+						<path class="lit" d={part.d} fill-opacity={(part.light * (part.kind === 'panel' ? 0.35 : 0.55)).toFixed(2)} />
+					{/if}
 				{/each}
+				<circle class="beacon" cx={sat.beacon[0].toFixed(1)} cy={sat.beacon[1].toFixed(1)} r={sat.beacon[2].toFixed(1)} />
 			</g>
 		{/if}
 	{/each}
@@ -97,11 +104,17 @@
 		</defs>
 		<circle cx={CX} cy={CY} r={R + 10} fill="none" stroke="#ff8a3d" stroke-width="56" opacity="0.5" filter="url(#ol-halo)" />
 		<path class="rays" d={rays} />
-		<path class="loops" d={loops} />
 		<circle class="disc" cx={CX} cy={CY} r={R} />
 		<circle cx={CX} cy={CY} r={R} fill="none" stroke="#ffc857" stroke-width="8" opacity="0.8" filter="url(#ol-edge)" />
 		<circle class="limb" cx={CX} cy={CY} r={R} />
 		<circle class="limb outer" cx={CX} cy={CY} r={R + 10} />
+	</svg>
+
+	<!-- The other half of the rays and the plasma loops, in a layer of their own
+	     so they can flicker by fading the whole layer, which costs no redraw. -->
+	<svg class="flicker" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
+		<path class="rays" d={flicker} />
+		<path class="loops" d={loops} />
 	</svg>
 
 	<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
@@ -210,15 +223,60 @@
 	.panel {
 		fill: var(--cells);
 	}
-	.body {
+	.face {
 		fill: #0b0f2a;
+	}
+	/* Starlight on whatever faces the star: a warm wash over the face. */
+	.lit {
+		fill: #ffb45c;
+		stroke: none;
 	}
 	.dish {
 		fill: color-mix(in srgb, var(--ink) 12%, #0b0f2a);
 	}
-	.link {
-		stroke-width: 1.2px;
-		stroke-dasharray: 3 8;
-		opacity: 0.45;
+	.trail {
+		stroke-width: calc(var(--k) * 2.2px);
+	}
+	/* A small light that blinks twice, then rests. */
+	.beacon {
+		fill: #ff7a90;
+		stroke: none;
+		animation: blink 2.4s steps(1) infinite;
+	}
+	.sat.s1 .beacon {
+		fill: #7ef0b0;
+		animation-delay: -1.1s;
+	}
+	@keyframes blink {
+		0%,
+		12%,
+		24% {
+			opacity: 1;
+		}
+		6%,
+		18%,
+		30%,
+		100% {
+			opacity: 0.12;
+		}
+	}
+
+	/* Half the rays and the loops fade in and out, slowly, by layer. */
+	.flicker {
+		animation: flicker 3.6s ease-in-out infinite alternate;
+	}
+	@keyframes flicker {
+		from {
+			opacity: 1;
+		}
+		to {
+			opacity: 0.35;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.flicker,
+		.beacon {
+			animation: none;
+		}
 	}
 </style>
