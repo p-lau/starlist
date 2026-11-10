@@ -138,14 +138,15 @@ export type Orbit = {
 	phases: number[];
 };
 
-// Two orbits that stand almost upright and lean to the right, so they pass
-// over the right-hand side of the picture, clear of the text. A satellite
-// rises over the star's edge from the far side, climbs toward the viewer,
-// and comes down across the star's face, growing as it nears. Only part of
-// each lap is in view, so several share each orbit.
+// Two orbits that pass high over the star's right side. A satellite slides
+// in from the right, arcs over the top roughly following the curve of the
+// horizon, and sets behind the star's edge. It is never drawn over the
+// star's face, and never crosses the text on the left. (The angles were
+// found by searching for paths that do all that while staying as parallel
+// to the horizon as possible.)
 export const orbits: Orbit[] = [
-	{ radius: 1760, tip: -0.2, roll: 1.4, period: 52, scale: 1.25, phases: [0, 0.25, 0.5, 0.75] },
-	{ radius: 2000, tip: 0.05, roll: 1.425, period: 70, scale: 0.85, phases: [0.14, 0.47, 0.8] }
+	{ radius: 1750, tip: -2.8, roll: 1.5, period: 60, scale: 1.15, phases: [0, 0.34, 0.67] },
+	{ radius: 1680, tip: -2.65, roll: 1.42, period: 84, scale: 0.72, phases: [0.17, 0.67] }
 ];
 
 /** Every satellite: which orbit it is on and where it starts. */

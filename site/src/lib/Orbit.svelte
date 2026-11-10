@@ -83,9 +83,9 @@
 	<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
 		<defs>
 			<radialGradient id="ol-body" gradientUnits="userSpaceOnUse" cx={CX} cy={CY} r={R}>
-				<stop offset="0.8" stop-color="#0d0910" />
-				<stop offset="0.95" stop-color="#24130a" />
-				<stop offset="1" stop-color="#6b3608" />
+				<stop offset="0.9" stop-color="#090812" />
+				<stop offset="0.975" stop-color="#1c0f0b" />
+				<stop offset="1" stop-color="#5a2c07" />
 			</radialGradient>
 			<!-- Blur only the visible slice: a filter over the whole star would be enormous. -->
 			<filter id="ol-halo" filterUnits="userSpaceOnUse" x="-100" y="300" width={W + 200} height={H - 260}>
@@ -98,7 +98,7 @@
 		<circle cx={CX} cy={CY} r={R + 10} fill="none" stroke="#ff8a3d" stroke-width="56" opacity="0.5" filter="url(#ol-halo)" />
 		<path class="rays" d={rays} />
 		<path class="loops" d={loops} />
-		<circle cx={CX} cy={CY} r={R} fill="url(#ol-body)" />
+		<circle class="disc" cx={CX} cy={CY} r={R} />
 		<circle cx={CX} cy={CY} r={R} fill="none" stroke="#ffc857" stroke-width="8" opacity="0.8" filter="url(#ol-edge)" />
 		<circle class="limb" cx={CX} cy={CY} r={R} />
 		<circle class="limb outer" cx={CX} cy={CY} r={R + 10} />
@@ -136,6 +136,8 @@
 		.scene {
 			top: auto;
 			height: min(150vw, 100%);
+			/* the top of this box sits behind the text: fade it out there */
+			mask-image: linear-gradient(transparent 18%, #000 52%, #000 72%, transparent);
 		}
 	}
 	svg {
@@ -151,6 +153,10 @@
 		fill: none;
 		stroke-linecap: round;
 		stroke-linejoin: round;
+	}
+	/* The star's body is opaque, so whatever is behind it is hidden. */
+	.disc {
+		fill: url(#ol-body);
 	}
 
 	.limb {
