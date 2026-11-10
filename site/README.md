@@ -1,6 +1,6 @@
-# starlist site
+# Starlist site
 
-The landing page for starlist, built with SvelteKit and prerendered to static files.
+The landing page for Starlist, built with SvelteKit and prerendered to static files.
 
 ## Develop
 

@@ -6,7 +6,7 @@
 	import { reveal } from '#lib/reveal.ts';
 
 	const repo = 'https://github.com/p-lau/starlist';
-	const title = 'starlist: your logs, distilled for AI agents';
+	const title = 'Starlist: your logs, distilled for AI agents';
 	const description =
 		'A tiny open-source MCP server that orbits your app, watches its logs, groups them into patterns, redacts secrets and tells agents what changed.';
 
@@ -19,8 +19,12 @@
 
 	const tools = [
 		{
+			name: 'diagnose',
+			body: 'Start here. The likely causes of what is wrong now, ranked in one call, each with the deploy it started with, its code location and sample lines.'
+		},
+		{
 			name: 'whats_new',
-			body: 'What appeared for the first time, came back, spiked or went quiet versus a baseline. Spikes are judged against overall traffic, so a busy hour is not an incident.'
+			body: 'What appeared for the first time, came back, spiked, is slowly rising or went quiet versus a baseline. Spikes are judged against overall traffic, so a busy hour is not an incident.'
 		},
 		{
 			name: 'verify_fix',
@@ -33,6 +37,14 @@
 		{
 			name: 'list_patterns · get_pattern',
 			body: 'Search patterns by text or level. Counts, an hourly histogram and redacted samples with their stack traces.'
+		},
+		{
+			name: 'get_context · get_request',
+			body: 'The redacted lines around an error, or every event of one request in order, so the agent sees what led up to it without the log file.'
+		},
+		{
+			name: 'set_pattern_state · get_release',
+			body: 'Resolve a pattern after a verified fix and hear about it if it regresses. Each release gets a report card: new, regressed and resolved.'
 		},
 		{
 			name: 'add_marker · list_markers',
@@ -48,7 +60,7 @@
 		{
 			n: '01',
 			t: 'Collect',
-			b: 'Follows files like tail -F, rotation safe, or reads stdin. Stack trace lines stay attached to the log line that produced them.'
+			b: 'Follows files like tail -F, stdin, Docker containers, journald units, Kubernetes pods, OpenTelemetry logs or a Loki stream. Stack trace lines stay attached to the log line that produced them.'
 		},
 		{
 			n: '02',
@@ -63,7 +75,7 @@
 		{
 			n: '04',
 			t: 'Store',
-			b: 'A local SQLite file with per-10-second counts, recent samples and markers. Seven days of history by default.'
+			b: 'A local SQLite file with per-10-second counts, recent samples and markers. After a week counts fold into hourly ones, kept for 400 days.'
 		}
 	];
 
@@ -97,7 +109,7 @@
 
 <div class="page">
 	<header class="nav wrap">
-		<a class="brand" href="#top" aria-label="starlist home">
+		<a class="brand" href="#top" aria-label="Starlist home">
 			<svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
 				<circle cx="16" cy="16" r="6.5" fill="url(#bg)" />
 				<ellipse cx="16" cy="16" rx="13" ry="5" fill="none" stroke="#7aa2ff" stroke-width="1.4" transform="rotate(-25 16 16)" />
@@ -106,7 +118,7 @@
 					<radialGradient id="bg"><stop offset="0" stop-color="#fff6d8" /><stop offset=".6" stop-color="#ffc857" /><stop offset="1" stop-color="#ff8a3d" /></radialGradient>
 				</defs>
 			</svg>
-			starlist
+			Starlist
 		</a>
 		<nav aria-label="Sections">
 			<a href="#demo">Demo</a>
@@ -124,12 +136,12 @@
 		<!-- HERO -->
 		<section class="hero wrap">
 			<div class="hero-copy">
-				<p class="eyebrow">Open-source MCP server · Rust · MIT</p>
+				<p class="eyebrow">v1.0 · Open-source MCP server · Rust · MIT</p>
 				<h1>
 					Your logs,<br /><span class="shine">distilled for agents.</span>
 				</h1>
 				<p class="lede">
-					Your apps are stars. starlist puts a small satellite in orbit around each one. It watches the
+					Your apps are stars. Starlist puts a small satellite in orbit around each one. It watches the
 					logs, groups them into patterns, scrubs out secrets and tells your AI agent what actually
 					changed, in a few hundred tokens instead of a firehose.
 				</p>
@@ -159,7 +171,7 @@
 				<h2>Agents drown in raw logs.</h2>
 				<p>
 					Hand an agent a log file and it burns its context on health checks and cache hits, and may
-					read your tokens on the way. starlist sits next to the app and does the reading for it.
+					read your tokens on the way. Starlist sits next to the app and does the reading for it.
 				</p>
 			</div>
 			<div class="versus">
@@ -276,9 +288,9 @@
 					HTTP with bearer tokens, or over stdio for local tools.
 				</p>
 				<p>
-					For larger fleets, an optional <strong>ground station</strong> hub will gather every satellite’s
-					reports so an agent can ask across services.
-					<span class="soon">On the roadmap</span>
+					For larger fleets, an optional <strong>ground station</strong> hub gathers every satellite’s
+					reports, so an agent can ask across services and follow one request through all of them.
+					Each satellite keeps working on its own if the hub goes away.
 				</p>
 			</div>
 		</section>
@@ -288,20 +300,30 @@
 			<div class="section-head center">
 				<p class="eyebrow">Launch</p>
 				<h2>In orbit in a minute.</h2>
-				<p>Works with any language. starlist only reads the text your app already writes, plain lines or JSON.</p>
+				<p>Works with any language. Starlist only reads the text your app already writes, plain lines or JSON.</p>
 			</div>
 			<div class="install-grid">
-				<CopyCode label="Install" code="cargo install --git https://github.com/p-lau/starlist" />
-				<CopyCode label="Follow a log file" code="starlist serve --file /var/log/myapp.log" />
-				<CopyCode label="Or pipe your app through it" code="npm start | starlist serve --stdin --tee" />
-				<CopyCode label="Connect Claude Code" code="claude mcp add --transport http logs http://127.0.0.1:7341/mcp" />
+				<CopyCode label="Install with Cargo" code="cargo install starlist" />
+				<CopyCode label="Or run the container" code="docker pull ghcr.io/p-lau/starlist:1" />
+				<CopyCode label="Find your logs and set up your agent" code="starlist init" />
+				<CopyCode label="Start it and leave it running" code="starlist serve" />
 			</div>
+			<p class="install-note">
+				Prebuilt binaries for Linux, macOS and Windows are on the
+				<a href="{repo}/releases/latest" rel="noopener">releases page</a>. <code>starlist init</code> sets up
+				Claude Code, Cursor, VS Code or Gemini CLI; any other MCP client connects to
+				<code>http://127.0.0.1:7341/mcp</code>. While it runs, a small dashboard is at
+				<code>http://127.0.0.1:7341/</code>.
+			</p>
 		</section>
 	</main>
 
 	<footer class="wrap">
-		<span>starlist · MIT licensed</span>
-		<a href={repo} rel="noopener">GitHub</a>
+		<span>Starlist · MIT licensed</span>
+		<span class="links">
+			<a href="https://crates.io/crates/starlist" rel="noopener">crates.io</a>
+			<a href={repo} rel="noopener">GitHub</a>
+		</span>
 	</footer>
 </div>
 
@@ -732,16 +754,6 @@
 			stroke-dashoffset: -22;
 		}
 	}
-	.soon {
-		display: inline-block;
-		margin-left: 6px;
-		padding: 2px 9px;
-		border-radius: 999px;
-		font: 500 0.7rem var(--font-mono);
-		color: var(--violet);
-		border: 1px solid rgba(182, 156, 255, 0.35);
-		vertical-align: 2px;
-	}
 
 	/* INSTALL */
 	.install {
@@ -752,6 +764,18 @@
 		margin: 0 auto;
 		display: grid;
 		gap: 12px;
+	}
+	.install-note {
+		max-width: 720px;
+		margin: 22px auto 0;
+		color: var(--muted);
+		font-size: 0.94rem;
+		text-align: center;
+	}
+	.install-note code {
+		color: var(--sat);
+		font-size: 0.9em;
+		overflow-wrap: anywhere;
 	}
 
 	footer {
@@ -765,6 +789,10 @@
 	}
 	footer a {
 		color: var(--muted);
+	}
+	footer .links {
+		display: flex;
+		gap: 18px;
 	}
 
 	/* RESPONSIVE */
