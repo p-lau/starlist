@@ -6,15 +6,17 @@
 
 type V = [number, number, number];
 
-/** Size of the drawing (the SVG viewBox is SIZE x SIZE). */
-export const SIZE = 520;
-/** Where the star's centre sits in the drawing: low and left, mostly off-screen. */
-export const CX = 177;
-export const CY = 512;
+/** Size of the drawing (the SVG viewBox is W x H). It is cropped to fit the screen. */
+export const W = 1600;
+export const H = 1000;
+/** The star's centre, far below the drawing, so only a slice of its edge shows:
+ *  rising from the bottom left, highest right of centre. */
+export const CX = 1050;
+export const CY = 2160;
 /** The star's radius. */
-export const R = 374;
+export const R = 1500;
 /** Distance from the viewer to the star's centre. Smaller means stronger perspective. */
-const CAMERA = 1500;
+const CAMERA = 6000;
 
 const add = (a: V, b: V): V => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 const mul = (a: V, k: number): V => [a[0] * k, a[1] * k, a[2] * k];
@@ -46,8 +48,8 @@ const seg = (a: V, b: V) => `M${at(a)}L${at(b)}`;
 
 // ---------------------------------------------------------------- the star
 
-// The star's axis leans toward the viewer and to the right, so its pole is in view.
-const tiltStar = (v: V) => rotZ(rotX(v, 0.62), -0.42);
+// The star's axis leans toward the viewer, so its pole is in view just right of centre.
+const tiltStar = (v: V) => rotZ(rotX(v, 0.6), -0.116);
 
 /**
  * The star's grid of meridians and parallels, turned by `spin` radians about
@@ -67,20 +69,21 @@ export function starGrid(spin: number): string {
 			pen = true;
 		}
 	};
-	const MERIDIANS = 18;
+	const MERIDIANS = 24;
 	for (let m = 0; m < MERIDIANS; m++) {
 		const lon = spin + (m / MERIDIANS) * Math.PI * 2;
 		curve((i) => {
-			const lat = -Math.PI / 2 + (i / 28) * Math.PI;
+			// only the northern half reaches the visible slice
+			const lat = (i / 30) * (Math.PI / 2);
 			return [Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon)];
-		}, 28);
+		}, 30);
 	}
-	for (const deg of [-40, -20, 0, 20, 40, 60, 78]) {
+	for (const deg of [10, 25, 40, 55, 68, 79]) {
 		const lat = (deg * Math.PI) / 180;
 		curve((i) => {
-			const lon = (i / 72) * Math.PI * 2;
+			const lon = (i / 160) * Math.PI * 2;
 			return [Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon)];
-		}, 72);
+		}, 160);
 	}
 	return d;
 }
@@ -88,10 +91,11 @@ export function starGrid(spin: number): string {
 /** Short rays standing off the star's edge, with lengths that look irregular. */
 export function coronaRays(): string {
 	let d = '';
-	for (let i = 0; i < 150; i++) {
-		const a = (i / 150) * Math.PI * 2;
-		const len = 6 + 34 * Math.abs(Math.sin(i * 12.9898) * Math.cos(i * 4.1414)) ** 1.6;
-		const r0 = R + 13;
+	// Only the top of the circle is ever in view (60 to 140 degrees from the right).
+	for (let i = 0; i <= 260; i++) {
+		const a = ((60 + (i / 260) * 80) * Math.PI) / 180;
+		const len = 6 + 40 * Math.abs(Math.sin(i * 12.9898) * Math.cos(i * 4.1414)) ** 1.6;
+		const r0 = R + 18;
 		const x = Math.cos(a);
 		const y = Math.sin(a);
 		d += `M${n(CX + x * r0)} ${n(CY - y * r0)}L${n(CX + x * (r0 + len))} ${n(CY - y * (r0 + len))}`;
@@ -103,16 +107,17 @@ export function coronaRays(): string {
 export function prominences(): string {
 	let d = '';
 	for (const [deg, width, height] of [
-		[38, 7, 30],
-		[63, 5, 20],
-		[97, 8, 36]
+		[79, 1.5, 46],
+		[86, 1, 30],
+		[103, 1.8, 56],
+		[124, 1.3, 40]
 	]) {
 		const a0 = ((deg - width) * Math.PI) / 180;
 		const a1 = ((deg + width) * Math.PI) / 180;
 		const am = (deg * Math.PI) / 180;
 		const p = (a: number, r: number) => `${n(CX + Math.cos(a) * r)} ${n(CY - Math.sin(a) * r)}`;
 		d += `M${p(a0, R)}Q${p(am, R + height * 2)} ${p(a1, R)}`;
-		d += `M${p(a0 + 0.02, R)}Q${p(am, R + height * 1.3)} ${p(a1 - 0.02, R)}`;
+		d += `M${p(a0 + 0.004, R)}Q${p(am, R + height * 1.3)} ${p(a1 - 0.004, R)}`;
 	}
 	return d;
 }
@@ -133,12 +138,14 @@ export type Orbit = {
 	phases: number[];
 };
 
-// A low orbit that crosses in front of the star's face, and a higher one that
-// passes through the sky above its edge. Several satellites share each orbit,
-// so one is nearly always in view.
+// Two orbits that stand almost upright and lean to the right, so they pass
+// over the right-hand side of the picture, clear of the text. A satellite
+// rises over the star's edge from the far side, climbs toward the viewer,
+// and comes down across the star's face, growing as it nears. Only part of
+// each lap is in view, so several share each orbit.
 export const orbits: Orbit[] = [
-	{ radius: 425, tip: -0.5, roll: -0.3, period: 36, scale: 0.8, phases: [0.25, 0.5, 0.75, 0] },
-	{ radius: 520, tip: -0.95, roll: -0.45, period: 52, scale: 0.5, phases: [0.2, 0.53, 0.87] }
+	{ radius: 1760, tip: -0.2, roll: 1.4, period: 52, scale: 1.25, phases: [0, 0.25, 0.5, 0.75] },
+	{ radius: 2000, tip: 0.05, roll: 1.425, period: 70, scale: 0.85, phases: [0.14, 0.47, 0.8] }
 ];
 
 /** Every satellite: which orbit it is on and where it starts. */
@@ -151,7 +158,7 @@ export function orbitTrack(o: Orbit): { back: string; front: string } {
 	const turn = frameOf(o);
 	const out = { back: '', front: '' };
 	let last: 'back' | 'front' | undefined;
-	const STEPS = 120;
+	const STEPS = 360;
 	for (let i = 0; i <= STEPS; i++) {
 		const a = (i / STEPS) * Math.PI * 2;
 		const p = turn([Math.cos(a) * o.radius, 0, Math.sin(a) * o.radius]);
@@ -181,6 +188,12 @@ export type Satellite = {
 };
 
 /** Where a satellite is at `time` seconds and what it looks like from here. */
+export function where(o: Orbit, phase: number, time: number) {
+	const a = (time / o.period + phase) * Math.PI * 2;
+	const pos = mul(frameOf(o)([Math.cos(a), 0, Math.sin(a)]), o.radius);
+	return [...project(pos), pos[2]];
+}
+
 export function satellite(o: Orbit, phase: number, time: number): Satellite {
 	const turn = frameOf(o);
 	const a = (time / o.period + phase) * Math.PI * 2;
@@ -191,7 +204,7 @@ export function satellite(o: Orbit, phase: number, time: number): Satellite {
 	const [sx, sy, ss] = project(pos);
 	const margin = 130 * o.scale * ss;
 	const hidden = pos[2] <= 0 && Math.hypot(sx - CX, sy - CY) < R - margin;
-	if (hidden || sx < -margin || sx > SIZE + margin || sy < -margin || sy > SIZE + margin) {
+	if (hidden || sx < -margin || sx > W + margin || sy < -margin || sy > H + margin) {
 		return { front: pos[2] > 0, size: 1, parts: [], link: '' };
 	}
 

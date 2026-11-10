@@ -136,11 +136,12 @@
 
 	<main id="top">
 		<!-- HERO -->
-		<section class="hero wrap">
-			<div class="hero-copy">
+		<section class="hero">
+			<Orbit />
+			<div class="hero-copy wrap">
 				<p class="eyebrow">v1.0 · Open-source MCP server · Rust · MIT</p>
 				<h1>
-					Your logs,<br /><span class="shine">distilled for agents.</span>
+					Your logs,<br /><span class="shine">distilled for&nbsp;agents.</span>
 				</h1>
 				<p class="lede">
 					Your apps are stars. Starlist puts a small satellite in orbit around each one. It watches the
@@ -151,9 +152,6 @@
 					<a class="btn btn-primary" href="#install">Get started</a>
 					<a class="btn btn-ghost" href={repo} rel="noopener">View source</a>
 				</div>
-			</div>
-			<div class="hero-art">
-				<Orbit />
 			</div>
 		</section>
 
@@ -448,13 +446,16 @@
 	}
 
 	/* HERO */
+	/* The hero runs the full width, with the star's edge drawn behind it. The
+	   space below the buttons is where the edge shows. */
 	.hero {
-		display: grid;
-		grid-template-columns: 1.1fr 1fr;
-		align-items: center;
-		gap: 40px;
-		padding-top: 56px;
-		padding-bottom: 40px;
+		position: relative;
+		margin-top: -96px;
+		padding-top: 152px;
+		padding-bottom: clamp(220px, 30vw, 380px);
+	}
+	.hero-copy {
+		position: relative;
 	}
 	h1 {
 		font-size: clamp(2.6rem, 6.4vw, 4.9rem);
@@ -481,10 +482,11 @@
 
 	/* STATS */
 	.stats {
+		position: relative;
 		display: grid;
 		grid-template-columns: repeat(4, 1fr);
 		gap: 1px;
-		margin-top: 30px;
+		margin-top: -40px;
 		margin-bottom: 120px;
 	}
 	.stat {
@@ -908,13 +910,12 @@
 
 	/* RESPONSIVE */
 	@media (max-width: 960px) {
-		.hero,
 		.demo,
 		.fleet {
 			grid-template-columns: 1fr;
 		}
 		.hero {
-			padding-top: 24px;
+			padding-top: 120px;
 			text-align: center;
 		}
 		.lede {
@@ -923,9 +924,6 @@
 		}
 		.ctas {
 			justify-content: center;
-		}
-		.hero-art {
-			order: -1;
 		}
 		.grid {
 			grid-template-columns: repeat(2, 1fr);
@@ -956,6 +954,9 @@
 		}
 		.gh {
 			margin-left: auto;
+		}
+		.hero {
+			padding-bottom: 250px;
 		}
 		.stats {
 			grid-template-columns: repeat(2, 1fr);

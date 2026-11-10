@@ -1,5 +1,6 @@
-<!-- Hero illustration, as line art: a star seen close up, its edge sweeping
-     across the lower left, with satellites in orbit around it.
+<!-- Hero backdrop, as line art: a star seen close up, its edge sweeping across
+     the whole width of the screen, with satellites in orbit around it. The
+     drawing is cropped to the screen, keeping its bottom edge.
 
      The satellites are real 3D models (see scene.ts). Each keeps one face to
      the star as it goes round, so from here it turns: front, side, back. It
@@ -12,7 +13,7 @@
        front  satellites and orbit lines in front (redrawn every frame) -->
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { CX, CY, R, SIZE, coronaRays, fleet, orbitTrack, orbits, prominences, satellite, starGrid } from '#lib/scene.ts';
+	import { CX, CY, H, R, W, coronaRays, fleet, orbitTrack, orbits, prominences, satellite, starGrid } from '#lib/scene.ts';
 
 	const SPIN = 0.045; // radians a second
 	const tracks = orbits.map(orbitTrack);
@@ -72,37 +73,38 @@
 {/snippet}
 
 <div class="scene" aria-hidden="true" bind:this={scene}>
-	<svg viewBox="0 0 {SIZE} {SIZE}" focusable="false">
+	<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
 		{#each tracks as track, i}
 			<path class="track back t{i}" d={track.back} />
 		{/each}
 		{@render craft(false)}
 	</svg>
 
-	<svg viewBox="0 0 {SIZE} {SIZE}" focusable="false">
+	<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
 		<defs>
 			<radialGradient id="ol-body" gradientUnits="userSpaceOnUse" cx={CX} cy={CY} r={R}>
-				<stop offset="0.55" stop-color="#120b0c" />
-				<stop offset="0.86" stop-color="#2a1608" />
+				<stop offset="0.8" stop-color="#0d0910" />
+				<stop offset="0.95" stop-color="#24130a" />
 				<stop offset="1" stop-color="#6b3608" />
 			</radialGradient>
-			<filter id="ol-halo" filterUnits="userSpaceOnUse" x="-120" y="-20" width="760" height="660">
-				<feGaussianBlur stdDeviation="16" />
+			<!-- Blur only the visible slice: a filter over the whole star would be enormous. -->
+			<filter id="ol-halo" filterUnits="userSpaceOnUse" x="-100" y="300" width={W + 200} height={H - 260}>
+				<feGaussianBlur stdDeviation="26" />
 			</filter>
-			<filter id="ol-edge" filterUnits="userSpaceOnUse" x="-120" y="-20" width="760" height="660">
-				<feGaussianBlur stdDeviation="3" />
+			<filter id="ol-edge" filterUnits="userSpaceOnUse" x="-100" y="400" width={W + 200} height={H - 360}>
+				<feGaussianBlur stdDeviation="4" />
 			</filter>
 		</defs>
-		<circle cx={CX} cy={CY} r={R + 6} fill="none" stroke="#ff8a3d" stroke-width="30" opacity="0.5" filter="url(#ol-halo)" />
+		<circle cx={CX} cy={CY} r={R + 10} fill="none" stroke="#ff8a3d" stroke-width="56" opacity="0.5" filter="url(#ol-halo)" />
 		<path class="rays" d={rays} />
 		<path class="loops" d={loops} />
 		<circle cx={CX} cy={CY} r={R} fill="url(#ol-body)" />
-		<circle cx={CX} cy={CY} r={R} fill="none" stroke="#ffc857" stroke-width="5" opacity="0.8" filter="url(#ol-edge)" />
+		<circle cx={CX} cy={CY} r={R} fill="none" stroke="#ffc857" stroke-width="8" opacity="0.8" filter="url(#ol-edge)" />
 		<circle class="limb" cx={CX} cy={CY} r={R} />
-		<circle class="limb outer" cx={CX} cy={CY} r={R + 7} />
+		<circle class="limb outer" cx={CX} cy={CY} r={R + 10} />
 	</svg>
 
-	<svg viewBox="0 0 {SIZE} {SIZE}" focusable="false">
+	<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
 		<defs>
 			<!-- The grid is brightest toward the edge and fades toward the middle of the star. -->
 			<radialGradient id="ol-grid-ink" gradientUnits="userSpaceOnUse" cx={CX} cy={CY} r={R}>
@@ -113,7 +115,7 @@
 		<path class="grid" d={grid} />
 	</svg>
 
-	<svg viewBox="0 0 {SIZE} {SIZE}" focusable="false">
+	<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
 		{#each tracks as track, i}
 			<path class="track t{i}" d={track.front} />
 		{/each}
@@ -123,15 +125,18 @@
 
 <style>
 	.scene {
-		position: relative;
-		width: min(520px, 92vw);
-		aspect-ratio: 1;
-		margin: 0 auto;
-		/* The star runs off the sides and the bottom: fade it out there. */
-		mask-image:
-			linear-gradient(to top, transparent, #000 22%),
-			linear-gradient(to right, transparent, #000 14%, #000 88%, transparent);
-		mask-composite: intersect;
+		position: absolute;
+		inset: 0;
+		/* Fade into the page at the bottom, and a little at the very top. */
+		mask-image: linear-gradient(transparent, #000 12%, #000 72%, transparent);
+	}
+	/* On narrow screens a box as tall as the hero would zoom the drawing in
+	   until only a sliver of the star showed: keep it short and at the bottom. */
+	@media (max-width: 720px) {
+		.scene {
+			top: auto;
+			height: min(150vw, 100%);
+		}
 	}
 	svg {
 		position: absolute;
@@ -150,33 +155,33 @@
 
 	.limb {
 		stroke: #ffd98a;
-		stroke-width: 1.6;
+		stroke-width: 2.2;
 	}
 	.limb.outer {
 		stroke: #ffb04a;
-		stroke-width: 0.8;
-		stroke-dasharray: 2 6;
+		stroke-width: 1.1;
+		stroke-dasharray: 3 9;
 		opacity: 0.7;
 	}
 	.rays {
 		stroke: #ffb04a;
-		stroke-width: 1;
+		stroke-width: 1.3;
 		opacity: 0.55;
 	}
 	.loops {
 		stroke: #ffc857;
-		stroke-width: 1.1;
+		stroke-width: 1.5;
 		opacity: 0.8;
 	}
 	.grid {
 		stroke: url(#ol-grid-ink);
-		stroke-width: 0.9;
+		stroke-width: 1.2;
 	}
 
 	.track {
 		stroke: var(--orbit);
-		stroke-width: 0.9;
-		stroke-dasharray: 1 7;
+		stroke-width: 1.3;
+		stroke-dasharray: 2 10;
 		opacity: 0.75;
 	}
 	.track.t1 {
@@ -190,7 +195,7 @@
 		--ink: var(--sat);
 		--cells: rgba(79, 108, 255, 0.34);
 		stroke: var(--ink);
-		stroke-width: calc(var(--k) * 1.05px);
+		stroke-width: calc(var(--k) * 1.6px);
 	}
 	.sat.s1 {
 		--ink: #cdbcff;
@@ -206,8 +211,8 @@
 		fill: color-mix(in srgb, var(--ink) 12%, #0b0f2a);
 	}
 	.link {
-		stroke-width: 0.8px;
-		stroke-dasharray: 2 5;
+		stroke-width: 1.2px;
+		stroke-dasharray: 3 8;
 		opacity: 0.45;
 	}
 </style>
