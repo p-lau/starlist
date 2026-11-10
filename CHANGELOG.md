@@ -4,11 +4,14 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-19
+
 ### Fixed
 
 - journald: a stack trace an app writes line by line (each line its own journal entry) is kept as one event again, instead of one pattern per frame.
 - Loki: Loki 3 labels each line with a `detected_level`, which split a stream's stack traces across patterns. Streams are now read by their own labels (`categorize-labels`), also when the query parses labels with `| json` or `| logfmt`.
 - Kubernetes: each container of a pod is read as its own stream, so a sidecar's lines no longer break the app's stack traces, and lines that arrive slightly out of time order from different containers are no longer skipped.
+
 ### Added
 
 - `starlist-ci`, a separate binary for CI logs: compares a failing run's log with the last passing run's and reports new, grown and stopped patterns with line numbers, steps and code locations, as JSON within the same size limits as the MCP tools, or as Markdown. Reads plain output, `gh run view --log` output and raw GitHub Actions logs, from a file or stdin, and writes nothing to disk. See [ci/README.md](ci/README.md).
@@ -20,6 +23,13 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 
 - Bundled SQLite updated to 3.54.1 (rusqlite 0.42); rmcp updated to 3.10 and ureq to 3.5.2.
 - Library: `WhatsNewData::tally` and `DeployDiff::tally` are now structs with named counts (`FindingCounts`, `ChangeCounts`) instead of arrays. Tool and API output are unchanged.
+
+### Packaging
+
+- starlist-core now ships with a README and the license text, and starlist-ci with the license text.
+- All three crates declare their minimum Rust version (1.89), and CI checks the workspace with it.
+- The crates.io package no longer includes the unused Brotli copies of the dashboard.
+- docs/versioning.md says the `starlist` crate's Rust library isn't a stable interface.
 
 ## [1.0.0] - 2026-11-10
 
@@ -48,5 +58,6 @@ The first public release. Everything below is new.
 - Seven days of 10-second counts and 400 days of hourly history, with a bounded buffer of redacted raw lines (`--raw-size`, `--no-raw`).
 - The log engine as a separate crate, `starlist-core`.
 
-[Unreleased]: https://github.com/p-lau/starlist/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/p-lau/starlist/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/p-lau/starlist/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/p-lau/starlist/releases/tag/v1.0.0
