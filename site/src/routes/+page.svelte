@@ -4,6 +4,7 @@
 	import Terminal from '#lib/Terminal.svelte';
 	import CopyCode from '#lib/CopyCode.svelte';
 	import { reveal } from '#lib/reveal.ts';
+	import { spotlight, tilt } from '#lib/effects.ts';
 
 	const repo = 'https://github.com/p-lau/starlist';
 	const title = 'Starlist: your logs, distilled for AI agents';
@@ -107,7 +108,8 @@
 
 <Starfield />
 
-<div class="page">
+<div class="page" {@attach spotlight}>
+	<div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
 	<header class="nav wrap">
 		<a class="brand" href="#top" aria-label="Starlist home">
 			<svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
@@ -222,7 +224,9 @@
 				</ol>
 				<p class="fine">Example output, trimmed for the page.</p>
 			</div>
-			<Terminal />
+			<div class="term-frame" {@attach tilt}>
+				<Terminal />
+			</div>
 		</section>
 
 		<!-- TOOLS -->
@@ -232,9 +236,9 @@
 				<h2>A small set of tools that do one job well.</h2>
 				<p>Times accept <code>30m</code>, <code>2h</code>, an ISO time or a marker name.</p>
 			</div>
-			<div class="grid">
-				{#each tools as tool}
-					<article class="card">
+			<div class="grid stagger">
+				{#each tools as tool, i}
+					<article class="card spot" style="--n:{i}">
 						<h3><code>{tool.name}</code></h3>
 						<p>{tool.body}</p>
 					</article>
@@ -249,9 +253,9 @@
 				<h2>One orbit, four stages.</h2>
 				<p>Everything happens on the same machine as your app. No log pipeline, no hosted backend.</p>
 			</div>
-			<ol class="steps">
-				{#each steps as s}
-					<li>
+			<ol class="steps stagger">
+				{#each steps as s, i}
+					<li style="--n:{i * 2}">
 						<span class="num">{s.n}</span>
 						<h3>{s.t}</h3>
 						<p>{s.b}</p>
@@ -302,7 +306,7 @@
 				<h2>In orbit in a minute.</h2>
 				<p>Works with any language. Starlist only reads the text your app already writes, plain lines or JSON.</p>
 			</div>
-			<div class="install-grid">
+			<div class="install-grid stagger">
 				<CopyCode label="Install with Cargo" code="cargo install starlist" />
 				<CopyCode label="Or run the container" code="docker pull ghcr.io/p-lau/starlist:1" />
 				<CopyCode label="Find your logs and set up your agent" code="starlist init" />
@@ -341,12 +345,70 @@
 	}
 
 	/* NAV */
+	/* Slow drifting light behind the hero. Each blob is a plain gradient that
+	   only ever moves by transform, so the compositor does all the work. */
+	.aurora {
+		position: absolute;
+		top: -260px;
+		left: 50%;
+		width: min(1500px, 140vw);
+		height: 980px;
+		transform: translateX(-50%);
+		z-index: -1;
+		pointer-events: none;
+		mask-image: linear-gradient(#000 55%, transparent);
+	}
+	.aurora i {
+		position: absolute;
+		width: 62%;
+		aspect-ratio: 1;
+		border-radius: 50%;
+		will-change: transform;
+		animation: float 22s ease-in-out infinite alternate;
+	}
+	.aurora i:nth-child(1) {
+		left: 38%;
+		top: 0;
+		background: radial-gradient(closest-side, rgba(122, 162, 255, 0.34), transparent);
+	}
+	.aurora i:nth-child(2) {
+		left: 2%;
+		top: 14%;
+		background: radial-gradient(closest-side, rgba(182, 156, 255, 0.26), transparent);
+		animation-duration: 28s;
+		animation-delay: -9s;
+	}
+	.aurora i:nth-child(3) {
+		left: 30%;
+		top: 30%;
+		width: 48%;
+		background: radial-gradient(closest-side, rgba(255, 138, 61, 0.2), transparent);
+		animation-duration: 34s;
+		animation-delay: -17s;
+	}
+	@keyframes float {
+		from {
+			transform: translate3d(-9%, -5%, 0) scale(1);
+		}
+		to {
+			transform: translate3d(11%, 8%, 0) scale(1.18);
+		}
+	}
+
 	.nav {
 		display: flex;
 		align-items: center;
 		gap: 24px;
-		padding-top: 22px;
-		padding-bottom: 22px;
+		position: sticky;
+		top: 10px;
+		z-index: 10;
+		margin-top: 10px;
+		padding-top: 12px;
+		padding-bottom: 12px;
+		border-radius: 999px;
+		border: 1px solid var(--line);
+		background: #090b1a;
+		box-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.9);
 	}
 	.brand {
 		display: flex;
@@ -440,7 +502,7 @@
 	}
 
 	section {
-		scroll-margin-top: 30px;
+		scroll-margin-top: 96px;
 	}
 
 	.section-head {
@@ -482,7 +544,6 @@
 		border-radius: var(--radius);
 		border: 1px solid var(--line);
 		background: var(--panel);
-		backdrop-filter: blur(8px);
 		overflow: hidden;
 	}
 	.pane-h {
@@ -619,6 +680,44 @@
 		font-size: 0.8rem;
 		color: var(--faint);
 	}
+	/* The terminal leans toward the pointer and has a light running round its edge:
+	   a wide conic gradient spinning behind a 1px gap. */
+	.term-frame {
+		position: relative;
+		padding: 1px;
+		border-radius: calc(var(--radius) + 1px);
+		overflow: hidden;
+		box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8);
+		transform: perspective(1400px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+		transition: transform 0.25s ease-out;
+	}
+	.term-frame::before {
+		content: '';
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		width: 1400px;
+		height: 1400px;
+		margin: -700px;
+		background: conic-gradient(
+			transparent 0 62%,
+			rgba(122, 162, 255, 0.9),
+			var(--sat),
+			var(--violet),
+			transparent 96%
+		);
+		animation: turn 9s linear infinite;
+	}
+	.term-frame > :global(*) {
+		position: relative;
+		box-shadow: none;
+		border-color: rgba(140, 160, 255, 0.16);
+	}
+	@keyframes turn {
+		to {
+			transform: rotate(1turn);
+		}
+	}
 
 	/* TOOLS */
 	.tools {
@@ -638,14 +737,10 @@
 		border-radius: var(--radius);
 		border: 1px solid var(--line);
 		background: var(--panel);
-		backdrop-filter: blur(8px);
-		transition:
-			border-color 0.25s,
-			transform 0.25s;
+		transition: translate 0.25s ease;
 	}
 	.card:hover {
-		border-color: rgba(255, 200, 87, 0.35);
-		transform: translateY(-2px);
+		translate: 0 -3px;
 	}
 	.card h3 {
 		font-size: 1rem;
@@ -683,6 +778,22 @@
 		height: 1px;
 		background: linear-gradient(90deg, var(--star), var(--orbit), var(--violet), var(--sat));
 		opacity: 0.5;
+		transform-origin: left;
+	}
+	/* The line between the stages draws itself as the section scrolls in. */
+	@supports (animation-timeline: view()) {
+		@media (prefers-reduced-motion: no-preference) {
+			.steps::before {
+				animation: draw linear both;
+				animation-timeline: view();
+				animation-range: entry 30% cover 45%;
+			}
+		}
+		@keyframes draw {
+			from {
+				transform: scaleX(0);
+			}
+		}
 	}
 	.steps li {
 		position: relative;
@@ -837,6 +948,11 @@
 	@media (max-width: 720px) {
 		nav {
 			display: none;
+		}
+		.nav {
+			margin-left: 10px;
+			margin-right: 10px;
+			width: auto;
 		}
 		.gh {
 			margin-left: auto;

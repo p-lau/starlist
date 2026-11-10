@@ -1,7 +1,7 @@
 :root {
 	--bg: #05060f;
 	--bg-2: #0a0c1c;
-	--panel: rgba(18, 22, 46, 0.62);
+	--panel: rgba(14, 17, 38, 0.86);
 	--panel-solid: #10142b;
 	--line: rgba(140, 160, 255, 0.14);
 	--line-strong: rgba(140, 160, 255, 0.28);
@@ -114,6 +114,24 @@ h3 {
 	border-color: rgba(159, 231, 255, 0.5);
 }
 
+/* A band of light that crosses the main button on hover. */
+.btn-primary {
+	position: relative;
+	overflow: hidden;
+}
+.btn-primary::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, 0.55) 50%, transparent 65%);
+	transform: translateX(-120%);
+	pointer-events: none;
+}
+.btn-primary:hover::after {
+	transform: translateX(120%);
+	transition: transform 0.7s ease;
+}
+
 .btn:focus-visible,
 button:focus-visible,
 a:focus-visible {
@@ -146,6 +164,65 @@ a:focus-visible {
 	transform: none;
 }
 
+/* Children of .stagger rise one after another once their section is in view. */
+.reveal:not(.in) .stagger > * {
+	opacity: 0;
+}
+.reveal.in .stagger > * {
+	animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+	animation-delay: calc(var(--n, 0) * 70ms + 120ms);
+}
+@keyframes rise {
+	from {
+		opacity: 0;
+		transform: translateY(16px);
+	}
+}
+
+/* .spot: a glow and a lit border that follow the pointer (see effects.ts). */
+.spot {
+	position: relative;
+}
+.spot::before,
+.spot::after {
+	content: '';
+	position: absolute;
+	inset: -1px;
+	border-radius: inherit;
+	opacity: 0;
+	transition: opacity 0.35s ease;
+	pointer-events: none;
+}
+.spot::before {
+	padding: 1px;
+	background: radial-gradient(
+		260px circle at var(--mx, 50%) var(--my, 50%),
+		var(--spot, rgba(255, 200, 87, 0.75)),
+		transparent 70%
+	);
+	-webkit-mask:
+		linear-gradient(#000 0 0) content-box,
+		linear-gradient(#000 0 0);
+	-webkit-mask-composite: xor;
+	mask:
+		linear-gradient(#000 0 0) content-box,
+		linear-gradient(#000 0 0);
+	mask-composite: exclude;
+}
+.spot::after {
+	background: radial-gradient(
+		360px circle at var(--mx, 50%) var(--my, 50%),
+		rgba(159, 231, 255, 0.07),
+		transparent 70%
+	);
+}
+@media (hover: hover) and (pointer: fine) {
+	.spot:hover::before,
+	.spot:hover::after {
+		opacity: 1;
+	}
+}
+
 @media (prefers-reduced-motion: reduce) {
 	html {
 		scroll-behavior: auto;
@@ -154,6 +231,12 @@ a:focus-visible {
 		opacity: 1;
 		transform: none;
 		transition: none;
+	}
+	.reveal:not(.in) .stagger > * {
+		opacity: 1;
+	}
+	.btn-primary::after {
+		display: none;
 	}
 	*,
 	*::before,
