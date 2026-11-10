@@ -21,6 +21,7 @@ pub mod push;
 pub mod server;
 pub mod sources;
 pub mod store;
+pub mod timing;
 
 // The log engine lives in starlist-core; re-exported so `starlist::pattern`
 // and friends keep working.

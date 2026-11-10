@@ -226,6 +226,10 @@ impl Store {
                 SELECT pattern_id, bucket, n FROM counts
                 UNION ALL SELECT pattern_id, bucket, n FROM hourly;",
         )?;
+        // Per-pattern timing overrides: "usual" or "always_alert".
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pattern_timing(pattern_id TEXT PRIMARY KEY, mode TEXT NOT NULL) WITHOUT ROWID;",
+        )?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS raw_req ON raw(request_id, ts) WHERE request_id IS NOT NULL;
              CREATE INDEX IF NOT EXISTS raw_pid_req ON raw(pattern_id, ts) WHERE request_id IS NOT NULL;",
@@ -779,6 +783,7 @@ impl Store {
             )?;
             tx.execute("DELETE FROM patterns WHERE id = ?1", [a])?;
             tx.execute("DELETE FROM pattern_state WHERE pattern_id = ?1", [a])?;
+            tx.execute("DELETE FROM pattern_timing WHERE pattern_id = ?1", [a])?;
             tx.execute(
                 "UPDATE aliases SET canonical = ?1 WHERE canonical = ?2",
                 params![c, a],
@@ -936,6 +941,30 @@ impl Store {
                 "INSERT OR REPLACE INTO pattern_state(pattern_id, state, since, until_ts, until_count, base_total, note)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![pattern_id, s.state, s.since, s.until_ts, s.until_count, s.base_total, s.note],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// Every pattern's timing override (patterns without one are judged from history).
+    pub fn timings(&self) -> R<std::collections::HashMap<String, String>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached("SELECT pattern_id, mode FROM pattern_timing")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// Set a pattern's timing override, or clear it (`None`).
+    pub fn set_timing(&self, pattern_id: &str, mode: Option<&str>) -> R<()> {
+        let conn = self.conn();
+        match mode {
+            None => conn.execute(
+                "DELETE FROM pattern_timing WHERE pattern_id = ?1",
+                [pattern_id],
+            )?,
+            Some(m) => conn.execute(
+                "INSERT OR REPLACE INTO pattern_timing(pattern_id, mode) VALUES (?1, ?2)",
+                params![pattern_id, m],
             )?,
         };
         Ok(())

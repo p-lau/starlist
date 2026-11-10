@@ -102,7 +102,10 @@ impl Detector {
         ) {
             for f in v["findings"].as_array().into_iter().flatten() {
                 let kind = f["kind"].as_str().unwrap_or("");
-                if !matches!(kind, "new" | "returning" | "spike" | "regressed") {
+                // A spike that is usual for this time of day (a nightly job) isn't an incident.
+                if !matches!(kind, "new" | "returning" | "spike" | "regressed")
+                    || f["usual"] == true
+                {
                     continue;
                 }
                 let Some(id) = f["pattern_id"].as_str() else {

@@ -540,6 +540,9 @@ pub struct Finding {
     pub per_hour_baseline: f64,
     /// Why it was flagged, when the kind alone doesn't say.
     pub note: Option<String>,
+    /// A spike within what the same time of day saw on earlier days (a nightly job, say).
+    /// Still listed, after the findings that aren't usual, and not alerted on.
+    pub usual: bool,
 }
 
 /// The result of `whats_new`, before formatting. Findings are sorted: errors
@@ -617,6 +620,8 @@ pub fn whats_new_data(
     let states = crate::issues::States::load(store)?;
     let rel = Releases::load(store)?;
     let rises = crate::diagnose::rises(store, w, now)?;
+    let modes = crate::timing::Modes::load(store)?;
+    let data_start = store.data_start().map_err(db)?.unwrap_or(lo);
     // (group, level, kind order, count) for sorting; group 1 = good news, listed last.
     let mut found: Vec<((u8, u8, u8, i64), Finding)> = vec![];
     let mut tally = [0usize; 5];
@@ -643,20 +648,38 @@ pub fn whats_new_data(
                     count_baseline: before,
                     per_hour_window: a_rate,
                     per_hour_baseline: b_rate,
+                    usual: false,
                 },
             ));
             continue;
         }
+        let mut usual = false;
+        // A daily job's errors look like a spike, or a return when the run before fell just
+        // outside the baseline; compare those with the same time on earlier days.
+        let mut same_time = |note: String| -> Result<String, String> {
+            let mode = modes.get(&row.id);
+            Ok(
+                match crate::timing::same_time(store, &row.id, mode, after, split, now, data_start)?
+                {
+                    crate::timing::SameTime::Usual(n) => {
+                        usual = true;
+                        format!("{note} {n}")
+                    }
+                    crate::timing::SameTime::Worse(n) => format!("{note} {n}"),
+                    crate::timing::SameTime::Unknown => note,
+                },
+            )
+        };
         let (kind, order, note) = if after > 0 && row.first_seen >= split {
             ("new", 0u8, None)
         } else if after > 0 && before == 0 {
             (
                 "returning",
                 1,
-                Some(format!(
+                Some(same_time(format!(
                     "Back after a quiet baseline; first seen {}.",
                     fmt_t(row.first_seen, now, Detail::Brief)
-                )),
+                ))?),
             )
         } else if after >= 5 && before > 0 && a_rate >= 3.0 * b_rate * traffic.max(1.0) {
             let x = a_rate / b_rate.max(0.001);
@@ -665,7 +688,7 @@ pub fn whats_new_data(
             } else {
                 format!("{x:.1}x its baseline rate.")
             };
-            ("spike", 2, Some(note))
+            ("spike", 2, Some(same_time(note)?))
         } else if let Some(r) = rises.get(&row.id) {
             ("rising", 2, Some(r.note()))
         } else if after == 0 && (before as f64) * w / b >= 5.0 {
@@ -681,7 +704,7 @@ pub fn whats_new_data(
             continue;
         };
         tally[if kind == "rising" { 4 } else { order as usize }] += 1;
-        let group = u8::from(kind == "gone_quiet");
+        let group = u8::from(kind == "gone_quiet" || usual);
         found.push((
             (group, 4 - lvl, order, -after),
             Finding {
@@ -692,6 +715,7 @@ pub fn whats_new_data(
                 per_hour_window: a_rate,
                 per_hour_baseline: b_rate,
                 note,
+                usual,
             },
         ));
     }
@@ -807,13 +831,19 @@ pub fn whats_new(
             if let Some(n) = &f.note {
                 // The note was written for brief output; redo the time in full mode.
                 v["note"] = json!(if d.full() && f.kind == "returning" {
-                    format!(
-                        "Back after a quiet baseline; first seen {}.",
-                        fmt_t(f.row.first_seen, now, d)
-                    )
+                    let first = |d| {
+                        format!(
+                            "Back after a quiet baseline; first seen {}.",
+                            fmt_t(f.row.first_seen, now, d)
+                        )
+                    };
+                    n.replacen(&first(Detail::Brief), &first(d), 1)
                 } else {
                     n.clone()
                 });
+            }
+            if f.usual {
+                v["usual"] = json!(true);
             }
             v["count_in_window"] = json!(f.count_window);
             v["per_hour"] = if d.full() {
@@ -881,6 +911,8 @@ pub struct FixCheck {
     pub wait_minutes: Option<f64>,
     /// Set when traffic dropped too much to trust a fixed or reduced verdict.
     pub caveat: Option<String>,
+    /// The hours of the day it usually occurs in, when it keeps to some.
+    pub usual_hours: Option<String>,
 }
 
 /// Did this pattern stop (or drop) after a point in time? Typed result.
@@ -917,6 +949,7 @@ pub fn verify_fix_data(
         confidence: None,
         wait_minutes: None,
         caveat: None,
+        usual_hours: None,
     };
 
     if row.first_seen >= split {
@@ -961,7 +994,62 @@ pub fn verify_fix_data(
     out.after_count = a;
     out.expected_after = Some((expected * 10.0).round() / 10.0);
 
-    let (verdict, explanation) = if b == 0 {
+    // An error that keeps to certain hours (a nightly job) says nothing by being quiet
+    // outside them, so judge it by whether those hours have come round since the split.
+    // Its usual hours are worked out from before the split, so the fix doesn't hide them.
+    let usual = if a == 0 {
+        let start = store.data_start().map_err(db)?.unwrap_or(row.first_seen);
+        crate::timing::profile(store, &row.id, split, start)?
+    } else {
+        None
+    };
+    out.usual_hours = usual.as_ref().map(|p| p.note());
+    let (verdict, explanation) = if let Some(p) = &usual {
+        match p.passed_since(split, now) {
+            Err(at) => {
+                out.wait_minutes = Some(((at - now) / 60.0).ceil().max(1.0));
+                (
+                    "too_early",
+                    format!(
+                        "None since the split, but it usually occurs around {}, and those hours haven't fully come round since. Check again after {}.",
+                        p.describe(),
+                        fmt_time(at, now)
+                    ),
+                )
+            }
+            Ok(n) => {
+                let exp = p.per_day * n as f64;
+                out.expected_after = Some((exp * 10.0).round() / 10.0);
+                if exp >= MIN_EXPECTED {
+                    out.confidence = Some(if n >= 2 && exp >= 2.0 * MIN_EXPECTED {
+                        "high"
+                    } else {
+                        "medium"
+                    });
+                    (
+                        "fixed",
+                        format!(
+                            "Its usual hours ({}) have come round {n} time{} since the split without it; about {exp:.0} would have been expected.",
+                            p.describe(),
+                            if n == 1 { "" } else { "s" }
+                        ),
+                    )
+                } else {
+                    let days = (MIN_EXPECTED / p.per_day.max(0.01)).ceil() - n as f64;
+                    let wait = (days.max(1.0) * 24.0 * 60.0).ceil();
+                    out.wait_minutes = Some(wait);
+                    (
+                        "too_early",
+                        format!(
+                            "None in its usual hours ({}) since the split, but it is rare even then (~{:.1} a day). Check again in about {wait:.0} minutes.",
+                            p.describe(),
+                            p.per_day
+                        ),
+                    )
+                }
+            }
+        }
+    } else if b == 0 {
         (
             "not_active_before",
             format!(
@@ -1074,6 +1162,7 @@ pub fn verify_fix(
             base["confidence"] = json!(c.confidence);
             base["wait_minutes"] = json!(c.wait_minutes);
             base["caveat"] = json!(c.caveat);
+            base["usual_hours"] = json!(c.usual_hours);
             base["verdict"] = json!(c.verdict);
             base["explanation"] = json!(c.explanation);
         }
@@ -1324,6 +1413,14 @@ pub fn get_pattern(
     v["count_last_hour"] = json!(store.count(&row.id, now - 3600.0, now).map_err(db)?);
     v["count_last_24h"] = json!(store.count(&row.id, day, now).map_err(db)?);
     v["hourly_last_24h"] = json!(store.histogram(&row.id, day, now, 3600.0).map_err(db)?);
+    let timing = crate::timing::Modes::load(store)?.get(&row.id);
+    if timing != crate::timing::Mode::Auto {
+        v["timing"] = json!(timing.name());
+    }
+    let start = store.data_start().map_err(db)?.unwrap_or(row.first_seen);
+    if let Some(p) = crate::timing::profile(store, &row.id, now, start)? {
+        v["usual_hours"] = json!(p.note());
+    }
     let fields: Vec<String> = crate::metrics::summaries(store, Some(&row.id), day, now)
         .map_err(db)?
         .iter()
@@ -1740,20 +1837,23 @@ pub fn request_timeline(
     Ok(v)
 }
 
-/// MCP: change a pattern's issue state.
+/// MCP: change a pattern's issue state, its timing override, or both.
+#[allow(clippy::too_many_arguments)]
 pub fn set_pattern_state(
     store: &Store,
     pattern_id: &str,
-    state: &str,
+    state: Option<&str>,
+    timing: Option<&str>,
     ignore_for: Option<&str>,
     ignore_count: Option<i64>,
     note: Option<&str>,
     now: f64,
 ) -> AResult {
-    let (row, eff) = crate::issues::set_state(
+    let (row, eff) = crate::issues::set_state_and_timing(
         store,
         pattern_id,
         state,
+        timing,
         ignore_for,
         ignore_count,
         note,
@@ -1764,6 +1864,7 @@ pub fn set_pattern_state(
         "pattern_id": row.id,
         "template": truncate(&row.template, 120),
         "state": eff.name(),
+        "timing": crate::timing::Modes::load(store)?.get(&row.id).name(),
         "note": crate::issues::describe(&eff, &rel, now),
     })))
 }

@@ -420,6 +420,7 @@ async fn whats_new(
                 json!({
                     "kind": f.kind,
                     "note": f.note,
+                    "usual": f.usual,
                     "count_window": f.count_window,
                     "count_baseline": f.count_baseline,
                     "per_hour_window": f.per_hour_window,
@@ -625,6 +626,7 @@ async fn verify(
             "confidence": c.confidence,
             "wait_minutes": c.wait_minutes,
             "caveat": c.caveat,
+            "usual_hours": c.usual_hours,
         }))
     })
     .await
@@ -857,7 +859,8 @@ async fn alert_stream(State(s): State<ApiState>) -> Result<Response, ApiError> {
 
 #[derive(Deserialize)]
 struct NewState {
-    state: String,
+    state: Option<String>,
+    timing: Option<String>,
     ignore_for: Option<String>,
     ignore_count: Option<i64>,
     note: Option<String>,
@@ -872,10 +875,11 @@ async fn set_state(
     blocking(move || {
         let store = &s.store;
         let now = analysis::now();
-        let (row, _) = crate::issues::set_state(
+        let (row, _) = crate::issues::set_state_and_timing(
             store,
             &id,
-            &b.state,
+            b.state.as_deref(),
+            b.timing.as_deref(),
             b.ignore_for.as_deref(),
             b.ignore_count,
             b.note.as_deref(),

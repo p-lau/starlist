@@ -11,13 +11,13 @@ Release build: ~5 MB static binary, ~11 MB memory while serving.
 | Tool | What it answers |
 |---|---|
 | `diagnose` | Start here. The likely causes of what is wrong now, ranked, in one call: why each stands out, the deploy it started with, its code location, sample lines, and the lines of a request that hit the top one. With nothing new, the busiest warnings and errors. |
-| `whats_new` | Every pattern that appeared for the first time, came back, spiked, is slowly rising, or went quiet in the last window vs. a baseline. Spikes are judged against overall traffic, so a busy hour alone isn't flagged. A slow rise is a pattern whose share of the logs grew (over the window, or over the last 3 hours) by more than chance and more than it swung at any point in the day before. Errors first. |
-| `verify_fix` | Did this error stop after the fix? Verdicts: `fixed`, `reduced`, `still_occurring`, `worse`, `too_early` (with minutes to wait), `appeared_after`, `not_active_before`. Warns when traffic dropped too much to tell. |
+| `whats_new` | Every pattern that appeared for the first time, came back, spiked, is slowly rising, or went quiet in the last window vs. a baseline. Spikes are judged against overall traffic, so a busy hour alone isn't flagged. A slow rise is a pattern whose share of the logs grew (over the window, or over the last 3 hours) by more than chance and more than it swung at any point in the day before. A spike that matches the same time on earlier days (a nightly job) is labelled `usual` and listed last instead of hidden. Errors first. |
+| `verify_fix` | Did this error stop after the fix? Verdicts: `fixed`, `reduced`, `still_occurring`, `worse`, `too_early` (with minutes to wait), `appeared_after`, `not_active_before`. Warns when traffic dropped too much to tell. An error that keeps to certain hours isn't called fixed until those hours have come round. |
 | `compare_deploy` | Everything that changed around a deploy (the latest one by default): new patterns (likely regressions), increased, stopped, decreased. |
 | `list_patterns` / `get_pattern` | Find patterns by text or level; counts, hourly histogram, redacted samples with stack traces. |
 | `get_context` | The redacted lines just before and after an error (or any time), so the agent sees what led up to it without the log file. |
 | `get_request` | Every event of one request, in order: the path that led to an error. Findings carry an `example_request` ID to start from. |
-| `set_pattern_state` | Resolve a pattern after a verified fix (it comes back as `regressed` if it occurs again), resolve it from the next release on, ignore it for a while or for a number of events, or reopen it. |
+| `set_pattern_state` | Resolve a pattern after a verified fix (it comes back as `regressed` if it occurs again), resolve it from the next release on, ignore it for a while or for a number of events, or reopen it. `timing` marks it as expected at set times (`usual`) or never usual (`always_alert`). |
 | `get_release` | A release's report card: new, regressed and resolved patterns, and its error rate against the previous release. |
 | `merge_patterns` | Merge patterns that are really one issue; the other IDs keep working. |
 | `add_marker` / `list_markers` | Name a point in time ("fix-currency"). Deploys are also detected from lines like `Starting api version 1.4.2`. |
