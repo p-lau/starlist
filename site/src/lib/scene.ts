@@ -186,13 +186,11 @@ export type Satellite = {
 	size: number;
 	/** Its parts, furthest first, so nearer parts cover them. */
 	parts: Part[];
-	/** The path it just flew, in pieces that fade with age: newest first. */
-	trail: { d: string; fade: number }[];
 	/** Where its beacon is, and how large. */
 	beacon: [number, number, number];
 };
 
-const EMPTY = { size: 1, parts: [], trail: [], beacon: [0, 0, 0] as [number, number, number] };
+const EMPTY = { size: 1, parts: [], beacon: [0, 0, 0] as [number, number, number] };
 
 /** Where a satellite is at `time` seconds and what it looks like from here. */
 export function where(o: Orbit, phase: number, time: number) {
@@ -301,30 +299,12 @@ export function satellite(o: Orbit, phase: number, time: number): Satellite {
 
 	items.sort((p, q) => p.z - q.z);
 
-	// Trail: where it was over the last few seconds, as short pieces that fade
-	// out with age. Pieces behind the star are left out, as the star hides them.
-	const trail: Satellite['trail'] = [];
-	const PIECES = 16;
-	const step = o.period * 0.0035;
-	const at = (t: number): V => mul(turn([Math.cos(t), 0, Math.sin(t)]), o.radius);
-	const behind = (p: V) => {
-		const [x, y] = project(p);
-		return p[2] < 0 && Math.hypot(x - CX, y - CY) < R;
-	};
-	let prev = at(a - (0.6 * step * Math.PI * 2) / o.period);
-	for (let i = 1; i <= PIECES; i++) {
-		const next = at(a - ((i + 0.6) * step * Math.PI * 2) / o.period);
-		if (!behind(prev) && !behind(next)) trail.push({ d: seg(prev, next), fade: 1 - i / (PIECES + 1) });
-		prev = next;
-	}
-
 	// The beacon sits on the antenna's tip, so nothing ever covers it.
 	const lamp = project(w(7, BY + 33, -8));
 	return {
 		front: pos[2] > 0,
 		size: project(pos)[2] * k,
 		parts: items.map((i) => i.part),
-		trail,
 		beacon: [lamp[0], lamp[1], 2.6 * k * lamp[2]]
 	};
 }

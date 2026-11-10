@@ -64,9 +64,6 @@
 	{#each sats as sat}
 		{#if sat.front === front && sat.parts.length}
 			<g class="sat s{sat.orbit}" style="--k:{sat.size.toFixed(2)}">
-				{#each sat.trail as piece}
-					<path class="trail" d={piece.d} stroke-opacity={(piece.fade ** 2 * 0.7).toFixed(2)} />
-				{/each}
 				{#each sat.parts as part}
 					<path class={part.kind} d={part.d} />
 					{#if part.light > 0.05}
@@ -233,9 +230,6 @@
 	}
 	.dish {
 		fill: color-mix(in srgb, var(--ink) 12%, #0b0f2a);
-	}
-	.trail {
-		stroke-width: calc(var(--k) * 2.2px);
 	}
 	/* A small light that blinks twice, then rests. */
 	.beacon {

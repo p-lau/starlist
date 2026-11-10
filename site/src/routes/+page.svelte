@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Starfield from '#lib/Starfield.svelte';
 	import Orbit from '#lib/Orbit.svelte';
+	import Hub from '#lib/Hub.svelte';
 	import Terminal from '#lib/Terminal.svelte';
 	import CopyCode from '#lib/CopyCode.svelte';
 	import { reveal } from '#lib/reveal.ts';
@@ -264,23 +265,8 @@
 
 		<!-- CONSTELLATION -->
 		<section class="fleet wrap" {@attach reveal}>
-			<div class="fleet-art" aria-hidden="true">
-				<svg viewBox="0 0 520 300">
-					<defs>
-						<radialGradient id="sg"><stop offset="0" stop-color="#fff6d8" /><stop offset=".55" stop-color="#ffc857" /><stop offset="1" stop-color="#ff8a3d" stop-opacity="0" /></radialGradient>
-					</defs>
-					{#each [[90, 80], [260, 60], [430, 95]] as [x, y], i}
-						<line x1={x} y1={y} x2="260" y2="250" class="beam" style="animation-delay:{i * 0.6}s" />
-						<circle cx={x} cy={y} r="26" fill="url(#sg)" />
-						<ellipse cx={x} cy={y} rx="44" ry="14" class="ring" transform="rotate(-18 {x} {y})" />
-						<circle cx={x + 41} cy={y - 14} r="4" class="satdot" />
-					{/each}
-					<g transform="translate(260 250)">
-						<path d="M-26 22 L0 -6 L26 22 Z" class="station" />
-						<path d="M-18 -18 A26 26 0 0 1 18 -18" class="dish" />
-						<path d="M-10 -28 A14 14 0 0 1 10 -28" class="dish" />
-					</g>
-				</svg>
+			<div class="fleet-art">
+				<Hub />
 			</div>
 			<div class="fleet-copy">
 				<p class="eyebrow">Scale out</p>
@@ -832,42 +818,6 @@
 		align-items: center;
 		margin-bottom: 140px;
 	}
-	.fleet-art svg {
-		width: 100%;
-		height: auto;
-		overflow: visible;
-	}
-	.fleet-art .ring {
-		fill: none;
-		stroke: rgba(122, 162, 255, 0.45);
-	}
-	.fleet-art .satdot {
-		fill: var(--sat);
-		filter: drop-shadow(0 0 4px var(--sat));
-	}
-	.fleet-art .beam {
-		stroke: rgba(159, 231, 255, 0.35);
-		stroke-width: 1.2;
-		stroke-dasharray: 4 7;
-		animation: beam 1.4s linear infinite;
-	}
-	.fleet-art .station {
-		fill: #1a2046;
-		stroke: var(--violet);
-		stroke-width: 1.5;
-	}
-	.fleet-art .dish {
-		fill: none;
-		stroke: var(--violet);
-		stroke-width: 1.5;
-		stroke-linecap: round;
-	}
-	@keyframes beam {
-		to {
-			stroke-dashoffset: -22;
-		}
-	}
-
 	/* INSTALL */
 	.install {
 		margin-bottom: 120px;
