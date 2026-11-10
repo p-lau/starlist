@@ -27,7 +27,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The dashboard is built on one OS so the tests there cover the embedded
       # app; the others test the build without it.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: matrix.os == 'ubuntu-latest'
         with:
           node-version-file: dashboard/.nvmrc
