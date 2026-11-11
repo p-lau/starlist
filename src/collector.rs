@@ -258,6 +258,7 @@ impl<'a> Feeder<'a> {
         }
     }
     /// True when `l` would continue the pending event (see `Assembler::continues`).
+    #[cfg(any(feature = "docker", feature = "journald", feature = "kubernetes"))]
     pub(crate) fn continues(&self, l: &str) -> bool {
         self.asm.continues(l)
     }
