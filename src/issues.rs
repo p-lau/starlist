@@ -253,6 +253,57 @@ pub fn merge(store: &Store, ids: &[String]) -> Result<PatternRow, String> {
         .ok_or_else(|| "The merged pattern disappeared.".into())
 }
 
+/// Split patterns back out of a merged one. `id` names the merged pattern, or
+/// one of the IDs merged into it. `ids` picks which merged IDs to split out;
+/// without it, an `id` that was merged in is split out alone, and the merged
+/// pattern's own ID splits out everything merged into it. Returns the merged
+/// pattern as it is now and the patterns split out.
+pub fn split(
+    store: &Store,
+    id: &str,
+    ids: Option<&[String]>,
+) -> Result<(PatternRow, Vec<PatternRow>), String> {
+    let row = store
+        .pattern(id)
+        .map_err(db)?
+        .ok_or_else(|| format!("Unknown pattern_id '{id}'."))?;
+    let merged = store.merged_ids(&row.id).map_err(db)?;
+    if merged.is_empty() {
+        return Err(format!(
+            "Pattern '{}' has no other patterns merged into it.",
+            row.id
+        ));
+    }
+    let picked: Vec<String> = match ids {
+        Some(ids) if !ids.is_empty() => {
+            for i in ids {
+                if !merged.contains(i) {
+                    return Err(format!(
+                        "'{i}' isn't merged into '{}'. Merged into it: {}.",
+                        row.id,
+                        merged.join(", ")
+                    ));
+                }
+            }
+            ids.to_vec()
+        }
+        _ if id != row.id => vec![id.to_string()],
+        _ => merged,
+    };
+    let done = store.split_patterns(&row.id, &picked).map_err(db)?;
+    let mut out = vec![];
+    for i in &done {
+        if let Some(r) = store.pattern(i).map_err(db)? {
+            out.push(r);
+        }
+    }
+    let row = store
+        .pattern(&row.id)
+        .map_err(db)?
+        .ok_or("The merged pattern disappeared.")?;
+    Ok((row, out))
+}
+
 /// One release's report card.
 #[derive(Debug, Clone)]
 pub struct Release {

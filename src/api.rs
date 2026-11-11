@@ -46,6 +46,7 @@ pub fn routes(state: ApiState) -> Router {
         .route("/patterns/{id}/verify", get(verify))
         .route("/patterns/{id}/state", post(set_state))
         .route("/patterns/merge", post(merge))
+        .route("/patterns/split", post(split))
         .route("/releases", get(releases))
         .route("/releases/{name}", get(release))
         .route("/compare", get(compare))
@@ -906,6 +907,35 @@ async fn merge(
         let row = crate::issues::merge(store, &b.ids)?;
         let mut v = pattern_json(&row, &Cx::load(store, analysis::now())?);
         v["merged_from"] = json!(b.ids.iter().filter(|i| **i != row.id).collect::<Vec<_>>());
+        Ok(v)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct SplitBody {
+    id: String,
+    #[serde(default)]
+    ids: Option<Vec<String>>,
+}
+
+async fn split(
+    State(s): State<ApiState>,
+    body: Result<Json<SplitBody>, JsonRejection>,
+) -> ApiResult {
+    let Json(b) = body?;
+    blocking(move || {
+        let store = &s.store;
+        let (row, split) = crate::issues::split(store, &b.id, b.ids.as_deref())?;
+        let cx = Cx::load(store, analysis::now())?;
+        let mut v = pattern_json(&row, &cx);
+        v["split_off"] = json!(
+            split
+                .iter()
+                .map(|r| pattern_json(r, &cx))
+                .collect::<Vec<_>>()
+        );
+        v["still_merged"] = json!(store.merged_ids(&row.id).map_err(analysis::db)?);
         Ok(v)
     })
     .await
