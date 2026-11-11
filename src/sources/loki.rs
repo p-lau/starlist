@@ -96,7 +96,12 @@ fn query(
         .query("start", start_ns.to_string())
         .query("end", end_ns.to_string())
         .query("direction", "forward")
-        .query("limit", LIMIT.to_string());
+        .query("limit", LIMIT.to_string())
+        // Keep a stream's own labels apart from per-line ones (Loki 3's
+        // `detected_level`, labels a `| json` stage parses), so the lines of one
+        // stream, like a stack trace's, are read as one stream. Older Lokis
+        // ignore it.
+        .header("X-Loki-Response-Encoding-Flags", "categorize-labels");
     match (&cfg.user, &cfg.token) {
         (Some(u), Some(t)) => req = req.header("Authorization", &basic(u, t)),
         (None, Some(t)) => req = req.header("Authorization", &format!("Bearer {t}")),
@@ -211,6 +216,14 @@ mod tests {
         let lines = parse_answer(body).unwrap();
         let text: Vec<&str> = lines.iter().map(|l| l.2.as_str()).collect();
         assert_eq!(text, ["first", "middle", "second"]);
+        // With categorize-labels, per-line labels come third and the stream
+        // keeps only its own.
+        let body = r#"{"status":"success","data":{"resultType":"streams","encodingFlags":["categorize-labels"],"result":[
+            {"stream":{"app":"api"},"values":[["1000","ERROR failed",{"structuredMetadata":{"detected_level":"error"}}],
+                ["1001","java.lang.IllegalStateException: no",{"structuredMetadata":{"detected_level":"unknown"}}]]}]}}"#;
+        let lines = parse_answer(body).unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].1, lines[1].1);
         let metric = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
         assert!(parse_answer(metric).is_err());
     }
