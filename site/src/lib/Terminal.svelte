@@ -90,13 +90,12 @@
 <style>
 	.term {
 		border-radius: var(--radius);
-		background: linear-gradient(180deg, rgba(20, 24, 52, 0.92), rgba(10, 12, 28, 0.95));
+		background: linear-gradient(180deg, rgb(19, 23, 50), rgb(10, 12, 28));
 		border: 1px solid var(--line-strong);
 		box-shadow:
 			0 30px 80px -30px rgba(0, 0, 0, 0.8),
 			0 0 0 1px rgba(255, 255, 255, 0.02) inset;
 		overflow: hidden;
-		backdrop-filter: blur(10px);
 	}
 	.bar {
 		display: flex;

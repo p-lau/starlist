@@ -20,6 +20,7 @@ Release build: ~5 MB static binary, ~11 MB memory while serving.
 | `set_pattern_state` | Resolve a pattern after a verified fix (it comes back as `regressed` if it occurs again), resolve it from the next release on, ignore it for a while or for a number of events, or reopen it. `timing` marks it as expected at set times (`usual`) or never usual (`always_alert`). |
 | `get_release` | A release's report card: new, regressed and resolved patterns, and its error rate against the previous release. |
 | `merge_patterns` | Merge patterns that are really one issue; the other IDs keep working. |
+| `split_pattern` | Undo a merge: patterns merged by mistake count on their own again. |
 | `add_marker` / `list_markers` | Name a point in time ("fix-currency"). Deploys are also detected from lines like `Starting api version 1.4.2`. |
 
 When to reach for starlist: if a stack trace or clear symptom already points at recent code, reading the code is usually cheaper. starlist pays off when the symptom is unknown, nothing was deployed, the codebase is large, or the cause may be outside the code (an upstream service, data, config, clients), and it's cheaper than reading raw log files whenever logs are needed. The MCP instructions tell agents the same.
@@ -39,7 +40,7 @@ Every answer also has a hard size limit, however noisy the log: 8,000 characters
 1. **Collect**: follows files like `tail -F` (rotation-safe), reads stdin, follows Docker containers, journald units and Kubernetes pods, receives OpenTelemetry logs, or reads a Loki stream; groups stack-trace lines with the log line that produced them.
 2. **Redact** before storing: emails, IPs, bearer tokens, JWTs, API keys (OpenAI, GitHub, Slack, Stripe, AWS), `password=`-style values, Luhn-valid card numbers, private keys, plus your own `--redact REGEX`.
 3. **Pattern**: masks numbers, IDs, UUIDs, hex, quoted strings and timestamps; the pattern ID is a hash of that template, so it is the same across restarts and hosts. The exception type is part of the pattern (`... | KeyError`).
-4. **Merge**: when patterns differ in just one word (a username, a hostname without digits) and that word has taken 5 different values, they are merged into one pattern with `<*>` there (`user=<*>` keeps the key). The oldest pattern's ID stays, and the merged IDs keep resolving to it, so IDs an agent already holds still work. Five values is high enough that status words like `started` / `failed` stay separate. Tune with `--merge-after N`, or `0` to turn it off.
+4. **Merge**: when patterns differ in just one word (a username, a hostname without digits) and that word has taken 5 different values, they are merged into one pattern with `<*>` there (`user=<*>` keeps the key). The oldest pattern's ID stays, and the merged IDs keep resolving to it, so IDs an agent already holds still work. Five values is high enough that status words like `started` / `failed` stay separate. Tune with `--merge-after N`, or `0` to turn it off. A merge that got it wrong can be undone with `split_pattern`; split patterns aren't merged automatically again.
 5. **Group by rule** (optional): `--group 'connection (reset|refused) by (?P<name>\w+)'` puts every matching line into one pattern per `name` value, for errors that rule-based masking splits apart.
 6. **Store**: SQLite (WAL) with per-10s counts, 5 recent samples per pattern, and markers. After 7 days (`--retention`) counts are folded into hourly counts, which are kept for 400 days (`--history`), so a month-over-month question still has an answer.
 7. **Numbers** (optional): `--metric duration_ms` (repeatable) reads that field from each line, in `duration_ms=532`, `latency: 0.53` or JSON, and keeps an hourly histogram per pattern, so p50, p95 and p99 survive for months without the lines. Percentiles are within about 9%; count, mean, min and max are exact.
@@ -145,6 +146,14 @@ STARLIST_HUB_TOKEN=... starlist serve --file app.log \
 - **Requests across services:** `get_request` (and `GET /api/v1/requests/{id}`) without a service follows one request through every service in time order, tagged by service, with each service's first and last offset. Order across hosts is only as good as their clocks, and the answer says so. To fit the size limit, it keeps each service's first and last events and the errors longest.
 - **Raw lines** at the hub are capped per service by `--raw-size`, and `--no-raw` keeps none. A collector run with `--no-raw` sends no lines for the hub's buffer either.
 - The hub has no TLS of its own: put it behind a reverse proxy with HTTPS. A collector warns when it pushes to plain `http://` beyond localhost.
+
+### CI: why did this run fail?
+
+`starlist-ci` is a separate small binary for CI logs. A CI job starts fresh, so it has no history to compare with; instead, it compares the failing run's log with the last passing run's and reports what is new, what grew and what stopped, with line numbers, steps and code locations, as JSON for agents or Markdown for people. It keeps nothing on disk. A GitHub Action keeps each run's log and posts the comparison when a job fails. See [ci/README.md](ci/README.md).
+
+```sh
+starlist-ci --baseline passing.log failing.log
+```
 
 ## Security, privacy and time zones
 

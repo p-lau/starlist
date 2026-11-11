@@ -24,11 +24,34 @@ const BATCH: usize = 500;
 const IDLE_FLUSH: Duration = Duration::from_millis(800);
 pub(crate) const POLL: Duration = Duration::from_millis(250);
 
+/// The automatic merger, and what it was loaded with.
+struct LiveMerger {
+    merger: Merger,
+    threshold: usize,
+    /// The store's split generation when loaded.
+    splits: u64,
+}
+
+impl LiveMerger {
+    fn load(store: &Store, threshold: usize) -> Self {
+        let splits = store.split_generation();
+        let merger = store.merger(threshold).unwrap_or_else(|e| {
+            eprintln!("starlist: could not load patterns for merging: {e}");
+            Merger::new(threshold)
+        });
+        Self {
+            merger,
+            threshold,
+            splits,
+        }
+    }
+}
+
 pub struct Pipeline {
     pub store: Arc<Store>,
     redactor: Redactor,
     marker_re: Option<Regex>,
-    merger: Option<Mutex<Merger>>,
+    merger: Option<Mutex<LiveMerger>>,
     /// Seconds east of UTC for log timestamps that have no zone.
     log_tz: i32,
     /// Path prefixes stripped from code locations so they match the repository.
@@ -59,12 +82,7 @@ impl Pipeline {
         marker_re: Option<Regex>,
         merge_after: Option<usize>,
     ) -> Self {
-        let merger = merge_after.map(|t| {
-            Mutex::new(store.merger(t).unwrap_or_else(|e| {
-                eprintln!("starlist: could not load patterns for merging: {e}");
-                Merger::new(t)
-            }))
-        });
+        let merger = merge_after.map(|t| Mutex::new(LiveMerger::load(&store, t)));
         Self {
             store,
             redactor,
@@ -152,10 +170,29 @@ impl Pipeline {
         let now = crate::analysis::now();
         let mut events: Vec<Event> = texts.iter().map(|t| self.parse(t, now)).collect();
         if let Some(m) = &self.merger {
-            let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
+            let mut live = m.lock().unwrap_or_else(|e| e.into_inner());
+            if live.splits != self.store.split_generation() {
+                // Patterns were split by hand: start over from the store.
+                *live = LiveMerger::load(&self.store, live.threshold);
+            }
+            let m = &mut live.merger;
+            // Templates as parsed, for patterns merged before their first
+            // event is recorded, so the merge can be split later.
+            let parsed: std::collections::HashMap<String, String> = events
+                .iter()
+                .map(|e| (e.pattern_id.clone(), e.template.clone()))
+                .collect();
             for e in events.iter_mut() {
                 if let Some(op) = m.resolve(e) {
-                    match self.store.merge_patterns(&op) {
+                    let before: Vec<(String, String)> = std::iter::once(&op.canonical)
+                        .chain(&op.aliases)
+                        .filter_map(|id| parsed.get(id).map(|t| (id.clone(), t.clone())))
+                        .collect();
+                    match self
+                        .store
+                        .merge_patterns(&op)
+                        .and_then(|()| self.store.remember_templates(&before))
+                    {
                         Ok(()) => eprintln!(
                             "starlist: merged {} patterns into {}: {}",
                             op.aliases.len(),

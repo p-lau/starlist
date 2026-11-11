@@ -68,24 +68,28 @@ jobs:
           RUSTFLAGS: ${{ contains(matrix.target, 'windows') && '-C target-feature=+crt-static' || '' }}
         run: |
           if [ "${{ matrix.zig }}" = "true" ]; then
-            cargo zigbuild --release --locked --target ${{ matrix.target }}
+            cargo zigbuild --release --locked --target ${{ matrix.target }} -p starlist -p starlist-ci
           else
-            cargo build --release --locked --target ${{ matrix.target }}
+            cargo build --release --locked --target ${{ matrix.target }} -p starlist -p starlist-ci
           fi
       - name: Package
         shell: bash
         run: |
           # No version in the name, so releases/latest/download/<name> always works.
-          name=starlist-${{ matrix.target }}
-          mkdir "$name"
-          cp README.md LICENSE CHANGELOG.md "$name"/
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/${{ matrix.target }}/release/starlist.exe "$name"/
-            7z a "$name.zip" "$name" > /dev/null
-          else
-            cp target/${{ matrix.target }}/release/starlist "$name"/
-            tar czf "$name.tar.gz" "$name"
-          fi
+          # The ci/action.yml GitHub Action downloads the starlist-ci archives by these names.
+          for bin in starlist starlist-ci; do
+            name=$bin-${{ matrix.target }}
+            mkdir "$name"
+            cp LICENSE CHANGELOG.md "$name"/
+            if [ "$bin" = starlist ]; then cp README.md "$name"/; else cp ci/README.md "$name"/; fi
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              cp target/${{ matrix.target }}/release/$bin.exe "$name"/
+              7z a "$name.zip" "$name" > /dev/null
+            else
+              cp target/${{ matrix.target }}/release/$bin "$name"/
+              tar czf "$name.tar.gz" "$name"
+            fi
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: bin-${{ matrix.target }}
@@ -178,3 +182,4 @@ jobs:
         run: |
           cargo publish --locked -p starlist-core
           cargo publish --locked -p starlist --allow-dirty
+          cargo publish --locked -p starlist-ci

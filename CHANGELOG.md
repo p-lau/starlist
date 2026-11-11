@@ -9,6 +9,12 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 - journald: a stack trace an app writes line by line (each line its own journal entry) is kept as one event again, instead of one pattern per frame.
 - Loki: Loki 3 labels each line with a `detected_level`, which split a stream's stack traces across patterns. Streams are now read by their own labels (`categorize-labels`), also when the query parses labels with `| json` or `| logfmt`.
 - Kubernetes: each container of a pod is read as its own stream, so a sidecar's lines no longer break the app's stack traces, and lines that arrive slightly out of time order from different containers are no longer skipped.
+### Added
+
+- `starlist-ci`, a separate binary for CI logs: compares a failing run's log with the last passing run's and reports new, grown and stopped patterns with line numbers, steps and code locations, as JSON within the same size limits as the MCP tools, or as Markdown. Reads plain output, `gh run view --log` output and raw GitHub Actions logs, from a file or stdin, and writes nothing to disk. See [ci/README.md](ci/README.md).
+- A GitHub Action (`p-lau/starlist/ci`) that keeps each run's log as an artifact and, when a job fails, writes the comparison to the job summary and optionally a pull request comment.
+- Release archives for `starlist-ci`, and `starlist-ci` on crates.io.
+- `split_pattern` MCP tool and `POST /api/v1/patterns/split`: undo a merge, automatic or by hand. Split patterns count on their own again, get their template from before the merge back where known, and aren't merged automatically again.
 
 ## [1.0.0] - 2026-11-10
 

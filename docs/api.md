@@ -300,6 +300,20 @@ is reported as `regressed` by `/whats-new`, alerts and the pattern itself.
 samples and locations move over, and their IDs keep resolving to it. Returns
 the merged pattern.
 
+#### `POST /patterns/split`
+
+`{"id": "p1", "ids": ["p2"]}` undoes a merge: `p2` is split back out of `p1` and
+counts as a pattern of its own again, with its template from before the merge
+when known. Without `ids`, an `id` that was merged in is split out alone, and the
+merged pattern's own ID splits out everything merged into it, which also gives it
+back its template from before the merge. Split patterns aren't merged
+automatically again. What was counted while merged stays with `p1`, since it
+can't be told apart. Returns the merged pattern with `split_off` (the patterns
+split out) and `still_merged` (the IDs still merged into it).
+
+Splits apply to the collector or hub they're made on: a collector doesn't push
+them to its hub.
+
 ### Releases
 
 - `GET /releases` lists deploys newest first: `{releases: [{name, at, until, current}]}`.

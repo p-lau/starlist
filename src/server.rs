@@ -187,6 +187,15 @@ pub struct MergePatternsArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SplitPatternArgs {
+    /// The merged pattern, or an ID that was merged into it.
+    pub pattern_id: String,
+    /// Merged-in IDs to split out. Default: the `pattern_id` itself if it was
+    /// merged in, otherwise all of them.
+    pub pattern_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListMarkersArgs {
     /// Default 20.
     pub limit: Option<i64>,
@@ -508,6 +517,22 @@ impl LogServer {
         Parameters(a): Parameters<MergePatternsArgs>,
     ) -> Result<String, String> {
         out(analysis::merge_patterns(&self.store, &a.pattern_ids))
+    }
+
+    #[tool(
+        description = "Undo a merge: split patterns back out of a merged one.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false
+        )
+    )]
+    fn split_pattern(&self, Parameters(a): Parameters<SplitPatternArgs>) -> Result<String, String> {
+        out(analysis::split_pattern(
+            &self.store,
+            &a.pattern_id,
+            a.pattern_ids.as_deref(),
+        ))
     }
 
     #[tool(

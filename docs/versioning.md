@@ -25,6 +25,10 @@ From 1.0.0, within a major version:
 
 The `starlist-core` crate is versioned with the binary. Its public Rust API follows the usual Cargo rules: a breaking change to it is a major version.
 
+## starlist-ci
+
+`starlist-ci` is versioned with the binary too. Its interface is its options, the JSON output fields (`summary`, `events`, `patterns`, `findings` and the fields of each finding, `remaining`, `trimmed`) and the action's inputs and outputs, with the same rules as above. The Markdown report's layout, and the wording, ranking and thresholds of findings, may change in any release.
+
 ## Before 1.0.0
 
 0.x releases may change anything, and say so in [CHANGELOG.md](../CHANGELOG.md).

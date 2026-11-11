@@ -308,3 +308,19 @@ Output fields:
 - `pattern_id`
 - `template`
 - `total_seen`
+
+## `split_pattern`
+
+Arguments:
+- `pattern_id` (required)
+- `pattern_ids`
+
+Output fields:
+- `note`
+- `pattern_id`
+- `split`
+- `split[].pattern_id`
+- `split[].template`
+- `still_merged`
+- `template`
+- `total_seen`

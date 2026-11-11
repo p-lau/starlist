@@ -13,7 +13,7 @@
 	}
 </script>
 
-<div class="cc">
+<div class="cc spot">
 	{#if label}<span class="label">{label}</span>{/if}
 	<pre><code><span class="prompt" aria-hidden="true">$</span> {code}</code></pre>
 	<button onclick={copy} aria-label="Copy command">{copied ? 'Copied' : 'Copy'}</button>
@@ -21,6 +21,7 @@
 
 <style>
 	.cc {
+		--spot: rgba(159, 231, 255, 0.7);
 		position: relative;
 		border-radius: 12px;
 		border: 1px solid var(--line);
@@ -56,6 +57,7 @@
 		border-radius: 8px;
 		padding: 5px 10px;
 		cursor: pointer;
+		z-index: 1;
 	}
 	button:hover {
 		color: var(--text);

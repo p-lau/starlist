@@ -13,6 +13,10 @@
 		let raf = 0;
 		let stars: { x: number; y: number; r: number; a: number; s: number; p: number; hue: number }[] =
 			[];
+		// A shooting star now and then: where it starts, its direction, when it began.
+		let streak: { x: number; y: number; dx: number; dy: number; t0: number } | undefined;
+		let nextStreak = 2500;
+		let lastFrame = -1000;
 
 		function resize() {
 			const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -34,6 +38,12 @@
 		}
 
 		function draw(t: number) {
+			// Twinkling doesn't need 60 frames a second; about 30 halves the work.
+			if (!still && t - lastFrame < 30) {
+				raf = requestAnimationFrame(draw);
+				return;
+			}
+			lastFrame = t;
 			ctx!.clearRect(0, 0, w, h);
 			for (const st of stars) {
 				const twinkle = still ? 1 : 0.65 + 0.35 * Math.sin(t * 0.001 * st.s + st.p);
@@ -43,7 +53,48 @@
 				ctx!.arc(st.x, st.y, st.r, 0, Math.PI * 2);
 				ctx!.fill();
 			}
-			if (!still) raf = requestAnimationFrame(draw);
+			if (!still) {
+				drawStreak(t);
+				raf = requestAnimationFrame(draw);
+			}
+		}
+
+		function drawStreak(t: number) {
+			if (!streak && t > nextStreak) {
+				const angle = Math.PI * (0.12 + Math.random() * 0.14);
+				const len = 260 + Math.random() * 220;
+				streak = {
+					x: Math.random() * w * 0.8,
+					y: Math.random() * h * 0.45,
+					dx: Math.cos(angle) * len,
+					dy: Math.sin(angle) * len,
+					t0: t
+				};
+			}
+			if (!streak) return;
+			const k = (t - streak.t0) / 900;
+			if (k >= 1) {
+				streak = undefined;
+				nextStreak = t + 5000 + Math.random() * 7000;
+				return;
+			}
+			const head = 1 - (1 - k) ** 3;
+			const tail = Math.max(0, head - 0.28);
+			const x1 = streak.x + streak.dx * tail;
+			const y1 = streak.y + streak.dy * tail;
+			const x2 = streak.x + streak.dx * head;
+			const y2 = streak.y + streak.dy * head;
+			const g = ctx!.createLinearGradient(x1, y1, x2, y2);
+			g.addColorStop(0, 'rgba(159, 231, 255, 0)');
+			g.addColorStop(1, 'rgba(255, 246, 216, 0.9)');
+			ctx!.globalAlpha = Math.sin(Math.PI * k);
+			ctx!.strokeStyle = g;
+			ctx!.lineWidth = 1.4;
+			ctx!.lineCap = 'round';
+			ctx!.beginPath();
+			ctx!.moveTo(x1, y1);
+			ctx!.lineTo(x2, y2);
+			ctx!.stroke();
 		}
 
 		resize();

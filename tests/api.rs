@@ -433,4 +433,22 @@ async fn issue_states_and_releases() {
     assert_eq!(m["id"], ids[1].as_str());
     let (_, all) = get(&format!("{base}/api/v1/patterns")).await;
     assert_eq!(all["total"], 2);
+
+    let (code, sp) = post_json(
+        &format!("{base}/api/v1/patterns/split"),
+        json!({"id": ids[1]}),
+    )
+    .await;
+    assert_eq!(code, 200, "{sp}");
+    assert_eq!(sp["split_off"][0]["id"], ids[2].as_str());
+    let (code, p2) = get(&format!("{base}/api/v1/patterns/{}", ids[2])).await;
+    assert_eq!(code, 200, "{p2}");
+    assert_eq!(p2["id"], ids[2].as_str());
+    assert!(p2.get("merged_from").is_none());
+    let (code, e) = post_json(
+        &format!("{base}/api/v1/patterns/split"),
+        json!({"id": ids[1]}),
+    )
+    .await;
+    assert_eq!(code, 400, "{e}");
 }
