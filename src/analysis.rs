@@ -1943,6 +1943,24 @@ pub fn get_release(
     Ok(fit_samples(v, max_chars))
 }
 
+/// MCP: split patterns back out of a merged one.
+pub fn split_pattern(store: &Store, id: &str, ids: Option<&[String]>) -> AResult {
+    let (row, split) = crate::issues::split(store, id, ids)?;
+    let still = store.merged_ids(&row.id).map_err(db)?.len();
+    Ok(json!({
+        "pattern_id": row.id,
+        "template": truncate(&row.template, TEMPLATE_CHARS),
+        "total_seen": row.total,
+        "still_merged": still,
+        "split": split.iter().map(|r| json!({
+            "pattern_id": r.id,
+            "template": truncate(&r.template, TEMPLATE_CHARS),
+        })).collect::<Vec<_>>(),
+        "note": "The split IDs count on their own from now on and won't be merged automatically again. \
+                 What was counted while merged stays with this pattern.",
+    }))
+}
+
 /// MCP: merge patterns into the first by hand.
 pub fn merge_patterns(store: &Store, ids: &[String]) -> AResult {
     let row = crate::issues::merge(store, ids)?;

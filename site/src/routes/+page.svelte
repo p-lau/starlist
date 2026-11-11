@@ -1,12 +1,14 @@
 <script lang="ts">
 	import Starfield from '#lib/Starfield.svelte';
 	import Orbit from '#lib/Orbit.svelte';
+	import Hub from '#lib/Hub.svelte';
 	import Terminal from '#lib/Terminal.svelte';
 	import CopyCode from '#lib/CopyCode.svelte';
 	import { reveal } from '#lib/reveal.ts';
+	import { spotlight, tilt } from '#lib/effects.ts';
 
 	const repo = 'https://github.com/p-lau/starlist';
-	const title = 'starlist: your logs, distilled for AI agents';
+	const title = 'Starlist: your logs, distilled for AI agents';
 	const description =
 		'A tiny open-source MCP server that orbits your app, watches its logs, groups them into patterns, redacts secrets and tells agents what changed.';
 
@@ -19,8 +21,12 @@
 
 	const tools = [
 		{
+			name: 'diagnose',
+			body: 'Start here. The likely causes of what is wrong now, ranked in one call, each with the deploy it started with, its code location and sample lines.'
+		},
+		{
 			name: 'whats_new',
-			body: 'What appeared for the first time, came back, spiked or went quiet versus a baseline. Spikes are judged against overall traffic, so a busy hour is not an incident.'
+			body: 'What appeared for the first time, came back, spiked, is slowly rising or went quiet versus a baseline. Spikes are judged against overall traffic, so a busy hour is not an incident.'
 		},
 		{
 			name: 'verify_fix',
@@ -33,6 +39,14 @@
 		{
 			name: 'list_patterns · get_pattern',
 			body: 'Search patterns by text or level. Counts, an hourly histogram and redacted samples with their stack traces.'
+		},
+		{
+			name: 'get_context · get_request',
+			body: 'The redacted lines around an error, or every event of one request in order, so the agent sees what led up to it without the log file.'
+		},
+		{
+			name: 'set_pattern_state · get_release',
+			body: 'Resolve a pattern after a verified fix and hear about it if it regresses. Each release gets a report card: new, regressed and resolved.'
 		},
 		{
 			name: 'add_marker · list_markers',
@@ -48,7 +62,7 @@
 		{
 			n: '01',
 			t: 'Collect',
-			b: 'Follows files like tail -F, rotation safe, or reads stdin. Stack trace lines stay attached to the log line that produced them.'
+			b: 'Follows files like tail -F, stdin, Docker containers, journald units, Kubernetes pods, OpenTelemetry logs or a Loki stream. Stack trace lines stay attached to the log line that produced them.'
 		},
 		{
 			n: '02',
@@ -63,7 +77,7 @@
 		{
 			n: '04',
 			t: 'Store',
-			b: 'A local SQLite file with per-10-second counts, recent samples and markers. Seven days of history by default.'
+			b: 'A local SQLite file with per-10-second counts, recent samples and markers. After a week counts fold into hourly ones, kept for 400 days.'
 		}
 	];
 
@@ -95,9 +109,10 @@
 
 <Starfield />
 
-<div class="page">
+<div class="page" {@attach spotlight}>
+	<div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
 	<header class="nav wrap">
-		<a class="brand" href="#top" aria-label="starlist home">
+		<a class="brand" href="#top" aria-label="Starlist home">
 			<svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
 				<circle cx="16" cy="16" r="6.5" fill="url(#bg)" />
 				<ellipse cx="16" cy="16" rx="13" ry="5" fill="none" stroke="#7aa2ff" stroke-width="1.4" transform="rotate(-25 16 16)" />
@@ -106,7 +121,7 @@
 					<radialGradient id="bg"><stop offset="0" stop-color="#fff6d8" /><stop offset=".6" stop-color="#ffc857" /><stop offset="1" stop-color="#ff8a3d" /></radialGradient>
 				</defs>
 			</svg>
-			starlist
+			Starlist
 		</a>
 		<nav aria-label="Sections">
 			<a href="#demo">Demo</a>
@@ -122,14 +137,15 @@
 
 	<main id="top">
 		<!-- HERO -->
-		<section class="hero wrap">
-			<div class="hero-copy">
-				<p class="eyebrow">Open-source MCP server · Rust · MIT</p>
+		<section class="hero">
+			<Orbit />
+			<div class="hero-copy wrap">
+				<p class="eyebrow">v1.0 · Open-source MCP server · Rust · MIT</p>
 				<h1>
-					Your logs,<br /><span class="shine">distilled for agents.</span>
+					Your logs,<br /><span class="shine">distilled for&nbsp;agents.</span>
 				</h1>
 				<p class="lede">
-					Your apps are stars. starlist puts a small satellite in orbit around each one. It watches the
+					Your apps are stars. Starlist puts a small satellite in orbit around each one. It watches the
 					logs, groups them into patterns, scrubs out secrets and tells your AI agent what actually
 					changed, in a few hundred tokens instead of a firehose.
 				</p>
@@ -137,9 +153,6 @@
 					<a class="btn btn-primary" href="#install">Get started</a>
 					<a class="btn btn-ghost" href={repo} rel="noopener">View source</a>
 				</div>
-			</div>
-			<div class="hero-art">
-				<Orbit />
 			</div>
 		</section>
 
@@ -159,7 +172,7 @@
 				<h2>Agents drown in raw logs.</h2>
 				<p>
 					Hand an agent a log file and it burns its context on health checks and cache hits, and may
-					read your tokens on the way. starlist sits next to the app and does the reading for it.
+					read your tokens on the way. Starlist sits next to the app and does the reading for it.
 				</p>
 			</div>
 			<div class="versus">
@@ -210,7 +223,9 @@
 				</ol>
 				<p class="fine">Example output, trimmed for the page.</p>
 			</div>
-			<Terminal />
+			<div class="term-frame" {@attach tilt}>
+				<Terminal />
+			</div>
 		</section>
 
 		<!-- TOOLS -->
@@ -220,9 +235,9 @@
 				<h2>A small set of tools that do one job well.</h2>
 				<p>Times accept <code>30m</code>, <code>2h</code>, an ISO time or a marker name.</p>
 			</div>
-			<div class="grid">
-				{#each tools as tool}
-					<article class="card">
+			<div class="grid stagger">
+				{#each tools as tool, i}
+					<article class="card spot" style="--n:{i}">
 						<h3><code>{tool.name}</code></h3>
 						<p>{tool.body}</p>
 					</article>
@@ -237,9 +252,9 @@
 				<h2>One orbit, four stages.</h2>
 				<p>Everything happens on the same machine as your app. No log pipeline, no hosted backend.</p>
 			</div>
-			<ol class="steps">
-				{#each steps as s}
-					<li>
+			<ol class="steps stagger">
+				{#each steps as s, i}
+					<li style="--n:{i * 2}">
 						<span class="num">{s.n}</span>
 						<h3>{s.t}</h3>
 						<p>{s.b}</p>
@@ -250,23 +265,8 @@
 
 		<!-- CONSTELLATION -->
 		<section class="fleet wrap" {@attach reveal}>
-			<div class="fleet-art" aria-hidden="true">
-				<svg viewBox="0 0 520 300">
-					<defs>
-						<radialGradient id="sg"><stop offset="0" stop-color="#fff6d8" /><stop offset=".55" stop-color="#ffc857" /><stop offset="1" stop-color="#ff8a3d" stop-opacity="0" /></radialGradient>
-					</defs>
-					{#each [[90, 80], [260, 60], [430, 95]] as [x, y], i}
-						<line x1={x} y1={y} x2="260" y2="250" class="beam" style="animation-delay:{i * 0.6}s" />
-						<circle cx={x} cy={y} r="26" fill="url(#sg)" />
-						<ellipse cx={x} cy={y} rx="44" ry="14" class="ring" transform="rotate(-18 {x} {y})" />
-						<circle cx={x + 41} cy={y - 14} r="4" class="satdot" />
-					{/each}
-					<g transform="translate(260 250)">
-						<path d="M-26 22 L0 -6 L26 22 Z" class="station" />
-						<path d="M-18 -18 A26 26 0 0 1 18 -18" class="dish" />
-						<path d="M-10 -28 A14 14 0 0 1 10 -28" class="dish" />
-					</g>
-				</svg>
+			<div class="fleet-art">
+				<Hub />
 			</div>
 			<div class="fleet-copy">
 				<p class="eyebrow">Scale out</p>
@@ -276,9 +276,9 @@
 					HTTP with bearer tokens, or over stdio for local tools.
 				</p>
 				<p>
-					For larger fleets, an optional <strong>ground station</strong> hub will gather every satellite’s
-					reports so an agent can ask across services.
-					<span class="soon">On the roadmap</span>
+					For larger fleets, an optional <strong>ground station</strong> hub gathers every satellite’s
+					reports, so an agent can ask across services and follow one request through all of them.
+					Each satellite keeps working on its own if the hub goes away.
 				</p>
 			</div>
 		</section>
@@ -288,20 +288,30 @@
 			<div class="section-head center">
 				<p class="eyebrow">Launch</p>
 				<h2>In orbit in a minute.</h2>
-				<p>Works with any language. starlist only reads the text your app already writes, plain lines or JSON.</p>
+				<p>Works with any language. Starlist only reads the text your app already writes, plain lines or JSON.</p>
 			</div>
-			<div class="install-grid">
-				<CopyCode label="Install" code="cargo install --git https://github.com/p-lau/starlist" />
-				<CopyCode label="Follow a log file" code="starlist serve --file /var/log/myapp.log" />
-				<CopyCode label="Or pipe your app through it" code="npm start | starlist serve --stdin --tee" />
-				<CopyCode label="Connect Claude Code" code="claude mcp add --transport http logs http://127.0.0.1:7341/mcp" />
+			<div class="install-grid stagger">
+				<CopyCode label="Install with Cargo" code="cargo install starlist" />
+				<CopyCode label="Or run the container" code="docker pull ghcr.io/p-lau/starlist:1" />
+				<CopyCode label="Find your logs and set up your agent" code="starlist init" />
+				<CopyCode label="Start it and leave it running" code="starlist serve" />
 			</div>
+			<p class="install-note">
+				Prebuilt binaries for Linux, macOS and Windows are on the
+				<a href="{repo}/releases/latest" rel="noopener">releases page</a>. <code>starlist init</code> sets up
+				Claude Code, Cursor, VS Code or Gemini CLI; any other MCP client connects to
+				<code>http://127.0.0.1:7341/mcp</code>. While it runs, a small dashboard is at
+				<code>http://127.0.0.1:7341/</code>.
+			</p>
 		</section>
 	</main>
 
 	<footer class="wrap">
-		<span>starlist · MIT licensed</span>
-		<a href={repo} rel="noopener">GitHub</a>
+		<span>Starlist · MIT licensed</span>
+		<span class="links">
+			<a href="https://crates.io/crates/starlist" rel="noopener">crates.io</a>
+			<a href={repo} rel="noopener">GitHub</a>
+		</span>
 	</footer>
 </div>
 
@@ -319,12 +329,70 @@
 	}
 
 	/* NAV */
+	/* Slow drifting light behind the hero. Each blob is a plain gradient that
+	   only ever moves by transform, so the compositor does all the work. */
+	.aurora {
+		position: absolute;
+		top: -260px;
+		left: 50%;
+		width: min(1500px, 140vw);
+		height: 980px;
+		transform: translateX(-50%);
+		z-index: -1;
+		pointer-events: none;
+		mask-image: linear-gradient(#000 55%, transparent);
+	}
+	.aurora i {
+		position: absolute;
+		width: 62%;
+		aspect-ratio: 1;
+		border-radius: 50%;
+		will-change: transform;
+		animation: float 22s ease-in-out infinite alternate;
+	}
+	.aurora i:nth-child(1) {
+		left: 38%;
+		top: 0;
+		background: radial-gradient(closest-side, rgba(122, 162, 255, 0.34), transparent);
+	}
+	.aurora i:nth-child(2) {
+		left: 2%;
+		top: 14%;
+		background: radial-gradient(closest-side, rgba(182, 156, 255, 0.26), transparent);
+		animation-duration: 28s;
+		animation-delay: -9s;
+	}
+	.aurora i:nth-child(3) {
+		left: 30%;
+		top: 30%;
+		width: 48%;
+		background: radial-gradient(closest-side, rgba(255, 138, 61, 0.2), transparent);
+		animation-duration: 34s;
+		animation-delay: -17s;
+	}
+	@keyframes float {
+		from {
+			transform: translate3d(-9%, -5%, 0) scale(1);
+		}
+		to {
+			transform: translate3d(11%, 8%, 0) scale(1.18);
+		}
+	}
+
 	.nav {
 		display: flex;
 		align-items: center;
 		gap: 24px;
-		padding-top: 22px;
-		padding-bottom: 22px;
+		position: sticky;
+		top: 10px;
+		z-index: 10;
+		margin-top: 10px;
+		padding-top: 12px;
+		padding-bottom: 12px;
+		border-radius: 999px;
+		border: 1px solid var(--line);
+		background: #090b1a;
+		box-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.9);
 	}
 	.brand {
 		display: flex;
@@ -364,13 +432,16 @@
 	}
 
 	/* HERO */
+	/* The hero runs the full width, with the star's edge drawn behind it. The
+	   space below the buttons is where the edge shows. */
 	.hero {
-		display: grid;
-		grid-template-columns: 1.1fr 1fr;
-		align-items: center;
-		gap: 40px;
-		padding-top: 56px;
-		padding-bottom: 40px;
+		position: relative;
+		margin-top: -96px;
+		padding-top: 152px;
+		padding-bottom: clamp(220px, 30vw, 380px);
+	}
+	.hero-copy {
+		position: relative;
 	}
 	h1 {
 		font-size: clamp(2.6rem, 6.4vw, 4.9rem);
@@ -397,10 +468,11 @@
 
 	/* STATS */
 	.stats {
+		position: relative;
 		display: grid;
 		grid-template-columns: repeat(4, 1fr);
 		gap: 1px;
-		margin-top: 30px;
+		margin-top: -40px;
 		margin-bottom: 120px;
 	}
 	.stat {
@@ -418,7 +490,7 @@
 	}
 
 	section {
-		scroll-margin-top: 30px;
+		scroll-margin-top: 96px;
 	}
 
 	.section-head {
@@ -460,7 +532,6 @@
 		border-radius: var(--radius);
 		border: 1px solid var(--line);
 		background: var(--panel);
-		backdrop-filter: blur(8px);
 		overflow: hidden;
 	}
 	.pane-h {
@@ -597,6 +668,44 @@
 		font-size: 0.8rem;
 		color: var(--faint);
 	}
+	/* The terminal leans toward the pointer and has a light running round its edge:
+	   a wide conic gradient spinning behind a 1px gap. */
+	.term-frame {
+		position: relative;
+		padding: 1px;
+		border-radius: calc(var(--radius) + 1px);
+		overflow: hidden;
+		box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8);
+		transform: perspective(1400px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+		transition: transform 0.25s ease-out;
+	}
+	.term-frame::before {
+		content: '';
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		width: 1400px;
+		height: 1400px;
+		margin: -700px;
+		background: conic-gradient(
+			transparent 0 62%,
+			rgba(122, 162, 255, 0.9),
+			var(--sat),
+			var(--violet),
+			transparent 96%
+		);
+		animation: turn 9s linear infinite;
+	}
+	.term-frame > :global(*) {
+		position: relative;
+		box-shadow: none;
+		border-color: rgba(140, 160, 255, 0.16);
+	}
+	@keyframes turn {
+		to {
+			transform: rotate(1turn);
+		}
+	}
 
 	/* TOOLS */
 	.tools {
@@ -616,14 +725,10 @@
 		border-radius: var(--radius);
 		border: 1px solid var(--line);
 		background: var(--panel);
-		backdrop-filter: blur(8px);
-		transition:
-			border-color 0.25s,
-			transform 0.25s;
+		transition: translate 0.25s ease;
 	}
 	.card:hover {
-		border-color: rgba(255, 200, 87, 0.35);
-		transform: translateY(-2px);
+		translate: 0 -3px;
 	}
 	.card h3 {
 		font-size: 1rem;
@@ -661,6 +766,22 @@
 		height: 1px;
 		background: linear-gradient(90deg, var(--star), var(--orbit), var(--violet), var(--sat));
 		opacity: 0.5;
+		transform-origin: left;
+	}
+	/* The line between the stages draws itself as the section scrolls in. */
+	@supports (animation-timeline: view()) {
+		@media (prefers-reduced-motion: no-preference) {
+			.steps::before {
+				animation: draw linear both;
+				animation-timeline: view();
+				animation-range: entry 30% cover 45%;
+			}
+		}
+		@keyframes draw {
+			from {
+				transform: scaleX(0);
+			}
+		}
 	}
 	.steps li {
 		position: relative;
@@ -697,52 +818,6 @@
 		align-items: center;
 		margin-bottom: 140px;
 	}
-	.fleet-art svg {
-		width: 100%;
-		height: auto;
-		overflow: visible;
-	}
-	.fleet-art .ring {
-		fill: none;
-		stroke: rgba(122, 162, 255, 0.45);
-	}
-	.fleet-art .satdot {
-		fill: var(--sat);
-		filter: drop-shadow(0 0 4px var(--sat));
-	}
-	.fleet-art .beam {
-		stroke: rgba(159, 231, 255, 0.35);
-		stroke-width: 1.2;
-		stroke-dasharray: 4 7;
-		animation: beam 1.4s linear infinite;
-	}
-	.fleet-art .station {
-		fill: #1a2046;
-		stroke: var(--violet);
-		stroke-width: 1.5;
-	}
-	.fleet-art .dish {
-		fill: none;
-		stroke: var(--violet);
-		stroke-width: 1.5;
-		stroke-linecap: round;
-	}
-	@keyframes beam {
-		to {
-			stroke-dashoffset: -22;
-		}
-	}
-	.soon {
-		display: inline-block;
-		margin-left: 6px;
-		padding: 2px 9px;
-		border-radius: 999px;
-		font: 500 0.7rem var(--font-mono);
-		color: var(--violet);
-		border: 1px solid rgba(182, 156, 255, 0.35);
-		vertical-align: 2px;
-	}
-
 	/* INSTALL */
 	.install {
 		margin-bottom: 120px;
@@ -752,6 +827,18 @@
 		margin: 0 auto;
 		display: grid;
 		gap: 12px;
+	}
+	.install-note {
+		max-width: 720px;
+		margin: 22px auto 0;
+		color: var(--muted);
+		font-size: 0.94rem;
+		text-align: center;
+	}
+	.install-note code {
+		color: var(--sat);
+		font-size: 0.9em;
+		overflow-wrap: anywhere;
 	}
 
 	footer {
@@ -766,16 +853,19 @@
 	footer a {
 		color: var(--muted);
 	}
+	footer .links {
+		display: flex;
+		gap: 18px;
+	}
 
 	/* RESPONSIVE */
 	@media (max-width: 960px) {
-		.hero,
 		.demo,
 		.fleet {
 			grid-template-columns: 1fr;
 		}
 		.hero {
-			padding-top: 24px;
+			padding-top: 120px;
 			text-align: center;
 		}
 		.lede {
@@ -784,9 +874,6 @@
 		}
 		.ctas {
 			justify-content: center;
-		}
-		.hero-art {
-			order: -1;
 		}
 		.grid {
 			grid-template-columns: repeat(2, 1fr);
@@ -810,8 +897,16 @@
 		nav {
 			display: none;
 		}
+		.nav {
+			margin-left: 10px;
+			margin-right: 10px;
+			width: auto;
+		}
 		.gh {
 			margin-left: auto;
+		}
+		.hero {
+			padding-bottom: 250px;
 		}
 		.stats {
 			grid-template-columns: repeat(2, 1fr);

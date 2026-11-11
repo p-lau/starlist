@@ -1,152 +1,276 @@
-<!-- Hero illustration: the app is a star, the collector is a satellite that
-     picks up raw log noise on one side and beams a small summary out the other. -->
-<div class="scene" aria-hidden="true">
-	<div class="glow"></div>
-	<div class="star"></div>
+<!-- Hero backdrop, as line art: a star seen close up, its edge sweeping across
+     the whole width of the screen, with satellites in orbit around it. The
+     drawing is cropped to the screen, keeping its bottom edge.
 
-	<div class="ring r1"><div class="sat"><span></span></div></div>
-	<div class="ring r2"><div class="sat small"><span></span></div></div>
-	<div class="ring r3"></div>
+     The satellites are real 3D models (see scene.ts). Each keeps one face to
+     the star as it goes round, so from here it turns: front, side, back. It
+     grows as it comes toward the viewer and disappears behind the star.
 
-	<div class="noise">
-		{#each Array(14) as _, i}
-			<i style="--i:{i}"></i>
+     Four stacked drawings, so that each redraw touches as little as possible:
+       back   satellites and orbit lines behind the star (redrawn every frame)
+       star   the star itself, with its blurred glow (drawn once, never again)
+       grid   the star's turning grid (redrawn about 20 times a second)
+       front  satellites and orbit lines in front (redrawn every frame) -->
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import { CX, CY, H, R, W, coronaRays, fleet, orbitTrack, orbits, prominences, satellite, starGrid } from '#lib/scene.ts';
+
+	const SPIN = 0.045; // radians a second
+	const tracks = orbits.map(orbitTrack);
+	const rays = coronaRays(0);
+	const flicker = coronaRays(1);
+	const loops = prominences();
+
+	// The first frame is worked out here, so the server sends a finished picture.
+	let grid = $state.raw(starGrid(0));
+	const place = (time: number) => fleet.map((f) => ({ ...satellite(f.orbit, f.phase, time), orbit: f.index }));
+	let sats = $state.raw(place(0));
+
+	let scene: HTMLElement;
+
+	onMount(() => {
+		if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+		let raf = 0;
+		let visible = true;
+		let clock = 0; // seconds of animation shown so far
+		let last = 0;
+		let frame = 0;
+
+		function tick(now: number) {
+			raf = 0;
+			// A long gap means the tab was hidden: don't jump ahead.
+			clock += Math.min((now - (last || now)) / 1000, 0.1);
+			last = now;
+			sats = place(clock);
+			if (frame++ % 3 === 0) grid = starGrid(clock * SPIN);
+			if (visible) raf = requestAnimationFrame(tick);
+		}
+
+		// Only animate while the scene is on screen.
+		const io = new IntersectionObserver(([entry]) => {
+			visible = entry.isIntersecting;
+			last = 0;
+			if (visible && !raf) raf = requestAnimationFrame(tick);
+		});
+		io.observe(scene);
+		return () => {
+			io.disconnect();
+			cancelAnimationFrame(raf);
+		};
+	});
+</script>
+
+{#snippet craft(front: boolean)}
+	{#each sats as sat}
+		{#if sat.front === front && sat.parts.length}
+			<g class="sat s{sat.orbit}" style="--k:{sat.size.toFixed(2)}">
+				{#each sat.parts as part}
+					<path class={part.kind} d={part.d} />
+					{#if part.light > 0.05}
+						<path class="lit" d={part.d} fill-opacity={(part.light * (part.kind === 'panel' ? 0.35 : 0.55)).toFixed(2)} />
+					{/if}
+				{/each}
+				<circle class="beacon" cx={sat.beacon[0].toFixed(1)} cy={sat.beacon[1].toFixed(1)} r={sat.beacon[2].toFixed(1)} />
+			</g>
+		{/if}
+	{/each}
+{/snippet}
+
+<div class="scene" aria-hidden="true" bind:this={scene}>
+	<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
+		{#each tracks as track, i}
+			<path class="track back t{i}" d={track.back} />
 		{/each}
-	</div>
+		{@render craft(false)}
+	</svg>
+
+	<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
+		<defs>
+			<radialGradient id="ol-body" gradientUnits="userSpaceOnUse" cx={CX} cy={CY} r={R}>
+				<stop offset="0.9" stop-color="#090812" />
+				<stop offset="0.975" stop-color="#1c0f0b" />
+				<stop offset="1" stop-color="#5a2c07" />
+			</radialGradient>
+			<!-- Blur only the visible slice: a filter over the whole star would be enormous. -->
+			<filter id="ol-halo" filterUnits="userSpaceOnUse" x="-100" y="300" width={W + 200} height={H - 260}>
+				<feGaussianBlur stdDeviation="26" />
+			</filter>
+			<filter id="ol-edge" filterUnits="userSpaceOnUse" x="-100" y="400" width={W + 200} height={H - 360}>
+				<feGaussianBlur stdDeviation="4" />
+			</filter>
+		</defs>
+		<circle cx={CX} cy={CY} r={R + 10} fill="none" stroke="#ff8a3d" stroke-width="56" opacity="0.5" filter="url(#ol-halo)" />
+		<path class="rays" d={rays} />
+		<circle class="disc" cx={CX} cy={CY} r={R} />
+		<circle cx={CX} cy={CY} r={R} fill="none" stroke="#ffc857" stroke-width="8" opacity="0.8" filter="url(#ol-edge)" />
+		<circle class="limb" cx={CX} cy={CY} r={R} />
+		<circle class="limb outer" cx={CX} cy={CY} r={R + 10} />
+	</svg>
+
+	<!-- The other half of the rays and the plasma loops, in a layer of their own
+	     so they can flicker by fading the whole layer, which costs no redraw. -->
+	<svg class="flicker" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
+		<path class="rays" d={flicker} />
+		<path class="loops" d={loops} />
+	</svg>
+
+	<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
+		<defs>
+			<!-- The grid is brightest toward the edge and fades toward the middle of the star. -->
+			<radialGradient id="ol-grid-ink" gradientUnits="userSpaceOnUse" cx={CX} cy={CY} r={R}>
+				<stop offset="0.5" stop-color="#ffb04a" stop-opacity="0.12" />
+				<stop offset="1" stop-color="#ffd27a" stop-opacity="0.75" />
+			</radialGradient>
+		</defs>
+		<path class="grid" d={grid} />
+	</svg>
+
+	<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMax slice" focusable="false">
+		{#each tracks as track, i}
+			<path class="track t{i}" d={track.front} />
+		{/each}
+		{@render craft(true)}
+	</svg>
 </div>
 
 <style>
 	.scene {
-		position: relative;
-		width: min(460px, 86vw);
-		aspect-ratio: 1;
-		margin: 0 auto;
-	}
-
-	.glow {
 		position: absolute;
-		inset: 18%;
-		border-radius: 50%;
-		background: radial-gradient(circle, rgba(255, 200, 87, 0.5), rgba(255, 138, 61, 0.12) 45%, transparent 70%);
-		filter: blur(10px);
-		animation: pulse 6s ease-in-out infinite;
+		inset: 0;
+		/* Fade into the page at the bottom, and a little at the very top. */
+		mask-image: linear-gradient(transparent, #000 12%, #000 72%, transparent);
 	}
-
-	.star {
+	/* On narrow screens a box as tall as the hero would zoom the drawing in
+	   until only a sliver of the star showed: keep it short and at the bottom. */
+	@media (max-width: 720px) {
+		.scene {
+			top: auto;
+			height: min(150vw, 100%);
+			/* the top of this box sits behind the text: fade it out there */
+			mask-image: linear-gradient(transparent 18%, #000 52%, #000 72%, transparent);
+		}
+	}
+	svg {
 		position: absolute;
-		inset: 38%;
-		border-radius: 50%;
-		background: radial-gradient(circle at 38% 35%, #fffaf0, #ffd77a 35%, #ff9a3d 75%, #d9541a);
-		box-shadow:
-			0 0 40px 10px rgba(255, 180, 70, 0.55),
-			0 0 120px 40px rgba(255, 138, 61, 0.25);
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		/* its own layer, so redrawing one drawing leaves the others alone */
+		will-change: transform;
+	}
+	path,
+	circle {
+		fill: none;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+	}
+	/* The star's body is opaque, so whatever is behind it is hidden. */
+	.disc {
+		fill: url(#ol-body);
 	}
 
-	.ring {
-		position: absolute;
-		border-radius: 50%;
-		border: 1px solid rgba(122, 162, 255, 0.28);
-		top: 50%;
-		left: 50%;
-		transform: translate(-50%, -50%) rotateX(68deg) rotateZ(var(--tilt));
-		transform-style: preserve-3d;
+	.limb {
+		stroke: #ffd98a;
+		stroke-width: 2.2;
+	}
+	.limb.outer {
+		stroke: #ffb04a;
+		stroke-width: 1.1;
+		stroke-dasharray: 3 9;
+		opacity: 0.7;
+	}
+	.rays {
+		stroke: #ffb04a;
+		stroke-width: 1.3;
+		opacity: 0.55;
+	}
+	.loops {
+		stroke: #ffc857;
+		stroke-width: 1.5;
+		opacity: 0.8;
+	}
+	.grid {
+		stroke: url(#ol-grid-ink);
+		stroke-width: 1.2;
 	}
 
-	.r1 {
-		width: 70%;
-		height: 70%;
-		--tilt: -20deg;
-		animation: spin 14s linear infinite;
+	.track {
+		stroke: var(--orbit);
+		stroke-width: 1.3;
+		stroke-dasharray: 2 10;
+		opacity: 0.75;
 	}
-	.r2 {
-		width: 92%;
-		height: 92%;
-		--tilt: 30deg;
-		border-style: dashed;
-		border-color: rgba(182, 156, 255, 0.22);
-		animation: spin 26s linear infinite reverse;
+	.track.t1 {
+		stroke: var(--violet);
 	}
-	.r3 {
-		width: 112%;
-		height: 112%;
-		--tilt: 5deg;
-		border-color: rgba(122, 162, 255, 0.1);
+	.track.back {
+		opacity: 0.35;
 	}
 
 	.sat {
-		position: absolute;
-		top: -7px;
-		left: 50%;
-		width: 14px;
-		height: 14px;
-		margin-left: -7px;
-		border-radius: 3px;
-		background: var(--sat);
-		box-shadow: 0 0 14px 4px rgba(159, 231, 255, 0.6);
-		transform: rotateX(-68deg);
+		--ink: var(--sat);
+		--cells: rgba(79, 108, 255, 0.34);
+		stroke: var(--ink);
+		stroke-width: calc(var(--k) * 1.6px);
 	}
-	.sat span {
-		position: absolute;
-		top: 5px;
-		left: -12px;
-		width: 38px;
-		height: 4px;
-		border-radius: 2px;
-		background: linear-gradient(90deg, #4f6cff, #9fe7ff 40%, #9fe7ff 60%, #4f6cff);
-		opacity: 0.85;
+	.sat.s1 {
+		--ink: #cdbcff;
+		--cells: rgba(140, 104, 255, 0.34);
 	}
-	.sat.small {
-		width: 10px;
-		height: 10px;
-		margin-left: -5px;
-		top: -5px;
-		background: var(--violet);
-		box-shadow: 0 0 12px 3px rgba(182, 156, 255, 0.55);
+	.panel {
+		fill: var(--cells);
 	}
-	.sat.small span {
-		top: 3px;
-		left: -9px;
-		width: 28px;
-		height: 3px;
-		background: linear-gradient(90deg, #7a5cff, #d7c9ff 50%, #7a5cff);
+	.face {
+		fill: #0b0f2a;
 	}
-
-	/* Raw log "noise" drifting in toward the star */
-	.noise i {
-		position: absolute;
-		left: calc(4% + var(--i) * 6.5%);
-		top: calc(50% + (var(--i) - 7) * 1.5%);
-		width: 2px;
-		height: 2px;
-		border-radius: 50%;
-		background: rgba(232, 235, 255, 0.5);
-		animation: drift 5s linear infinite;
-		animation-delay: calc(var(--i) * -0.37s);
-		opacity: 0;
+	/* Starlight on whatever faces the star: a warm wash over the face. */
+	.lit {
+		fill: #ffb45c;
+		stroke: none;
 	}
-
-	@keyframes spin {
-		to {
-			transform: translate(-50%, -50%) rotateX(68deg) rotateZ(calc(var(--tilt) + 360deg));
+	.dish {
+		fill: color-mix(in srgb, var(--ink) 12%, #0b0f2a);
+	}
+	/* A small light that blinks twice, then rests. */
+	.beacon {
+		fill: #ff7a90;
+		stroke: none;
+		animation: blink 2.4s steps(1) infinite;
+	}
+	.sat.s1 .beacon {
+		fill: #7ef0b0;
+		animation-delay: -1.1s;
+	}
+	@keyframes blink {
+		0%,
+		12%,
+		24% {
+			opacity: 1;
 		}
-	}
-	@keyframes pulse {
-		50% {
-			transform: scale(1.08);
-			opacity: 0.85;
-		}
-	}
-	@keyframes drift {
-		0% {
-			transform: translate(-40px, 0);
-			opacity: 0;
-		}
-		30% {
-			opacity: 0.7;
-		}
+		6%,
+		18%,
+		30%,
 		100% {
-			transform: translate(120px, 0);
-			opacity: 0;
+			opacity: 0.12;
+		}
+	}
+
+	/* Half the rays and the loops fade in and out, slowly, by layer. */
+	.flicker {
+		animation: flicker 3.6s ease-in-out infinite alternate;
+	}
+	@keyframes flicker {
+		from {
+			opacity: 1;
+		}
+		to {
+			opacity: 0.35;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.flicker,
+		.beacon {
+			animation: none;
 		}
 	}
 </style>

@@ -68,6 +68,8 @@ pub struct Store {
     raw: Mutex<RawBuffer>,
     /// Set when pushing to a hub: what gets recorded is also queued to send.
     outbox: Mutex<Option<Outbox>>,
+    /// Bumped when patterns are split, so a running merger reloads.
+    splits: std::sync::atomic::AtomicU64,
 }
 
 struct Outbox {
@@ -230,6 +232,14 @@ impl Store {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS pattern_timing(pattern_id TEXT PRIMARY KEY, mode TEXT NOT NULL) WITHOUT ROWID;",
         )?;
+        // Added in 1.1: splitting merged patterns. `merged_templates` keeps the
+        // template a pattern had before it was merged into another or
+        // generalized; `kept_apart` lists patterns split out by hand, which
+        // automatic merging leaves alone.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS merged_templates(id TEXT PRIMARY KEY, template TEXT NOT NULL) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS kept_apart(id TEXT PRIMARY KEY) WITHOUT ROWID;",
+        )?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS raw_req ON raw(request_id, ts) WHERE request_id IS NOT NULL;
              CREATE INDEX IF NOT EXISTS raw_pid_req ON raw(pattern_id, ts) WHERE request_id IS NOT NULL;",
@@ -241,6 +251,7 @@ impl Store {
                 bytes: None,
             }),
             outbox: Mutex::new(None),
+            splits: Default::default(),
         })
     }
 
@@ -708,12 +719,114 @@ impl Store {
     /// A pattern merger that continues from the stored patterns and aliases,
     /// applying merges they already qualify for.
     pub fn merger(&self, threshold: usize) -> R<crate::merge::Merger> {
-        crate::merge::Merger::restore(
+        crate::merge::Merger::restore_kept_apart(
             threshold,
             self.aliases()?,
+            self.kept_apart()?,
             self.pattern_templates()?,
             |op| self.merge_patterns(op),
         )
+    }
+
+    /// Patterns split out of a merge by hand; automatic merging leaves them alone.
+    pub fn kept_apart(&self) -> R<std::collections::HashSet<String>> {
+        let conn = self.conn();
+        let mut st = conn.prepare("SELECT id FROM kept_apart")?;
+        let rows = st.query_map([], |r| r.get(0))?;
+        rows.collect()
+    }
+
+    /// Remember patterns' templates from before a merge, for splitting it
+    /// later. Templates already remembered are kept.
+    pub fn remember_templates(&self, templates: &[(String, String)]) -> R<()> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "INSERT OR IGNORE INTO merged_templates(id, template) VALUES (?1, ?2)",
+        )?;
+        for (id, t) in templates {
+            st.execute(params![id, t])?;
+        }
+        Ok(())
+    }
+
+    /// How many times patterns have been split since this store was opened.
+    pub fn split_generation(&self) -> u64 {
+        self.splits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// IDs of the patterns merged into `canonical`.
+    pub fn merged_ids(&self, canonical: &str) -> R<Vec<String>> {
+        let conn = self.conn();
+        let mut st =
+            conn.prepare("SELECT alias FROM aliases WHERE canonical = ?1 ORDER BY alias")?;
+        let rows = st.query_map([canonical], |r| r.get(0))?;
+        rows.collect()
+    }
+
+    /// Split patterns back out of `canonical`, undoing a merge as far as
+    /// possible. Each split ID becomes a pattern of its own again, with its
+    /// template from before the merge when known, and automatic merging
+    /// leaves it alone from now on. Counts, samples and history recorded
+    /// while merged stay with `canonical`: they can't be told apart. When
+    /// nothing is left merged into `canonical`, its own template from before
+    /// the merge comes back too. Returns the split IDs that are now patterns.
+    pub fn split_patterns(&self, canonical: &str, ids: &[String]) -> R<Vec<String>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let c = canonical;
+        let mut out = vec![];
+        for id in ids {
+            let n = tx.execute(
+                "DELETE FROM aliases WHERE alias = ?1 AND canonical = ?2",
+                params![id, c],
+            )?;
+            if n == 0 {
+                continue;
+            }
+            tx.execute("INSERT OR IGNORE INTO kept_apart(id) VALUES (?1)", [id])?;
+            // A new, empty pattern row, dated like the merged pattern so it
+            // doesn't look new.
+            tx.execute(
+                "INSERT OR IGNORE INTO patterns(id, template, level, exc_type, first_seen, last_seen, total)
+                 SELECT ?1, COALESCE((SELECT template FROM merged_templates WHERE id = ?1), p.template),
+                        p.level, p.exc_type, p.first_seen, p.first_seen, 0
+                 FROM patterns p WHERE p.id = ?2",
+                params![id, c],
+            )?;
+            out.push(id.clone());
+        }
+        let rest: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM aliases WHERE canonical = ?1",
+            [c],
+            |r| r.get(0),
+        )?;
+        if rest == 0 && !out.is_empty() {
+            let before: Option<String> = tx
+                .query_row(
+                    "SELECT template FROM merged_templates WHERE id = ?1",
+                    [c],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let template: String =
+                tx.query_row("SELECT template FROM patterns WHERE id = ?1", [c], |r| {
+                    r.get(0)
+                })?;
+            if let Some(t) = &before {
+                tx.execute(
+                    "UPDATE patterns SET template = ?2 WHERE id = ?1",
+                    params![c, t],
+                )?;
+            }
+            // Keep a generalized pattern from swallowing new variants again.
+            if before.is_some() || template.contains("<*>") {
+                tx.execute("INSERT OR IGNORE INTO kept_apart(id) VALUES (?1)", [c])?;
+            }
+        }
+        tx.commit()?;
+        self.splits
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(out)
     }
 
     pub fn pattern_templates(&self) -> R<Vec<(String, String)>> {
@@ -729,11 +842,24 @@ impl Store {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let c = &op.canonical;
+        // Remember templates from before the merge, so it can be split again.
+        tx.execute(
+            "INSERT OR IGNORE INTO merged_templates(id, template)
+             SELECT id, template FROM patterns WHERE id = ?1 AND template <> ?2",
+            params![c, op.template],
+        )?;
         tx.execute(
             "UPDATE patterns SET template = ?2 WHERE id = ?1",
             params![c, op.template],
         )?;
         for a in &op.aliases {
+            tx.execute(
+                "INSERT OR IGNORE INTO merged_templates(id, template)
+                 SELECT id, template FROM patterns WHERE id = ?1",
+                [a],
+            )?;
+            // Merged again by hand: no longer kept apart.
+            tx.execute("DELETE FROM kept_apart WHERE id = ?1", [a])?;
             tx.execute(
                 "INSERT INTO counts(pattern_id, bucket, n) SELECT ?1, bucket, n FROM counts WHERE pattern_id = ?2 AND true
                  ON CONFLICT(pattern_id, bucket) DO UPDATE SET n = n + excluded.n",
