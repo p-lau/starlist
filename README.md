@@ -147,6 +147,14 @@ STARLIST_HUB_TOKEN=... starlist serve --file app.log \
 - **Raw lines** at the hub are capped per service by `--raw-size`, and `--no-raw` keeps none. A collector run with `--no-raw` sends no lines for the hub's buffer either.
 - The hub has no TLS of its own: put it behind a reverse proxy with HTTPS. A collector warns when it pushes to plain `http://` beyond localhost.
 
+### CI: why did this run fail?
+
+`starlist-ci` is a separate small binary for CI logs. A CI job starts fresh, so it has no history to compare with; instead, it compares the failing run's log with the last passing run's and reports what is new, what grew and what stopped, with line numbers, steps and code locations, as JSON for agents or Markdown for people. It keeps nothing on disk. A GitHub Action keeps each run's log and posts the comparison when a job fails. See [ci/README.md](ci/README.md).
+
+```sh
+starlist-ci --baseline passing.log failing.log
+```
+
 ## Security, privacy and time zones
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).

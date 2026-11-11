@@ -1500,6 +1500,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "starlist-ci"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "regex",
+ "serde_json",
+ "starlist-core",
+]
+
+[[package]]
 name = "starlist-core"
 version = "1.0.0"
 dependencies = [

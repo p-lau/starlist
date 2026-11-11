@@ -1,0 +1,18 @@
+[package]
+name = "starlist-ci"
+description = "Compares a failing CI run's log with the last passing run's and reports what changed, for agents and people."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["ci", "logs", "github-actions", "ai-agents", "debugging"]
+categories = ["command-line-utilities", "development-tools::debugging"]
+include = ["/src/**", "/tests/**", "/README.md"]
+
+[dependencies]
+starlist-core = { path = "../core", version = "1.0.0" }
+regex.workspace = true
+serde_json.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
