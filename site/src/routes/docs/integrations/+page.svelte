@@ -36,48 +36,30 @@ STARLIST_DOCKER=podman starlist serve --docker shop-api`;
   ghcr.io/p-lau/starlist:1 \\
   serve --file /logs/app.log --http 0.0.0.0:7341 --db /data/starlist.db`;
 
-	const compose = `services:
-  app:
-    image: your-app
-    # The app writes its log to /var/log/app/app.log
-    volumes:
-      - app-logs:/var/log/app
-
-  starlist:
-    image: ghcr.io/p-lau/starlist:1
-    command:
-      - serve
-      - --file=/var/log/app/app.log
-      - --http=0.0.0.0:7341
-      - --db=/data/starlist.db
-      - --env=production
-    environment:
-      STARLIST_TOKEN: \${STARLIST_TOKEN:?set STARLIST_TOKEN}
-      # STARLIST_VERSION: v1.4.3   # the app's release, if its logs don't say
-    volumes:
-      - app-logs:/var/log/app:ro
-      - starlist-data:/data
-    ports:
-      - 127.0.0.1:7341:7341   # this machine only
-    restart: unless-stopped
-
-volumes:
-  app-logs:
-  starlist-data:`;
+	const compose = `starlist:
+  image: ghcr.io/p-lau/starlist:1
+  command: serve --file=/var/log/app/app.log --http=0.0.0.0:7341 --db=/data/starlist.db
+  environment:
+    STARLIST_TOKEN: \${STARLIST_TOKEN:?set STARLIST_TOKEN}
+  volumes:
+    - app-logs:/var/log/app:ro   # the volume your app writes its log to
+    - starlist-data:/data
+  ports:
+    - 127.0.0.1:7341:7341`;
 
 	const dockerSock = `# Dockerfile: starlist plus the Docker CLI, to read other containers' stdout
 FROM docker:27-cli
 COPY --from=ghcr.io/p-lau/starlist:1 /usr/local/bin/starlist /usr/local/bin/starlist
 ENTRYPOINT ["starlist"]`;
 
-	const dockerSockCompose = `  starlist:
-    build: ./starlist
-    command: serve --docker-label app=shop --http 0.0.0.0:7341 --db /data/starlist.db
-    environment:
-      STARLIST_TOKEN: \${STARLIST_TOKEN:?set STARLIST_TOKEN}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - starlist-data:/data`;
+	const dockerSockCompose = `starlist:
+  build: ./starlist
+  command: serve --docker-label app=shop --http 0.0.0.0:7341 --db /data/starlist.db
+  environment:
+    STARLIST_TOKEN: \${STARLIST_TOKEN:?set STARLIST_TOKEN}
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock:ro
+    - starlist-data:/data`;
 
 	// Kubernetes
 	const k8sCli = `# Every pod of a deployment (also statefulset/, daemonset/, replicaset/, job/)
@@ -86,56 +68,32 @@ starlist serve --k8s deployment/api --k8s-namespace shop
 # Or any label selector
 starlist serve --k8s 'app=api,tier=web'`;
 
-	const sidecar = `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: api
-spec:
-  selector:
-    matchLabels: { app: api }
-  template:
-    metadata:
-      labels: { app: api }
-    spec:
-      containers:
-        - name: api
-          image: your-app
-          # The app writes its log to /var/log/app/app.log
-          volumeMounts:
-            - { name: app-logs, mountPath: /var/log/app }
+	const sidecar = `- name: starlist
+  image: ghcr.io/p-lau/starlist:1
+  args: [serve, --file=/var/log/app/app.log, --http=0.0.0.0:7341, --db=/data/starlist.db]
+  env:
+    - name: STARLIST_TOKEN
+      valueFrom: { secretKeyRef: { name: starlist, key: token } }
+  volumeMounts:
+    - { name: app-logs, mountPath: /var/log/app, readOnly: true }   # shared with the app
+    - { name: starlist-data, mountPath: /data }`;
+	const sidecarVolumes = `volumes:
+  - name: app-logs
+    emptyDir: {}
+  - name: starlist-data
+    emptyDir: {}`;
 
-        - name: starlist
-          image: ghcr.io/p-lau/starlist:1
-          args: [serve, --file=/var/log/app/app.log, --http=0.0.0.0:7341, --db=/data/starlist.db]
-          env:
-            - name: STARLIST_TOKEN
-              valueFrom: { secretKeyRef: { name: starlist, key: token } }
-            - name: STARLIST_ENV
-              value: production
-          ports:
-            - { name: mcp, containerPort: 7341 }
-          volumeMounts:
-            - { name: app-logs, mountPath: /var/log/app, readOnly: true }
-            - { name: starlist-data, mountPath: /data }
-          resources:
-            requests: { cpu: 10m, memory: 32Mi }
-            limits: { memory: 128Mi }
-          securityContext:
-            runAsNonRoot: true
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities: { drop: [ALL] }
-      volumes:
-        - name: app-logs
-          emptyDir: {}
-        - name: starlist-data
-          emptyDir: { sizeLimit: 512Mi }   # a PersistentVolumeClaim keeps history`;
+	const sidecarRun = `# Create the token
+kubectl create secret generic starlist --from-literal=token=$(openssl rand -hex 32)
 
-	const sidecarRun = `kubectl create secret generic starlist --from-literal=token=$(openssl rand -hex 32)
-kubectl apply -f deploy/kubernetes/sidecar.yaml
+# Apply your deployment with the sidecar added
+kubectl apply -f deployment.yaml
+
+# Reach it from your machine
 kubectl port-forward deploy/api 7341
-claude mcp add --transport http starlist http://127.0.0.1:7341/mcp \\
-  --header "Authorization: Bearer $(kubectl get secret starlist -o jsonpath='{.data.token}' | base64 -d)"`;
+
+# Connect Claude Code with the token
+claude mcp add --transport http starlist http://127.0.0.1:7341/mcp --header "Authorization: Bearer $(kubectl get secret starlist -o jsonpath='{.data.token}' | base64 -d)"`;
 
 	const rbac = `apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -220,14 +178,14 @@ jobs:
           log: test.log
           status: \${{ job.status }}
           comment: true`;
-	const ghaNow = `      # Until the release: put starlist-ci on PATH first, then use the action from main
-      - run: cargo install --git https://github.com/p-lau/starlist starlist-ci
-        if: failure()
-      - uses: p-lau/starlist/ci@main
-        if: always()
-        with:
-          log: test.log
-          status: \${{ job.status }}`;
+	const ghaNow = `# Until the release: put starlist-ci on PATH first, then use the action from main
+- run: cargo install --git https://github.com/p-lau/starlist starlist-ci
+  if: failure()
+- uses: p-lau/starlist/ci@main
+  if: always()
+  with:
+    log: test.log
+    status: \${{ job.status }}`;
 	const ghaAgent = `gh run view <failed-run-id> --log > failing.log
 gh run view <last-passing-run-id> --log > passing.log
 starlist-ci --baseline passing.log failing.log`;
@@ -306,15 +264,15 @@ starlist-ci --baseline passing.log --format markdown test.log > report.md`;
   -d '{"name": "v1.4.3", "deploy": true, "note": "deployed by CI"}'`;
 	const markAnswer = `HTTP/1.1 201 Created
 {"name":"v1.4.3","kind":"deploy","at":"2026-11-12T04:36:02.727Z","note":"deployed by CI"}`;
-	const markGha = `      - name: Tell starlist about the release
-        if: success()
-        run: |
-          curl -sf -X POST "$STARLIST_URL/api/v1/markers" \\
-            -H "Authorization: Bearer $STARLIST_TOKEN" -H "Content-Type: application/json" \\
-            -d "{\\"name\\": \\"$GITHUB_REF_NAME\\", \\"deploy\\": true, \\"note\\": \\"$GITHUB_SHA\\"}"
-        env:
-          STARLIST_URL: \${{ vars.STARLIST_URL }}
-          STARLIST_TOKEN: \${{ secrets.STARLIST_TOKEN }}`;
+	const markGha = `- name: Tell starlist about the release
+  if: success()
+  run: |
+    curl -sf -X POST "$STARLIST_URL/api/v1/markers" \\
+      -H "Authorization: Bearer $STARLIST_TOKEN" -H "Content-Type: application/json" \\
+      -d "{\\"name\\": \\"$GITHUB_REF_NAME\\", \\"deploy\\": true, \\"note\\": \\"$GITHUB_SHA\\"}"
+  env:
+    STARLIST_URL: \${{ vars.STARLIST_URL }}
+    STARLIST_TOKEN: \${{ secrets.STARLIST_TOKEN }}`;
 	const markHook = `apiVersion: batch/v1
 kind: Job
 metadata:
@@ -331,17 +289,12 @@ spec:
       containers:
         - name: mark
           image: curlimages/curl:8.10.1
+          command: [sh, -c]
           args:
-            - -sf
-            - -X
-            - POST
-            - http://api.shop.svc:7341/api/v1/markers
-            - -H
-            - "Authorization: Bearer $(STARLIST_TOKEN)"
-            - -H
-            - "Content-Type: application/json"
-            - -d
-            - '{"name": "v1.4.3", "deploy": true}'
+            - >-
+              curl -sf -X POST http://api.shop.svc:7341/api/v1/markers
+              -H "Authorization: Bearer $STARLIST_TOKEN" -H "Content-Type: application/json"
+              -d '{"name": "v1.4.3", "deploy": true}'
           env:
             - name: STARLIST_TOKEN
               valueFrom: { secretKeyRef: { name: starlist, key: token } }`;
@@ -457,8 +410,8 @@ starlist mcp --db incident.db`;
 logs.example.com {
 	reverse_proxy 127.0.0.1:7341
 }`;
-	const ssh = `ssh -N -L 7341:127.0.0.1:7341 app-host
-# then connect the agent to http://127.0.0.1:7341/mcp as if it were local`;
+	const ssh = `# Then connect the agent to http://127.0.0.1:7341/mcp as if it were local
+ssh -N -L 7341:127.0.0.1:7341 app-host`;
 </script>
 
 <svelte:head>
@@ -548,10 +501,10 @@ logs.example.com {
 			listens beyond localhost, so it needs a token. Publish the port on <code>127.0.0.1</code> only.
 		</p>
 		<Code title="docker run" code={dockerRun} />
-		<p>With Compose, share a log volume between the app and starlist:</p>
-		<Code lang="yaml" title="compose.yaml" code={compose} />
+		<p>With Compose, add this service next to your app, sharing the volume your app writes its log to:</p>
+		<Code lang="yaml" title="compose.yaml (add under services)" code={compose} />
 		<p>
-			The full file is <a href="{repo}/blob/main/deploy/compose.yaml" rel="noopener">deploy/compose.yaml</a>.
+			A complete example with a stand-in app is <a href="{repo}/blob/main/deploy/compose.yaml" rel="noopener">deploy/compose.yaml</a>.
 			Start it with <code>STARLIST_TOKEN=$(openssl rand -hex 32) docker compose up</code>.
 		</p>
 
@@ -575,13 +528,14 @@ logs.example.com {
 
 		<h3>Sidecar</h3>
 		<p>
-			The app writes its log to a shared <code>emptyDir</code>, and starlist follows the file. The
-			sidecar asks for 10m of CPU and 32Mi of memory. Each replica keeps its own database; add a
+			The app writes its log to a shared <code>emptyDir</code>, and starlist follows the file. It uses
+			about 11 MB of memory while serving. Each replica keeps its own database; add a
 			<a href="/docs/#hub">hub</a> to see them together.
 		</p>
-		<Code lang="yaml" title="deployment.yaml" code={sidecar} />
-		<Code title="apply and connect" code={sidecarRun} />
-		<p>The full manifest is <a href="{repo}/blob/main/deploy/kubernetes/sidecar.yaml" rel="noopener">deploy/kubernetes/sidecar.yaml</a>.</p>
+		<Code lang="yaml" title="deployment.yaml (add under containers)" code={sidecar} />
+		<Code lang="yaml" title="deployment.yaml (add under the pod spec, if missing)" code={sidecarVolumes} />
+		<Code title="then" code={sidecarRun} />
+		<p>A complete manifest with resource limits and a locked-down security context is <a href="{repo}/blob/main/deploy/kubernetes/sidecar.yaml" rel="noopener">deploy/kubernetes/sidecar.yaml</a>.</p>
 
 		<h3>Follow a workload's pods</h3>
 		<p>

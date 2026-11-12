@@ -32,11 +32,12 @@ starlist mcp --stdio`;
 
 	const connect = `claude mcp add --transport http logs http://127.0.0.1:7341/mcp`;
 
-	const demo = `git clone https://github.com/p-lau/starlist && cd starlist
-# 26 hours of a fake checkout service: a bad deploy 50m ago, a fix 15m ago
+	const demo = `# Get the demo: 26 hours of a fake checkout service with a bad deploy and its fix
+git clone https://github.com/p-lau/starlist && cd starlist
 cargo run --release --example demo_log -- demo.log
-cargo run --release -- serve --file demo.log --from-start --db demo.db
-# Then open http://127.0.0.1:7341/ or point your agent at /mcp`;
+
+# Serve it, then open http://127.0.0.1:7341/ or point your agent at /mcp
+cargo run --release -- serve --file demo.log --from-start --db demo.db`;
 
 	const templates = `ERROR charge failed for order 99812: "EURX"  ┐
 ERROR charge failed for order 10442: "GBPX"  ┴─ ERROR charge failed for order <NUM>: "<STR>"
@@ -52,6 +53,7 @@ ERROR charge failed for order 10442: "GBPX"  ┴─ ERROR charge failed for orde
 
 	const api = `curl -s 'http://127.0.0.1:7341/api/v1/whats-new?window=1h&min_level=WARN'
 curl -s http://127.0.0.1:7341/api/v1/patterns/p6c8d499767/verify?since=v1.4.3
+
 # Beyond localhost, every request needs the token
 curl -s -H "Authorization: Bearer $(cat starlist.db.token)" http://host:7341/api/v1/status`;
 
