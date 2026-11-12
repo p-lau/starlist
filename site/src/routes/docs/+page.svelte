@@ -39,9 +39,9 @@ cargo run --release --example demo_log -- demo.log
 # Serve it, then open http://127.0.0.1:7341/ or point your agent at /mcp
 cargo run --release -- serve --file demo.log --from-start --db demo.db`;
 
-	const templates = `ERROR charge failed for order 99812: "EURX"  ┐
-ERROR charge failed for order 10442: "GBPX"  ┴─ ERROR charge failed for order <NUM>: "<STR>"
-                                                pattern pb5d540dae8, 2 events`;
+	const logLines = `ERROR charge failed for order 99812: "EURX"
+ERROR charge failed for order 10442: "GBPX"`;
+	const pattern = `ERROR charge failed for order <NUM>: "<STR>"`;
 
 	const resource = {
 		uri: 'starlist://whats-new',
@@ -221,7 +221,10 @@ tools = "core"`;
 			<li><strong>Pattern.</strong> Numbers, IDs, UUIDs, hex, quoted strings and timestamps are masked. The exception type is part of the pattern.</li>
 			<li><strong>Store</strong> in a local SQLite file: per-10-second counts for 7 days, hourly counts for 400 days, 5 recent samples per pattern, and markers.</li>
 		</ol>
-		<Code title="many lines, one pattern" lang="text" code={templates} />
+		<p>These two lines from the log differ only in the order number and the currency:</p>
+		<Code title="app.log" lang="text" code={logLines} />
+		<p>so starlist stores them as one pattern, with the parts that vary masked:</p>
+		<Code title="pattern pb5d540dae8 · 2 events" lang="text" code={pattern} />
 
 		<h3>Pattern IDs are stable</h3>
 		<p>
