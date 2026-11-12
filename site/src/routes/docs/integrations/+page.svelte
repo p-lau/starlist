@@ -31,16 +31,18 @@ starlist serve --docker-label com.docker.compose.service=api
 # Podman
 STARLIST_DOCKER=podman starlist serve --docker shop-api`;
 
-	const dockerRun = `docker run --rm -v app-logs:/logs:ro -v starlist:/data \\
-  -p 127.0.0.1:7341:7341 -e STARLIST_TOKEN=$(openssl rand -hex 32) \\
-  ghcr.io/p-lau/starlist:1 \\
-  serve --file /logs/app.log --http 0.0.0.0:7341 --db /data/starlist.db`;
+	const dockerRun = `# Create a token to connect with later
+export STARLIST_TOKEN=$(openssl rand -hex 32)
+
+# Run starlist next to the volume your app logs to
+docker run --rm -p 127.0.0.1:7341:7341 -e STARLIST_TOKEN \\
+  -v app-logs:/logs:ro -v starlist:/data \\
+  ghcr.io/p-lau/starlist:1 serve --file /logs/app.log --http 0.0.0.0:7341`;
 
 	const compose = `starlist:
   image: ghcr.io/p-lau/starlist:1
-  command: serve --file=/var/log/app/app.log --http=0.0.0.0:7341 --db=/data/starlist.db
-  environment:
-    STARLIST_TOKEN: \${STARLIST_TOKEN:?set STARLIST_TOKEN}
+  command: serve --file=/var/log/app/app.log --http=0.0.0.0:7341
+  environment: [STARLIST_TOKEN]   # passed through from your shell
   volumes:
     - app-logs:/var/log/app:ro   # the volume your app writes its log to
     - starlist-data:/data
@@ -54,9 +56,8 @@ ENTRYPOINT ["starlist"]`;
 
 	const dockerSockCompose = `starlist:
   build: ./starlist
-  command: serve --docker-label app=shop --http 0.0.0.0:7341 --db /data/starlist.db
-  environment:
-    STARLIST_TOKEN: \${STARLIST_TOKEN:?set STARLIST_TOKEN}
+  command: serve --docker-label app=shop --http 0.0.0.0:7341
+  environment: [STARLIST_TOKEN]   # passed through from your shell
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock:ro
     - starlist-data:/data`;
@@ -70,7 +71,7 @@ starlist serve --k8s 'app=api,tier=web'`;
 
 	const sidecar = `- name: starlist
   image: ghcr.io/p-lau/starlist:1
-  args: [serve, --file=/var/log/app/app.log, --http=0.0.0.0:7341, --db=/data/starlist.db]
+  args: [serve, --file=/var/log/app/app.log, --http=0.0.0.0:7341]
   env:
     - name: STARLIST_TOKEN
       valueFrom: { secretKeyRef: { name: starlist, key: token } }
@@ -84,16 +85,17 @@ starlist serve --k8s 'app=api,tier=web'`;
     emptyDir: {}`;
 
 	const sidecarRun = `# Create the token
-kubectl create secret generic starlist --from-literal=token=$(openssl rand -hex 32)
+export STARLIST_TOKEN=$(openssl rand -hex 32)
+kubectl create secret generic starlist --from-literal=token=$STARLIST_TOKEN
 
 # Apply your deployment with the sidecar added
 kubectl apply -f deployment.yaml
 
-# Reach it from your machine
-kubectl port-forward deploy/api 7341
+# Reach it from your machine (in the background)
+kubectl port-forward deploy/api 7341 &
 
 # Connect Claude Code with the token
-claude mcp add --transport http starlist http://127.0.0.1:7341/mcp --header "Authorization: Bearer $(kubectl get secret starlist -o jsonpath='{.data.token}' | base64 -d)"`;
+claude mcp add --transport http starlist http://127.0.0.1:7341/mcp --header "Authorization: Bearer $STARLIST_TOKEN"`;
 
 	const rbac = `apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -202,10 +204,12 @@ starlist-ci --baseline passing.log failing.log`;
     - |
       if [ "$CI_JOB_STATUS" = failed ]; then
         # The same job's log from the latest successful pipeline on the default branch
-        curl -sf -H "PRIVATE-TOKEN: $STARLIST_READ_TOKEN" -o passing.log \\
-          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/artifacts/$CI_DEFAULT_BRANCH/raw/test.log?job=$CI_JOB_NAME" \\
-          && starlist-ci --baseline passing.log --format markdown test.log > starlist-ci.md \\
-          || starlist-ci --format markdown test.log > starlist-ci.md
+        url="$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/artifacts/$CI_DEFAULT_BRANCH/raw/test.log?job=$CI_JOB_NAME"
+        if curl -sf -H "PRIVATE-TOKEN: $STARLIST_READ_TOKEN" -o passing.log "$url"; then
+          starlist-ci --baseline passing.log --format markdown test.log > starlist-ci.md
+        else
+          starlist-ci --format markdown test.log > starlist-ci.md
+        fi
         cat starlist-ci.md
       fi
   artifacts:
@@ -258,18 +262,16 @@ make test 2>&1 | tee test.log
 starlist-ci --baseline passing.log --format markdown test.log > report.md`;
 
 	// Deploys
-	const markCurl = `curl -sf -X POST https://logs.example.com/api/v1/markers \\
+	const markCurl = `curl -sf https://logs.example.com/api/v1/markers \\
   -H "Authorization: Bearer $STARLIST_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"name": "v1.4.3", "deploy": true, "note": "deployed by CI"}'`;
+  --json '{"name": "v1.4.3", "deploy": true, "note": "deployed by CI"}'`;
 	const markAnswer = `HTTP/1.1 201 Created
 {"name":"v1.4.3","kind":"deploy","at":"2026-11-12T04:36:02.727Z","note":"deployed by CI"}`;
 	const markGha = `- name: Tell starlist about the release
   if: success()
   run: |
-    curl -sf -X POST "$STARLIST_URL/api/v1/markers" \\
-      -H "Authorization: Bearer $STARLIST_TOKEN" -H "Content-Type: application/json" \\
-      -d "{\\"name\\": \\"$GITHUB_REF_NAME\\", \\"deploy\\": true, \\"note\\": \\"$GITHUB_SHA\\"}"
+    jq -n '{name: env.GITHUB_REF_NAME, deploy: true, note: env.GITHUB_SHA}' |
+      curl -sf "$STARLIST_URL/api/v1/markers" -H "Authorization: Bearer $STARLIST_TOKEN" --json @-
   env:
     STARLIST_URL: \${{ vars.STARLIST_URL }}
     STARLIST_TOKEN: \${{ secrets.STARLIST_TOKEN }}`;
@@ -292,9 +294,9 @@ spec:
           command: [sh, -c]
           args:
             - >-
-              curl -sf -X POST http://api.shop.svc:7341/api/v1/markers
-              -H "Authorization: Bearer $STARLIST_TOKEN" -H "Content-Type: application/json"
-              -d '{"name": "v1.4.3", "deploy": true}'
+              curl -sf http://api.shop.svc:7341/api/v1/markers
+              -H "Authorization: Bearer $STARLIST_TOKEN"
+              --json '{"name": "v1.4.3", "deploy": true}'
           env:
             - name: STARLIST_TOKEN
               valueFrom: { secretKeyRef: { name: starlist, key: token } }`;
@@ -329,7 +331,7 @@ STARLIST_VERSION=v1.4.3 starlist serve --file app.log`;
       name      = "starlist"
       image     = "ghcr.io/p-lau/starlist:1"
       essential = false
-      command   = ["serve", "--file=/var/log/app/app.log", "--http=0.0.0.0:7341", "--db=/data/starlist.db"]
+      command   = ["serve", "--file=/var/log/app/app.log", "--http=0.0.0.0:7341"]
       environment = [
         { name = "STARLIST_VERSION", value = var.app_version }, # records the deploy at startup
         { name = "STARLIST_ENV", value = "production" }
@@ -351,10 +353,9 @@ resource "kubernetes_manifest" "api" {
 
   provisioner "local-exec" {
     command = <<-EOT
-      curl -sf -X POST "$STARLIST_URL/api/v1/markers" \\
+      curl -sf "$STARLIST_URL/api/v1/markers" \\
         -H "Authorization: Bearer $STARLIST_TOKEN" \\
-        -H "Content-Type: application/json" \\
-        -d '{"name": "\${var.app_version}", "deploy": true, "note": "terraform apply"}'
+        --json '{"name": "\${var.app_version}", "deploy": true, "note": "terraform apply"}'
     EOT
     environment = {
       STARLIST_URL   = var.starlist_url
@@ -388,9 +389,11 @@ STARLIST_TOKEN=$(openssl rand -hex 32) starlist serve --file app.log
 
 # Try it: a temporary https://….trycloudflare.com address
 cloudflared tunnel --url http://127.0.0.1:7341`;
-	const cfDeploy = `npx wrangler deploy && curl -sf -X POST "$STARLIST_URL/api/v1/markers" \\
-  -H "Authorization: Bearer $STARLIST_TOKEN" -H "Content-Type: application/json" \\
-  -d "{\\"name\\": \\"$(git rev-parse --short HEAD)\\", \\"deploy\\": true}"`;
+	const cfDeploy = `npx wrangler deploy
+
+# Record the commit as a deploy
+jq -n --arg name "$(git rev-parse --short HEAD)" '{name: $name, deploy: true}' |
+  curl -sf "$STARLIST_URL/api/v1/markers" -H "Authorization: Bearer $STARLIST_TOKEN" --json @-`;
 
 	// Other platforms
 	const platforms = `# Heroku
@@ -505,7 +508,8 @@ ssh -N -L 7341:127.0.0.1:7341 app-host`;
 		<Code lang="yaml" title="compose.yaml (add under services)" code={compose} />
 		<p>
 			A complete example with a stand-in app is <a href="{repo}/blob/main/deploy/compose.yaml" rel="noopener">deploy/compose.yaml</a>.
-			Start it with <code>STARLIST_TOKEN=$(openssl rand -hex 32) docker compose up</code>.
+			Start it with <code>export STARLIST_TOKEN=$(openssl rand -hex 32)</code> and
+			<code>docker compose up</code>, then connect your agent with the same token.
 		</p>
 
 		<h3>Apps that only log to stdout</h3>
@@ -695,6 +699,10 @@ ssh -N -L 7341:127.0.0.1:7341 app-host`;
 			<code>get_release</code> and every pattern's <code>first_release</code> know about it.
 		</p>
 		<h3>From any pipeline: the JSON API</h3>
+		<p>
+			<code>curl --json</code> needs curl 7.82 or later; with an older curl, use
+			<code>-H "Content-Type: application/json" -d</code> instead.
+		</p>
 		<Code title="curl" code={markCurl} />
 		<Code lang="text" title="answer" code={markAnswer} />
 		<h3>GitHub Actions deploy job</h3>
