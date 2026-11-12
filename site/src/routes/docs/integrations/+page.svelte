@@ -351,6 +351,70 @@ starlist mark v1.4.3 --deploy --note "fix currency KeyError" --db /data/starlist
 # Or when starting starlist next to a new release
 STARLIST_VERSION=v1.4.3 starlist serve --file app.log`;
 
+	// Terraform
+	const tfEcs = `resource "aws_ecs_task_definition" "api" {
+  family                   = "api"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 512
+  memory                   = 1024
+  execution_role_arn       = aws_iam_role.task_execution.arn # can read the secret
+
+  volume {
+    name = "app-logs"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "api"
+      image     = "\${var.app_image}:\${var.app_version}"
+      essential = true
+      # The app writes its log to /var/log/app/app.log
+      mountPoints = [{ sourceVolume = "app-logs", containerPath = "/var/log/app" }]
+    },
+    {
+      name      = "starlist"
+      image     = "ghcr.io/p-lau/starlist:1"
+      essential = false
+      command   = ["serve", "--file=/var/log/app/app.log", "--http=0.0.0.0:7341", "--db=/data/starlist.db"]
+      environment = [
+        { name = "STARLIST_VERSION", value = var.app_version }, # records the deploy at startup
+        { name = "STARLIST_ENV", value = "production" }
+      ]
+      secrets      = [{ name = "STARLIST_TOKEN", valueFrom = aws_secretsmanager_secret.starlist.arn }]
+      portMappings = [{ containerPort = 7341 }]
+      mountPoints  = [{ sourceVolume = "app-logs", containerPath = "/var/log/app", readOnly = true }]
+    }
+  ])
+}`;
+	const tfK8s = `# Reuse the sidecar manifest from the repository as is
+resource "kubernetes_manifest" "api" {
+  manifest = yamldecode(file("\${path.module}/sidecar.yaml"))
+}`;
+	const tfMark = `resource "terraform_data" "starlist_deploy" {
+  # Runs again whenever the app's version changes
+  triggers_replace = [var.app_version]
+  depends_on       = [aws_ecs_service.api] # with wait_for_steady_state = true
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      curl -sf -X POST "$STARLIST_URL/api/v1/markers" \\
+        -H "Authorization: Bearer $STARLIST_TOKEN" \\
+        -H "Content-Type: application/json" \\
+        -d '{"name": "\${var.app_version}", "deploy": true, "note": "terraform apply"}'
+    EOT
+    environment = {
+      STARLIST_URL   = var.starlist_url
+      STARLIST_TOKEN = var.starlist_token # a sensitive variable
+    }
+  }
+}`;
+	const tfCi = `# Keep each run's output, without color codes
+terraform apply -auto-approve -no-color 2>&1 | tee apply.log
+
+# When it fails, compare with the last successful run's apply.log
+starlist-ci --baseline last-good/apply.log apply.log`;
+
 	// Cloudflare
 	const cfJq = `# workers.jq: one JSON line per console message and per exception
 def ts: ./1000 | strftime("%Y-%m-%dT%H:%M:%SZ");
@@ -432,6 +496,7 @@ logs.example.com {
 				<tr><td>Cloudflare Workers, Heroku, CloudWatch</td><td>The platform's tail command into <code>--stdin</code></td><td><span class="kind recipe">recipe</span></td></tr>
 				<tr><td>GitLab CI, Jenkins, other CI</td><td><code>starlist-ci</code> in a job step</td><td><span class="kind recipe">recipe</span></td></tr>
 				<tr><td>Deploys from any CD tool</td><td><code>POST /api/v1/markers</code></td><td><span class="kind recipe">recipe</span></td></tr>
+				<tr><td>Terraform</td><td>A sidecar in your task or pod, and a marker on apply</td><td><span class="kind recipe">recipe</span></td></tr>
 			</tbody>
 		</table>
 	</div>
@@ -686,6 +751,50 @@ logs.example.com {
 		<p>Template the release name from your chart's image tag or the Argo CD revision.</p>
 		<h3>On the same machine</h3>
 		<Code title="local" code={markLocal} />
+	</section>
+
+	<!-- TERRAFORM -->
+	<section id="terraform">
+		<p class="eyebrow">Infrastructure</p>
+		<h2>Terraform <span class="kind recipe">recipe</span></h2>
+		<p>
+			There is no Terraform provider for starlist, and none is needed: Terraform doesn't write the logs,
+			it deploys what does. It fits in three places.
+		</p>
+
+		<h3>Deploy starlist next to the app</h3>
+		<p>
+			Add starlist as a second container wherever your Terraform already defines the app. On ECS
+			Fargate, the two containers share a task volume for the log file, and the token comes from
+			Secrets Manager:
+		</p>
+		<Code lang="hcl" title="ecs.tf" code={tfEcs} />
+		<p>
+			Setting <code>STARLIST_VERSION</code> from the same variable as the image tag records each release
+			as a deploy when the new task starts, so nothing else is needed for markers. The database lives in
+			the task and starts empty when the task is replaced; mount an EFS volume at <code>/data</code> to
+			keep history. Reach port 7341 over a private network or an HTTPS load balancer, never in the open.
+		</p>
+		<p>On Kubernetes, the manifest from the <a href="#kubernetes">Kubernetes</a> guide works with the kubernetes provider unchanged:</p>
+		<Code lang="hcl" title="k8s.tf" code={tfK8s} />
+
+		<h3>Record deploys from terraform apply</h3>
+		<p>
+			When starlist runs apart from the app (a long-running collector, or one reading Docker or
+			Kubernetes logs), have the apply post a marker once the new version is live:
+		</p>
+		<Code lang="hcl" title="marker.tf" code={tfMark} />
+		<p>
+			Set <code>wait_for_steady_state = true</code> on the <code>aws_ecs_service</code> (or wait for the
+			rollout on other platforms), or the marker lands before the new version is serving.
+		</p>
+
+		<h3>When terraform apply fails in CI</h3>
+		<p>
+			An apply's output is a log like any other. Keep it on every run, and on a failure compare it with
+			the last successful one, as in the <a href="#other-ci">other CI</a> recipe:
+		</p>
+		<Code title="CI" code={tfCi} />
 	</section>
 
 	<!-- CLOUDFLARE -->

@@ -10,7 +10,7 @@
 	let copied = $state(false);
 
 	const lines = $derived(code.replace(/^\n+|\s+$/g, '').split('\n'));
-	const commentMark = $derived(lang === 'sh' || lang === 'yaml' || lang === 'toml' ? '#' : lang === 'groovy' ? '//' : '');
+	const commentMark = $derived(lang === 'sh' || lang === 'yaml' || lang === 'toml' || lang === 'hcl' ? '#' : lang === 'groovy' ? '//' : '');
 
 	async function copy() {
 		try {

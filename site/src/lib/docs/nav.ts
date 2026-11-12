@@ -35,6 +35,7 @@ export const docsNav: NavPage[] = [
 			{ id: 'jenkins', title: 'Jenkins' },
 			{ id: 'other-ci', title: 'Other CI systems' },
 			{ id: 'deploys', title: 'Deploy markers from CD' },
+			{ id: 'terraform', title: 'Terraform' },
 			{ id: 'cloudflare', title: 'Cloudflare' },
 			{ id: 'platforms', title: 'Other platforms' },
 			{ id: 'remote', title: 'Reaching it remotely' }
