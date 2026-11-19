@@ -60,12 +60,12 @@ loki = []
 
 [dependencies]
 starlist-core = { path = "core", version = "1.0.0" }
-rmcp = { version = "3.9", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "3.10", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 schemars = "1"
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 regex.workspace = true
 sha1_smol = { workspace = true, optional = true }
 chrono.workspace = true
@@ -81,7 +81,7 @@ toml = { version = "1", default-features = false, features = ["parse", "serde", 
 
 [dev-dependencies]
 # The MCP client is only used by the example agent and the end-to-end test.
-rmcp = { version = "3.9", features = ["client", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "3.10", features = ["client", "transport-streamable-http-client-reqwest"] }
 reqwest = { version = "0.13", default-features = false }
 
 [[test]]

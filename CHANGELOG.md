@@ -16,6 +16,10 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 - Release archives for `starlist-ci`, and `starlist-ci` on crates.io.
 - `split_pattern` MCP tool and `POST /api/v1/patterns/split`: undo a merge, automatic or by hand. Split patterns count on their own again, get their template from before the merge back where known, and aren't merged automatically again.
 
+### Changed
+
+- Bundled SQLite updated to 3.54.1 (rusqlite 0.42); rmcp updated to 3.10 and ureq to 3.5.2.
+
 ## [1.0.0] - 2026-11-10
 
 The first public release. Everything below is new.
