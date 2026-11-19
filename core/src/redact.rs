@@ -143,4 +143,93 @@ mod tests {
         let line = "token expired for session, retrying";
         assert_eq!(r.redact(line), line);
     }
+
+    #[test]
+    fn every_pattern_redacts_its_value_and_spares_look_alikes() {
+        let r = Redactor::default();
+        let key = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----";
+        let public = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----";
+        let cases = [
+            // Private key blocks, whole; public keys stay.
+            (format!("k {key} end"), "k <PRIVATE_KEY> end"),
+            (public.to_string(), public),
+            // JWT needs three dot-separated parts.
+            ("t eyJhbGci.eyJzdWIi.sig_-9 x".into(), "t <JWT> x"),
+            ("t eyJhbGci.eyJzdWIi x".into(), "t eyJhbGci.eyJzdWIi x"),
+            // Bearer and basic need a credential after them.
+            ("Bearer abc.DEF-1_2~+/==".into(), "Bearer <TOKEN>"),
+            ("basic dXNlcjpwYXNz".into(), "basic <TOKEN>"),
+            ("bearer".into(), "bearer"),
+            // API keys by vendor prefix and length.
+            ("sk_live_abcdefghij12".into(), "<API_KEY>"),
+            ("pk_test_abcdefghij12".into(), "<API_KEY>"),
+            ("sk_live_short".into(), "sk_live_short"),
+            ("ghp_abcdefghijklmnopqrstuv".into(), "<API_KEY>"),
+            ("ghp_tooshort".into(), "ghp_tooshort"),
+            ("xoxb-1234567890-abc".into(), "<API_KEY>"),
+            ("sk-abcdefghijklmnopqrstuvwx".into(), "<API_KEY>"),
+            ("sk-short".into(), "sk-short"),
+            ("AKIAIOSFODNN7EXAMPLE".into(), "<API_KEY>"),
+            ("AKIAlowercase0123456789".into(), "AKIAlowercase0123456789"),
+            // key=value pairs keep the key and separator.
+            ("password=hunter2".into(), "password=<REDACTED>"),
+            ("PASSWD: hunter2".into(), "PASSWD: <REDACTED>"),
+            (
+                r#"{"client_secret": "s3cr3t"}"#.into(),
+                r#"{"client_secret": "<REDACTED>"}"#,
+            ),
+            ("apikey='abc' next".into(), "apikey='<REDACTED>' next"),
+            ("session_id=42&x=1".into(), "session_id=<REDACTED>&x=1"),
+            ("password is required".into(), "password is required"),
+            ("password:".into(), "password:"),
+            ("tokens=3".into(), "tokens=3"),
+            // Emails need a TLD.
+            (
+                "mail bob.smith+tag@example.co.uk now".into(),
+                "mail <EMAIL> now",
+            ),
+            ("user@host".into(), "user@host"),
+            ("@handle".into(), "@handle"),
+            // Cards: Luhn-valid, 13-19 digits.
+            ("4111-1111-1111-1111".into(), "<CARD>"),
+            ("4111111111111111".into(), "<CARD>"),
+            ("4111111111111112".into(), "4111111111111112"),
+            ("411111111111".into(), "411111111111"),
+            // IPv4 addresses, not versions or out-of-range octets.
+            ("from 192.168.1.20:8080".into(), "from <IP>:8080"),
+            ("from 256.1.1.1".into(), "from 256.1.1.1"),
+            ("version 1.2.3".into(), "version 1.2.3"),
+            ("version 1.2.3.4.5".into(), "version <IP>.5"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(r.redact(&input), want, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn ips_are_redacted_only_when_enabled() {
+        let on = Redactor::new(true, vec![]);
+        let off = Redactor::new(false, vec![]);
+        let line = "peer 10.0.0.12 up";
+        assert_eq!(on.redact(line), "peer <IP> up");
+        assert_eq!(off.redact(line), line);
+        // Other patterns still apply with IPs off.
+        assert_eq!(off.redact("10.0.0.12 a@b.io"), "10.0.0.12 <EMAIL>");
+    }
+
+    #[test]
+    fn extra_patterns_apply_after_the_built_ins() {
+        let extra = vec![
+            Regex::new(r"acct-\d+").unwrap(),
+            Regex::new("SECRET[A-Z]+").unwrap(),
+        ];
+        let r = Redactor::new(true, extra);
+        assert_eq!(
+            r.redact("acct-123 and SECRETXYZ and acct-x"),
+            "<REDACTED> and <REDACTED> and acct-x"
+        );
+        // Without them the same text is untouched.
+        let line = "acct-123 and SECRETXYZ";
+        assert_eq!(Redactor::default().redact(line), line);
+    }
 }
