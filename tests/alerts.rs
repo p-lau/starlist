@@ -9,30 +9,19 @@ use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt, ServiceExt};
 use starlist::alerts::{AlertConfig, Detector, RESOURCE_URI, post_webhook, spawn_watcher};
-use starlist::pattern::{Event, parse_event};
-use starlist::redact::Redactor;
+use starlist::pattern::Event;
 use starlist::store::Store;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod common;
+use common::ev;
+
 const NOW: f64 = 1_800_000_000.0;
 
 fn store() -> Arc<Store> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
-        "starlist-alerts-{}-{}.db",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    Arc::new(Store::open(p).unwrap())
-}
-
-fn ev(text: &str, ts: f64) -> Event {
-    let mut e = parse_event(text, &Redactor::default(), None, None);
-    e.ts = Some(ts);
-    e
+    Arc::new(common::store())
 }
 
 fn record(s: &Store, text: &str, ts: f64, n: usize) {

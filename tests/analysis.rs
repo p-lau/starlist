@@ -4,47 +4,14 @@ use starlist::analysis::{
     DEFAULT_MAX_CHARS, Detail, Page, compact, compare_deploy, get_pattern, trim_trace, verify_fix,
     whats_new,
 };
-use starlist::pattern::{Event, mask, parse_event, pattern_id};
-use starlist::redact::Redactor;
-use starlist::store::Store;
+use starlist::pattern::{mask, pattern_id};
+
+mod common;
+use common::{ev, id_of, spread, store};
 
 const NOW: f64 = 1_800_000_000.0;
 const H: f64 = 3600.0;
 const M: f64 = 60.0;
-
-fn store() -> Store {
-    let p = std::env::temp_dir().join(format!(
-        "starlist-test-{}-{}.db",
-        std::process::id(),
-        rand_suffix()
-    ));
-    Store::open(p).unwrap()
-}
-
-fn rand_suffix() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    N.fetch_add(1, Ordering::Relaxed)
-}
-
-fn ev(text: &str, ts: f64) -> Event {
-    let mut e = parse_event(text, &Redactor::default(), None, None);
-    e.ts = Some(ts);
-    e
-}
-
-/// `count` events spread evenly over [from, to).
-fn spread(store: &Store, text: &str, from: f64, to: f64, count: usize) {
-    let step = (to - from) / count as f64;
-    let evs: Vec<Event> = (0..count)
-        .map(|i| ev(text, from + step * i as f64))
-        .collect();
-    store.record(&evs).unwrap();
-}
-
-fn id_of(text: &str) -> String {
-    ev(text, 0.0).pattern_id
-}
 
 #[test]
 fn whats_new_finds_new_spiking_and_quiet_patterns() {

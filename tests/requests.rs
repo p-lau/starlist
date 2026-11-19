@@ -2,28 +2,17 @@
 
 use starlist::analysis::{DEFAULT_MAX_CHARS, Detail, Page, compact, get_request, whats_new};
 use starlist::collector::Pipeline;
-use starlist::pattern::{Event, parse_event};
 use starlist::redact::Redactor;
 use starlist::store::Store;
 use std::sync::Arc;
 
+mod common;
+use common::ev;
+
 const NOW: f64 = 1_800_000_000.0;
 
 fn store() -> Arc<Store> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
-        "starlist-requests-{}-{}.db",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    Arc::new(Store::open(p).unwrap())
-}
-
-fn ev(text: &str, ts: f64) -> Event {
-    let mut e = parse_event(text, &Redactor::default(), None, None);
-    e.ts = Some(ts);
-    e
+    Arc::new(common::store())
 }
 
 /// Two requests interleaved; the second one fails.

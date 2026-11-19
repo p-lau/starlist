@@ -6,16 +6,10 @@ use starlist::redact::Redactor;
 use starlist::store::Store;
 use std::sync::Arc;
 
+mod common;
+
 fn store() -> Arc<Store> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let db = std::env::temp_dir().join(format!(
-        "starlist-loc-{}-{}.db",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_file(&db);
-    Arc::new(Store::open(&db).unwrap())
+    Arc::new(common::store())
 }
 
 fn trace(ts: &str, func: &str, line: u32) -> String {

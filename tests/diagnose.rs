@@ -2,43 +2,14 @@
 
 use starlist::analysis::{DEFAULT_MAX_CHARS, Detail, Page, whats_new};
 use starlist::diagnose::{diagnose, rises};
-use starlist::pattern::{Event, parse_event};
-use starlist::redact::Redactor;
 use starlist::store::Store;
+
+mod common;
+use common::{id_of, spread, store};
 
 const NOW: f64 = 1_800_000_000.0;
 const H: f64 = 3600.0;
 const M: f64 = 60.0;
-
-fn store() -> Store {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
-        "starlist-diagnose-{}-{}.db",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    Store::open(p).unwrap()
-}
-
-fn ev(text: &str, ts: f64) -> Event {
-    let mut e = parse_event(text, &Redactor::default(), None, None);
-    e.ts = Some(ts);
-    e
-}
-
-/// `count` events spread evenly over [from, to).
-fn spread(store: &Store, text: &str, from: f64, to: f64, count: usize) {
-    let step = (to - from) / count as f64;
-    let evs: Vec<Event> = (0..count)
-        .map(|i| ev(text, from + step * i as f64))
-        .collect();
-    store.record(&evs).unwrap();
-}
-
-fn id_of(text: &str) -> String {
-    ev(text, 0.0).pattern_id
-}
 
 /// A day of steady traffic.
 fn background(s: &Store) {

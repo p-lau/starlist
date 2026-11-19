@@ -4,30 +4,19 @@ use regex::Regex;
 use starlist::analysis::{Detail, Page, get_release, whats_new};
 use starlist::collector::Pipeline;
 use starlist::issues::{Effective, States, merge, release, set_state};
-use starlist::pattern::{Event, parse_event};
+use starlist::pattern::Event;
 use starlist::redact::Redactor;
 use starlist::store::Store;
 use std::sync::Arc;
+
+mod common;
+use common::ev;
 
 const NOW: f64 = 1_800_000_000.0;
 const H: f64 = 3600.0;
 
 fn store() -> Arc<Store> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
-        "starlist-issues-{}-{}.db",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_file(&p);
-    Arc::new(Store::open(p).unwrap())
-}
-
-fn ev(text: &str, ts: f64) -> Event {
-    let mut e = parse_event(text, &Redactor::default(), None, None);
-    e.ts = Some(ts);
-    e
+    Arc::new(common::store())
 }
 
 /// `n` errors spread evenly over [from, to).

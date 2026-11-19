@@ -59,7 +59,7 @@ When `dashboard/` or `site/` changes, also run in that folder:
 npm ci && npm run check && npm run build
 ```
 
-Baseline (2026-11-19, commit fae8c17): all of the above pass. 159 tests with default features, 137 with `--no-default-features`, 0 Svelte check errors in either app. CI also builds and smoke-tests the Docker image (`deploy/Dockerfile`).
+Baseline (2026-11-19, commit b66a318): all of the above pass. 156 tests with default features, 137 with `--no-default-features`, 0 Svelte check errors in either app. CI also builds and smoke-tests the Docker image (`deploy/Dockerfile`).
 
 While fixing a failure, re-run only the failing tests; run the full suite once at the end.
 

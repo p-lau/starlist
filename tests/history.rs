@@ -5,30 +5,19 @@ use serde_json::Value;
 use starlist::collector::Pipeline;
 use starlist::http::{HttpConfig, app};
 use starlist::metrics::{Fields, summaries};
-use starlist::pattern::{Event, parse_event};
+use starlist::pattern::Event;
 use starlist::redact::Redactor;
 use starlist::store::Store;
 use std::sync::Arc;
+
+mod common;
+use common::ev;
 
 const H: f64 = 3600.0;
 const D: f64 = 86400.0;
 
 fn store() -> Arc<Store> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
-        "starlist-history-{}-{}.db",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_file(&p);
-    Arc::new(Store::open(p).unwrap())
-}
-
-fn ev(text: &str, ts: f64) -> Event {
-    let mut e = parse_event(text, &Redactor::default(), None, None);
-    e.ts = Some(ts);
-    e
+    Arc::new(common::store())
 }
 
 fn pipeline(s: &Arc<Store>) -> Pipeline {

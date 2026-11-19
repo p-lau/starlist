@@ -3,32 +3,17 @@
 
 use starlist::alerts::{AlertConfig, Detector};
 use starlist::analysis::{verify_fix_data, whats_new_data};
-use starlist::pattern::{Event, parse_event};
-use starlist::redact::Redactor;
+use starlist::pattern::Event;
 use starlist::store::Store;
+
+mod common;
+use common::{ev, store};
 
 /// 08:00 UTC.
 const NOW: f64 = 1_800_000_000.0;
 const DAY: f64 = 86400.0;
 const HOUR: f64 = 3600.0;
 const NIGHTLY: &str = "ERROR nightly export failed\nTimeoutError: upstream";
-
-fn store() -> Store {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
-        "starlist-timing-{}-{}.db",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    Store::open(p).unwrap()
-}
-
-fn ev(text: &str, ts: f64) -> Event {
-    let mut e = parse_event(text, &Redactor::default(), None, None);
-    e.ts = Some(ts);
-    e
-}
 
 fn record(s: &Store, text: &str, ts: f64, n: usize) {
     let evs: Vec<Event> = (0..n).map(|i| ev(text, ts + i as f64 * 0.5)).collect();
