@@ -8,6 +8,19 @@ use std::path::Path;
 use std::sync::Mutex;
 
 pub const BUCKET_SECS: f64 = 10.0;
+/// A pattern seen at most this many times counts as rare when capping.
+const LOW_COUNT: i64 = 10;
+/// ERROR and FATAL patterns seen within this long are never capped.
+const PROTECT_ERRORS_SECS: f64 = 7.0 * 86400.0;
+/// Capping evicts down to this share of the maximum, in percent.
+const CAP_TARGET_PCT: usize = 90;
+/// Patterns with no counts and nothing set by a user.
+const EXPIRED_PATTERNS: &str = "SELECT p.id FROM patterns p
+     WHERE NOT EXISTS (SELECT 1 FROM counts c WHERE c.pattern_id = p.id)
+     AND NOT EXISTS (SELECT 1 FROM hourly h WHERE h.pattern_id = p.id)
+     AND NOT EXISTS (SELECT 1 FROM pattern_state s WHERE s.pattern_id = p.id)
+     AND NOT EXISTS (SELECT 1 FROM pattern_timing t WHERE t.pattern_id = p.id)
+     AND NOT EXISTS (SELECT 1 FROM kept_apart k WHERE k.id = p.id)";
 const SAMPLES_PER_PATTERN: i64 = 5;
 const SAMPLE_EVERY_SECS: f64 = 10.0;
 
@@ -595,17 +608,20 @@ impl Store {
     }
 
     /// Fold counts older than `before_ts` into hourly counts. Patterns are kept
-    /// so that "first seen" stays accurate.
+    /// so that "first seen" stays accurate; see `expire_patterns` and
+    /// `cap_patterns` for removing them.
     pub fn prune(&self, before_ts: f64) -> R<usize> {
         self.rollup(before_ts, None)
     }
 
     /// Fold 10-second counts older than `before_ts` into hourly counts, then
-    /// drop hourly counts and metrics older than `history_before`.
+    /// drop hourly counts and metrics older than `history_before` and, in that
+    /// case, expire patterns left with no counts.
     /// Returns the number of 10-second rows folded.
     pub fn rollup(&self, before_ts: f64, history_before: Option<f64>) -> R<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
+        let mut expired = 0;
         let b = bucket_of(before_ts);
         tx.execute(
             "INSERT INTO hourly(pattern_id, bucket, n)
@@ -618,9 +634,66 @@ impl Store {
             let hour = (h / 3600.0).floor() as i64;
             tx.execute("DELETE FROM hourly WHERE bucket < ?1", [hour * 360])?;
             tx.execute("DELETE FROM metric_hourly WHERE hour < ?1", [hour])?;
+            expired = delete_patterns(&tx, EXPIRED_PATTERNS, [])?;
         }
         tx.commit()?;
+        if expired > 0 {
+            self.bump_generation();
+        }
         Ok(folded)
+    }
+
+    fn bump_generation(&self) {
+        self.splits
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Delete patterns that have no counts left, unless a user set state,
+    /// timing or a split on them. Returns how many were removed.
+    pub fn expire_patterns(&self) -> R<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let n = delete_patterns(&tx, EXPIRED_PATTERNS, [])?;
+        tx.commit()?;
+        if n > 0 {
+            self.bump_generation();
+        }
+        Ok(n)
+    }
+
+    /// Keep at most `max` patterns (0 = no limit). Over the limit, remove
+    /// patterns until `CAP_TARGET_PCT` of `max` remain: rarely seen ones
+    /// (at most `LOW_COUNT`) first, least recently seen first, then the rest.
+    /// Patterns with a user-set state, timing or split, and ERROR or FATAL
+    /// ones seen within `PROTECT_ERRORS_SECS` of `now`, stay. Returns how many
+    /// were removed.
+    pub fn cap_patterns(&self, max: usize, now: f64) -> R<usize> {
+        if max == 0 {
+            return Ok(0);
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM patterns", [], |r| r.get(0))?;
+        let count = count as usize;
+        if count <= max {
+            return Ok(0);
+        }
+        let evict = count - max * CAP_TARGET_PCT / 100;
+        let n = delete_patterns(
+            &tx,
+            "SELECT p.id FROM patterns p
+             WHERE NOT EXISTS (SELECT 1 FROM pattern_state s WHERE s.pattern_id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM pattern_timing t WHERE t.pattern_id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM kept_apart k WHERE k.id = p.id)
+             AND NOT (UPPER(COALESCE(p.level, '')) IN ('ERROR', 'FATAL') AND p.last_seen >= ?2)
+             ORDER BY (p.total > ?3), p.last_seen ASC LIMIT ?1",
+            params![evict as i64, now - PROTECT_ERRORS_SECS, LOW_COUNT],
+        )?;
+        tx.commit()?;
+        if n > 0 {
+            self.bump_generation();
+        }
+        Ok(n)
     }
 
     /// Histogram of `field` per hour from `lo` to `hi`, for one pattern or all.
@@ -824,8 +897,7 @@ impl Store {
             }
         }
         tx.commit()?;
-        self.splits
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.bump_generation();
         Ok(out)
     }
 
@@ -1334,4 +1406,33 @@ impl Store {
         })?;
         rows.collect()
     }
+}
+
+/// Delete the patterns `select` returns (a query of one column of IDs) and
+/// everything keyed by them, except user-set state. Returns how many.
+fn delete_patterns(
+    tx: &rusqlite::Transaction,
+    select: &str,
+    params: impl rusqlite::Params,
+) -> R<usize> {
+    let ids: Vec<String> = tx
+        .prepare(select)?
+        .query_map(params, |r| r.get(0))?
+        .collect::<R<_>>()?;
+    for id in &ids {
+        for sql in [
+            "DELETE FROM counts WHERE pattern_id = ?1",
+            "DELETE FROM hourly WHERE pattern_id = ?1",
+            "DELETE FROM samples WHERE pattern_id = ?1",
+            "DELETE FROM locations WHERE pattern_id = ?1",
+            "DELETE FROM raw WHERE pattern_id = ?1",
+            "DELETE FROM metric_hourly WHERE pattern_id = ?1",
+            "DELETE FROM merged_templates WHERE id = ?1",
+            "DELETE FROM aliases WHERE alias = ?1 OR canonical = ?1",
+            "DELETE FROM patterns WHERE id = ?1",
+        ] {
+            tx.execute(sql, [id])?;
+        }
+    }
+    Ok(ids.len())
 }

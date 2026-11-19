@@ -262,14 +262,21 @@ impl Hub {
         Ok(out)
     }
 
-    /// Fold old counts into hourly ones in every service, like a collector does.
-    pub fn spawn_pruner(self: &Arc<Self>, retention_secs: f64, history_secs: f64) {
+    /// Fold old counts into hourly ones in every service and cap the pattern
+    /// count, like a collector does.
+    pub fn spawn_pruner(
+        self: &Arc<Self>,
+        retention_secs: f64,
+        history_secs: f64,
+        max_patterns: usize,
+    ) {
         let hub = self.clone();
         std::thread::spawn(move || {
             loop {
                 let now = analysis::now();
                 for (_, s) in hub.stores() {
                     let _ = s.rollup(now - retention_secs, Some(now - history_secs));
+                    let _ = s.cap_patterns(max_patterns, now);
                 }
                 std::thread::sleep(std::time::Duration::from_secs(3600));
             }
