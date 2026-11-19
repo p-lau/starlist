@@ -6,26 +6,17 @@ use starlist::analysis::{
     Detail, MIN_MAX_CHARS, Page, compact, compare_deploy, get_context, get_pattern, get_request,
     list_markers, list_patterns, verify_fix, whats_new,
 };
-use starlist::pattern::{Event, parse_event};
-use starlist::redact::Redactor;
+use starlist::pattern::Event;
 use starlist::store::Store;
 use std::collections::HashSet;
+
+mod common;
+use common::{ev, id_of, store};
 
 const NOW: f64 = 1_800_000_000.0;
 const H: f64 = 3600.0;
 const M: f64 = 60.0;
 const PATTERNS: usize = 300;
-
-fn store() -> Store {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
-        "starlist-budget-{}-{}.db",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    Store::open(p).unwrap()
-}
 
 /// A digit-free word per index, so each line is its own pattern.
 fn word(mut i: usize) -> String {
@@ -49,12 +40,6 @@ fn noisy_line(i: usize) -> String {
         "ERROR request failed in {w} {} because the upstream {w} service rejected it request_id=noisy-req{frames}\nValueError: bad {w}",
         "while processing a very long description of the work ".repeat(4)
     )
-}
-
-fn ev(text: &str, ts: f64) -> Event {
-    let mut e = parse_event(text, &Redactor::default(), None, None);
-    e.ts = Some(ts);
-    e
 }
 
 fn noisy_store() -> Store {
@@ -92,10 +77,6 @@ fn len(v: &Value) -> usize {
         .unwrap()
         .chars()
         .count()
-}
-
-fn id_of(text: &str) -> String {
-    ev(text, 0.0).pattern_id
 }
 
 #[test]

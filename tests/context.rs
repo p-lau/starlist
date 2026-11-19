@@ -1,29 +1,14 @@
 //! Raw, redacted lines around an event (issue #10).
 
 use starlist::analysis::{Detail, compact, get_context};
-use starlist::pattern::{Event, parse_event};
-use starlist::redact::Redactor;
+use starlist::pattern::Event;
 use starlist::store::Store;
+
+mod common;
+use common::{ev, store};
 
 const NOW: f64 = 1_800_000_000.0;
 const BUG: &str = "ERROR checkout failed for cart 7\nTraceback (most recent call last):\n  File \"/app/pricing.py\", line 41, in price_cart\nKeyError: 'currency'";
-
-fn store() -> Store {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
-        "starlist-context-{}-{}.db",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    Store::open(p).unwrap()
-}
-
-fn ev(text: &str, ts: f64) -> Event {
-    let mut e = parse_event(text, &Redactor::default(), None, None);
-    e.ts = Some(ts);
-    e
-}
 
 /// 60 lines a second apart ending 10 minutes ago, with the error at line 40.
 fn timeline(s: &Store) -> Vec<Event> {
