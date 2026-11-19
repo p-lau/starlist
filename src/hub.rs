@@ -398,7 +398,7 @@ async fn sub_get(hub: &Hub, service: &str, path_and_query: &str) -> Result<Value
         .uri(path_and_query)
         .body(Body::empty())
         .map_err(|e| e.to_string())?;
-    let res = api.oneshot(req).await.map_err(|e| e.to_string())?;
+    let Ok(res) = api.oneshot(req).await;
     let ok = res.status().is_success();
     let bytes = axum::body::to_bytes(res.into_body(), 64 << 20)
         .await
@@ -472,10 +472,10 @@ async fn hub_api(State(hub): State<Arc<Hub>>, req: Request) -> Response {
     *fresh.uri_mut() = parts.uri;
     *fresh.headers_mut() = parts.headers;
     match hub.api(&service) {
-        Some(api) => match api.oneshot(fresh).await {
-            Ok(r) => r.into_response(),
-            Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        },
+        Some(api) => {
+            let Ok(r) = api.oneshot(fresh).await;
+            r.into_response()
+        }
         None => err(
             StatusCode::NOT_FOUND,
             format!("Unknown service '{service}'. GET /api/v1/services lists them."),

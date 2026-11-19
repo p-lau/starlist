@@ -4,6 +4,7 @@
 	import Hub from '#lib/Hub.svelte';
 	import Terminal from '#lib/Terminal.svelte';
 	import CopyCode from '#lib/CopyCode.svelte';
+	import Logo from '#lib/Logo.svelte';
 	import { reveal } from '#lib/reveal.ts';
 	import { spotlight, tilt } from '#lib/effects.ts';
 
@@ -113,14 +114,7 @@
 	<div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
 	<header class="nav wrap">
 		<a class="brand" href="#top" aria-label="Starlist home">
-			<svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
-				<circle cx="16" cy="16" r="6.5" fill="url(#bg)" />
-				<ellipse cx="16" cy="16" rx="13" ry="5" fill="none" stroke="#7aa2ff" stroke-width="1.4" transform="rotate(-25 16 16)" />
-				<circle cx="27.2" cy="10.9" r="2.2" fill="#9fe7ff" />
-				<defs>
-					<radialGradient id="bg"><stop offset="0" stop-color="#fff6d8" /><stop offset=".6" stop-color="#ffc857" /><stop offset="1" stop-color="#ff8a3d" /></radialGradient>
-				</defs>
-			</svg>
+			<Logo />
 			Starlist
 		</a>
 		<nav aria-label="Sections">
@@ -128,6 +122,7 @@
 			<a href="#tools">Tools</a>
 			<a href="#how">How it works</a>
 			<a href="#install">Install</a>
+			<a class="docs-link" href="/docs/">Docs</a>
 		</nav>
 		<a class="gh" href={repo} rel="noopener">
 			<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" /></svg>
@@ -151,7 +146,7 @@
 				</p>
 				<div class="ctas">
 					<a class="btn btn-primary" href="#install">Get started</a>
-					<a class="btn btn-ghost" href={repo} rel="noopener">View source</a>
+					<a class="btn btn-ghost" href="/docs/">Read the docs</a>
 				</div>
 			</div>
 		</section>
@@ -301,7 +296,8 @@
 				<a href="{repo}/releases/latest" rel="noopener">releases page</a>. <code>starlist init</code> sets up
 				Claude Code, Cursor, VS Code or Gemini CLI; any other MCP client connects to
 				<code>http://127.0.0.1:7341/mcp</code>. While it runs, a small dashboard is at
-				<code>http://127.0.0.1:7341/</code>.
+				<code>http://127.0.0.1:7341/</code>. The <a href="/docs/">docs</a> cover every tool and
+				integrations with Docker, Kubernetes and CI.
 			</p>
 		</section>
 	</main>
@@ -309,6 +305,7 @@
 	<footer class="wrap">
 		<span>Starlist · MIT licensed</span>
 		<span class="links">
+			<a href="/docs/">Docs</a>
 			<a href="https://crates.io/crates/starlist" rel="noopener">crates.io</a>
 			<a href={repo} rel="noopener">GitHub</a>
 		</span>
@@ -894,7 +891,7 @@
 		}
 	}
 	@media (max-width: 720px) {
-		nav {
+		nav a:not(.docs-link) {
 			display: none;
 		}
 		.nav {
