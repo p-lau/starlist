@@ -436,7 +436,7 @@ async fn whats_new(
             "window": {"from": iso(data.window_from), "to": iso(now), "since_deploy": nw.deploy},
             "baseline": {"from": iso(data.baseline_from), "to": iso(data.window_from)},
             "summary": data.summary(),
-            "counts": {"new": t[0], "regressed": data.regressed, "returning": t[1], "spike": t[2], "rising": t[4], "gone_quiet": t[3]},
+            "counts": {"new": t.new, "regressed": data.regressed, "returning": t.returning, "spike": t.spike, "rising": t.rising, "gone_quiet": t.gone_quiet},
             "traffic": {
                 "events_window": data.events_in_window,
                 "events_baseline": data.events_in_baseline,
@@ -672,7 +672,7 @@ async fn compare(
             "before": {"from": iso(d.before_from), "to": iso(d.split), "events": d.events_before},
             "after": {"from": iso(d.split), "to": iso(now), "events": d.events_after},
             "summary": d.summary(),
-            "counts": {"new_after": t[0], "increased": t[1], "stopped": t[2], "decreased": t[3]},
+            "counts": {"new_after": t.new_after, "increased": t.increased, "stopped": t.stopped, "decreased": t.decreased},
             "total": d.changes.len(),
             "offset": offset,
             "changes": changes,

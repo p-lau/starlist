@@ -560,10 +560,20 @@ pub struct WhatsNewData {
     /// Patterns with events in the window.
     pub active: usize,
     /// Findings per kind: new, returning, spike, gone_quiet, rising.
-    pub tally: [usize; 5],
+    pub tally: FindingCounts,
     /// Resolved patterns that came back.
     pub regressed: usize,
     pub findings: Vec<Finding>,
+}
+
+/// Findings per kind in a what's-new result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FindingCounts {
+    pub new: usize,
+    pub returning: usize,
+    pub spike: usize,
+    pub gone_quiet: usize,
+    pub rising: usize,
 }
 
 impl WhatsNewData {
@@ -580,14 +590,14 @@ impl WhatsNewData {
             } else {
                 String::new()
             };
-            let rising = if t[4] > 0 {
-                format!("{} rising, ", t[4])
+            let rising = if t.rising > 0 {
+                format!("{} rising, ", t.rising)
             } else {
                 String::new()
             };
             format!(
                 "{} new, {regressed}{} returning, {} spiking, {rising}{} gone quiet. {} events across {} patterns in the window.",
-                t[0], t[1], t[2], t[3], self.events_in_window, self.active
+                t.new, t.returning, t.spike, t.gone_quiet, self.events_in_window, self.active
             )
         }
     }
@@ -624,7 +634,7 @@ pub fn whats_new_data(
     let data_start = store.data_start().map_err(db)?.unwrap_or(lo);
     // (group, level, kind order, count) for sorting; group 1 = good news, listed last.
     let mut found: Vec<((u8, u8, u8, i64), Finding)> = vec![];
-    let mut tally = [0usize; 5];
+    let mut tally = FindingCounts::default();
     let mut regressed = 0;
     for SplitStat { row, before, after } in stats {
         let lvl = level_rank(row.level.as_deref());
@@ -703,7 +713,13 @@ pub fn whats_new_data(
         } else {
             continue;
         };
-        tally[if kind == "rising" { 4 } else { order as usize }] += 1;
+        match kind {
+            "new" => tally.new += 1,
+            "returning" => tally.returning += 1,
+            "spike" => tally.spike += 1,
+            "rising" => tally.rising += 1,
+            _ => tally.gone_quiet += 1,
+        }
         let group = u8::from(kind == "gone_quiet" || usual);
         found.push((
             (group, 4 - lvl, order, -after),
@@ -1192,8 +1208,17 @@ pub struct DeployDiff {
     pub events_before: i64,
     pub events_after: i64,
     /// Changes per kind: new_after, increased, stopped, decreased.
-    pub tally: [usize; 4],
+    pub tally: ChangeCounts,
     pub changes: Vec<Change>,
+}
+
+/// Changes per kind in a deploy diff.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChangeCounts {
+    pub new_after: usize,
+    pub increased: usize,
+    pub stopped: usize,
+    pub decreased: usize,
 }
 
 impl DeployDiff {
@@ -1201,7 +1226,7 @@ impl DeployDiff {
         let t = self.tally;
         format!(
             "{} new since the split, {} increased, {} stopped, {} decreased.",
-            t[0], t[1], t[2], t[3]
+            t.new_after, t.increased, t.stopped, t.decreased
         )
     }
 }
@@ -1241,7 +1266,7 @@ pub fn compare_deploy_data(
     };
 
     let mut found: Vec<((u8, u8, u8, i64), Change)> = vec![];
-    let mut tally = [0usize; 4];
+    let mut tally = ChangeCounts::default();
     for SplitStat { row, before, after } in stats {
         let (b, a) = (before, after);
         let b_rate = b as f64 / span;
@@ -1258,7 +1283,12 @@ pub fn compare_deploy_data(
         } else {
             continue;
         };
-        tally[order as usize] += 1;
+        match kind {
+            "new_after" => tally.new_after += 1,
+            "increased" => tally.increased += 1,
+            "stopped" => tally.stopped += 1,
+            _ => tally.decreased += 1,
+        }
         let group = u8::from(order >= 2);
         let key = (
             group,

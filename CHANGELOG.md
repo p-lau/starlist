@@ -19,6 +19,7 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 ### Changed
 
 - Bundled SQLite updated to 3.54.1 (rusqlite 0.42); rmcp updated to 3.10 and ureq to 3.5.2.
+- Library: `WhatsNewData::tally` and `DeployDiff::tally` are now structs with named counts (`FindingCounts`, `ChangeCounts`) instead of arrays. Tool and API output are unchanged.
 
 ## [1.0.0] - 2026-11-10
 
