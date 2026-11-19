@@ -51,8 +51,16 @@ pub fn render(store: &Store, now: f64) -> Result<String, String> {
 /// The exposition text of a hub: the same metrics, each header once, with a
 /// `service` label on every series.
 pub fn render_services(stores: &[(String, Arc<Store>)], now: f64) -> Result<String, String> {
+    // One unreadable service must not take the whole hub endpoint down.
     let list: Vec<(Option<&str>, &Store)> = stores
         .iter()
+        .filter(|(n, s)| match s.level_totals() {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!("starlist: metrics: skipping service {n}: {e}");
+                false
+            }
+        })
         .map(|(n, s)| (Some(n.as_str()), s.as_ref()))
         .collect();
     render_all(&list, now)
@@ -215,5 +223,6 @@ mod tests {
         let plain = render(&a, 1000.0).unwrap();
         assert!(plain.contains("starlist_db_bytes "));
         assert!(!plain.contains("service="));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

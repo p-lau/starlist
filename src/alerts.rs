@@ -223,6 +223,17 @@ where
         latest: Mutex::new(None),
     });
     let out = alerts.clone();
+    // Webhook POSTs run on their own thread so a slow endpoint never delays
+    // the checks of other services.
+    let hook = cfg.notify_url.clone().map(|url| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Value>(64);
+        std::thread::spawn(move || {
+            for body in rx {
+                post_webhook(&url, &body);
+            }
+        });
+        tx
+    });
     std::thread::spawn(move || {
         let mut dets: HashMap<Option<String>, Detector> = HashMap::new();
         loop {
@@ -242,8 +253,10 @@ where
                     }
                     a.service = name;
                     eprintln!("starlist: alert: {}", a.summary);
-                    if let Some(url) = &cfg.notify_url {
-                        post_webhook(url, &a.to_json(now));
+                    if let Some(tx) = &hook
+                        && tx.try_send(a.to_json(now)).is_err()
+                    {
+                        eprintln!("starlist: webhook queue full or closed; alert not sent");
                     }
                     alerts.publish(a);
                 }

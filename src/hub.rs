@@ -91,6 +91,8 @@ impl Hub {
     /// for every service.
     pub fn set_alerts(&self, alerts: Option<Arc<crate::alerts::Alerts>>) {
         *self.alerts.write().unwrap_or_else(|e| e.into_inner()) = alerts;
+        // Cached per-service routers carry the alerts handle; rebuild them.
+        self.apis.write().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     pub fn alerts(&self) -> Option<Arc<crate::alerts::Alerts>> {
@@ -159,7 +161,7 @@ impl Hub {
         let store = self.store(service)?;
         let r = crate::api::routes(crate::api::ApiState {
             store,
-            alerts: None,
+            alerts: self.alerts(),
             service: Some(service.to_string()),
         });
         self.apis
