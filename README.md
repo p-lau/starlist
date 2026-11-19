@@ -72,7 +72,7 @@ These are real answers from the [demo](#try-the-demo), which you can run yoursel
 ## Install
 
 ```sh
-cargo install starlist
+cargo install --locked starlist
 ```
 
 Or grab a prebuilt binary from the [latest release](https://github.com/p-lau/starlist/releases/latest) (Linux, macOS, Windows), or run the container `ghcr.io/p-lau/starlist:1`. See [deploy/](deploy/) for Docker Compose and Kubernetes.

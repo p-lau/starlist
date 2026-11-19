@@ -15,7 +15,7 @@ Pushing a version tag runs `.github/workflows/release.yml`, which:
 
 ## Each release
 
-1. On a branch, set `version` in `[workspace.package]` and the `version` of the `starlist-core` dependency in `Cargo.toml` to the new version, and run `cargo check` to update `Cargo.lock`.
+1. On a branch, set `version` in `[workspace.package]` and the `version` of the `starlist-core` dependency in `Cargo.toml` and `ci/Cargo.toml` to the new version, and run `cargo check` to update `Cargo.lock`.
 2. In `CHANGELOG.md`, rename `[Unreleased]` to `[1.2.3] - YYYY-MM-DD`, start a new empty `[Unreleased]` above it, and update the links at the bottom.
 3. Merge it, then tag the merge commit and push the tag:
 
@@ -24,6 +24,6 @@ Pushing a version tag runs `.github/workflows/release.yml`, which:
    git push origin v1.2.3
    ```
 
-4. Check the release page, `docker run --rm ghcr.io/p-lau/starlist:1.2.3 --version` `cargo install starlist --version 1.2.3` and `cargo install starlist-ci --version 1.2.3`.
+4. Check the release page, `docker run --rm ghcr.io/p-lau/starlist:1.2.3 --version`, `cargo install starlist --version 1.2.3` and `cargo install starlist-ci --version 1.2.3`.
 
 A failed job can be re-run from the Actions tab. If crates.io publishing fails after the GitHub release is out, fix the cause and re-run only the `crates` job; a version that reached crates.io can't be replaced, only yanked, so a bad one is followed by a patch release.
