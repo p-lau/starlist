@@ -79,3 +79,26 @@ jobs:
           done
           curl -sf -H "Authorization: Bearer ci-smoke-test-token-0123456789" http://127.0.0.1:7341/api/v1/status || { docker logs sl; exit 1; }
           docker logs sl
+
+  fuzz:
+    name: Fuzz (60s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: parse_event
+        run: cargo fuzz run parse_event fuzz/seeds/parse_event -- -max_total_time=60
+      - name: redact
+        run: cargo fuzz run redact fuzz/seeds/redact -- -max_total_time=60
+      - name: Upload crashes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
