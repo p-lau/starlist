@@ -4,10 +4,13 @@ mod common;
 
 use clap::{Arg, Command};
 use common::{id_of, spread, store};
+use starlist::collector::Pipeline;
 use starlist::config::to_args;
+use starlist::redact::Redactor;
 use starlist::store::{StateRow, Store};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command as Proc;
+use std::sync::Arc;
 
 const D: f64 = 86400.0;
 
@@ -141,7 +144,7 @@ fn cap_spares_stated_and_recent_error_patterns() {
     let plain = fill(&s, 7, 1, t);
     // 10 patterns, max 5 -> evict down to 4, but only 8 are eligible.
     let n = s.cap_patterns(5, t).unwrap();
-    assert!(n >= 1);
+    assert_eq!(n, 6);
     assert!(exists(&s, &stated));
     assert!(exists(&s, &err_recent));
     assert!(!exists(&s, &err_old), "old ERROR is not protected");
@@ -205,4 +208,155 @@ fn config_key_max_patterns_becomes_the_flag() {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     assert_eq!(out, ["--max-patterns", "5"]);
+}
+
+fn set_timing(s: &Store, id: &str) {
+    s.set_timing(id, Some("recurring")).unwrap();
+}
+
+#[test]
+fn timing_override_exempts_from_cap_and_expiry() {
+    let s = store();
+    let t = now();
+    let old = t - 40.0 * D;
+    let timed = put(&s, OLD_A, old, 1);
+    set_timing(&s, &timed);
+    let doomed = put(&s, OLD_B, old, 1);
+    s.rollup(t - 7.0 * D, Some(t - 14.0 * D)).unwrap();
+    assert!(exists(&s, &timed), "timing survives expiry");
+    assert!(!exists(&s, &doomed));
+
+    fill(&s, 8, 1, t);
+    assert_eq!(s.pattern_count().unwrap(), 9);
+    // Max 4 -> down to 3; the timed pattern is the least recent but exempt.
+    assert_eq!(s.cap_patterns(4, t).unwrap(), 6);
+    assert!(exists(&s, &timed), "timing survives the cap");
+    assert!(s.timings().unwrap().contains_key(&timed));
+    assert_eq!(s.pattern_count().unwrap(), 3);
+}
+
+fn open_arc() -> (Arc<Store>, PathBuf) {
+    let p = common::temp_db("starlist-cap");
+    (Arc::new(Store::open(&p).unwrap()), p)
+}
+
+const USERS: [&str; 4] = ["alice", "bob", "carol", "dave"];
+
+fn user_line(u: &str, ts: Option<&str>) -> String {
+    match ts {
+        Some(ts) => format!("{ts} WARN login failed for {u}"),
+        None => format!("WARN login failed for {u}"),
+    }
+}
+
+/// Four old lines that merge into one canonical pattern. Returns it.
+fn ingest_merged(p: &Pipeline, s: &Store) -> String {
+    let lines: Vec<String> = USERS
+        .iter()
+        .enumerate()
+        .map(|(i, u)| user_line(u, Some(&format!("2020-01-01T00:0{i}:00Z"))))
+        .collect();
+    p.ingest(&lines);
+    let aliases = s.aliases().unwrap();
+    assert!(!aliases.is_empty(), "lines should have merged");
+    let c = aliases.values().next().unwrap().clone();
+    assert!(aliases.values().all(|v| *v == c));
+    assert!(exists(s, &c));
+    c
+}
+
+fn template_rows(path: &Path) -> i64 {
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM merged_templates", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn cap_and_expiry_of_a_canonical_clear_aliases_and_templates_and_merger_reloads() {
+    for by_cap in [false, true] {
+        let (s, path) = open_arc();
+        let p = Pipeline::with_merging(s.clone(), Redactor::default(), None, Some(3));
+        let c = ingest_merged(&p, &s);
+        assert!(template_rows(&path) > 0);
+        let t = now();
+        let gen_before = s.split_generation();
+        if by_cap {
+            fill(&s, 3, 1, t);
+            assert!(s.cap_patterns(2, t).unwrap() > 0);
+        } else {
+            s.rollup(t - 7.0 * D, Some(t - 14.0 * D)).unwrap();
+        }
+        assert!(!exists(&s, &c), "by_cap={by_cap}");
+        assert!(s.aliases().unwrap().is_empty(), "by_cap={by_cap}");
+        assert!(s.merged_ids(&c).unwrap().is_empty());
+        assert_eq!(template_rows(&path), 0, "by_cap={by_cap}");
+        assert!(s.split_generation() > gen_before);
+
+        // The merger drops what it knew about the deleted pattern.
+        p.ingest(&[user_line("alice", None)]);
+        let id = id_of(&user_line("alice", None));
+        let row = s
+            .pattern(&id)
+            .unwrap()
+            .expect("pattern recreated under its own ID");
+        assert_eq!(row.total, 1, "totals start fresh, by_cap={by_cap}");
+        assert!(!row.template.is_empty());
+        assert!(s.aliases().unwrap().is_empty());
+        assert!(
+            !exists(&s, &c) || c == id,
+            "no stale canonical, by_cap={by_cap}"
+        );
+    }
+}
+
+#[test]
+fn manual_split_exempts_from_cap_and_expiry() {
+    for by_cap in [false, true] {
+        let (s, _) = open_arc();
+        let p = Pipeline::with_merging(s.clone(), Redactor::default(), None, Some(3));
+        let c = ingest_merged(&p, &s);
+        let a = s.aliases().unwrap().keys().next().unwrap().clone();
+        let split = s.split_patterns(&c, std::slice::from_ref(&a)).unwrap();
+        assert_eq!(split, std::slice::from_ref(&a));
+        assert!(s.kept_apart().unwrap().contains(&a));
+        let t = now();
+        if by_cap {
+            fill(&s, 5, 1, t);
+            // The split pattern is empty and old, so it would go first.
+            assert!(s.cap_patterns(3, t).unwrap() > 0);
+        } else {
+            s.rollup(t - 7.0 * D, Some(t - 14.0 * D)).unwrap();
+        }
+        assert!(exists(&s, &a), "split pattern stays, by_cap={by_cap}");
+        assert!(s.kept_apart().unwrap().contains(&a));
+    }
+}
+
+#[test]
+fn cap_drops_rare_first_then_least_recent_busy_when_rare_run_out() {
+    let s = store();
+    let t = now();
+    // 3 rare (total <= 10) and 12 busy patterns, busy ones more recent.
+    let rare: Vec<String> = (0..3)
+        .map(|i| {
+            put(
+                &s,
+                &format!("WARN rare{} thing", "xyz".chars().nth(i).unwrap()),
+                t - 100.0 * D,
+                1,
+            )
+        })
+        .collect();
+    let busy: Vec<String> = fill(&s, 12, 50, t - 60.0);
+    assert_eq!(s.pattern_count().unwrap(), 15);
+    // Max 10 -> 9 remain: 6 evictions = 3 rare, then the 3 least recent busy.
+    assert_eq!(s.cap_patterns(10, t).unwrap(), 6);
+    assert_eq!(s.pattern_count().unwrap(), 9);
+    for id in &rare {
+        assert!(!exists(&s, id), "rare goes first");
+    }
+    for (i, id) in busy.iter().enumerate() {
+        assert_eq!(exists(&s, id), i >= 3, "busy {i}");
+    }
 }
