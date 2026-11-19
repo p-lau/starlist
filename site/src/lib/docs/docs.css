@@ -1,0 +1,200 @@
+/* Prose styles shared by the docs pages. Everything is under .doc. */
+
+.doc {
+	color: var(--muted);
+	font-size: 1rem;
+}
+.doc > header {
+	margin-bottom: 48px;
+}
+.doc h1 {
+	font-size: clamp(2.3rem, 5vw, 3.4rem);
+	font-weight: 700;
+	color: var(--text);
+	margin: 14px 0 16px;
+}
+.doc .lede {
+	font-size: 1.12rem;
+	max-width: 40em;
+	margin: 0;
+}
+.doc section {
+	scroll-margin-top: 90px;
+	padding-top: 28px;
+	margin-top: 40px;
+	border-top: 1px solid var(--line);
+}
+.doc h2 {
+	font-size: clamp(1.6rem, 3vw, 2.1rem);
+	font-weight: 650;
+	color: var(--text);
+	margin: 10px 0 14px;
+}
+.doc h3 {
+	font-size: 1.2rem;
+	font-weight: 650;
+	color: var(--text);
+	margin: 34px 0 10px;
+	scroll-margin-top: 90px;
+}
+.doc h4 {
+	font: 600 0.78rem var(--font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.12em;
+	color: var(--faint);
+	margin: 22px 0 8px;
+}
+.doc p,
+.doc li {
+	line-height: 1.7;
+}
+.doc p {
+	margin: 0 0 14px;
+}
+.doc ul,
+.doc ol {
+	margin: 0 0 14px;
+	padding-left: 22px;
+}
+.doc li + li {
+	margin-top: 4px;
+}
+.doc strong {
+	color: var(--text);
+}
+.doc a {
+	color: var(--sat);
+	text-decoration-color: rgba(159, 231, 255, 0.35);
+	text-underline-offset: 3px;
+}
+.doc a:hover {
+	text-decoration-color: var(--sat);
+}
+.doc :not(pre) > code {
+	font-size: 0.86em;
+	color: var(--text);
+	background: rgba(140, 160, 255, 0.1);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 1px 5px;
+	overflow-wrap: break-word;
+	font-variant-ligatures: none;
+}
+
+/* Tables scroll on their own on narrow screens. */
+.doc .table {
+	overflow-x: auto;
+	margin: 16px 0 20px;
+	border: 1px solid var(--line);
+	border-radius: 12px;
+}
+.doc table {
+	width: 100%;
+	min-width: 520px;
+	border-collapse: collapse;
+	font-size: 0.9rem;
+}
+.doc th,
+.doc td {
+	text-align: left;
+	vertical-align: top;
+	padding: 9px 14px;
+	border-bottom: 1px solid var(--line);
+}
+.doc tr:last-child td {
+	border-bottom: 0;
+}
+.doc th {
+	font: 600 0.72rem var(--font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--faint);
+	background: rgba(255, 255, 255, 0.02);
+}
+.doc td:first-child code {
+	white-space: nowrap;
+}
+
+/* A note in the margin of the text. */
+.doc .note {
+	margin: 18px 0;
+	padding: 14px 18px;
+	border-radius: 12px;
+	border: 1px solid rgba(159, 231, 255, 0.22);
+	background: rgba(159, 231, 255, 0.05);
+	font-size: 0.94rem;
+}
+.doc .note.warn {
+	border-color: rgba(255, 200, 87, 0.3);
+	background: rgba(255, 200, 87, 0.06);
+}
+.doc .note > :last-child {
+	margin-bottom: 0;
+}
+
+/* Built in vs recipe, on integration headings. */
+.doc .kind {
+	display: inline-block;
+	vertical-align: middle;
+	margin-left: 10px;
+	font: 600 0.64rem var(--font-mono);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	padding: 3px 8px;
+	border-radius: 6px;
+	white-space: nowrap;
+	position: relative;
+	top: -2px;
+}
+.doc .kind.builtin {
+	color: var(--good);
+	background: rgba(126, 240, 176, 0.1);
+}
+.doc .kind.recipe {
+	color: var(--violet);
+	background: rgba(182, 156, 255, 0.12);
+}
+.doc .kind.soon {
+	color: var(--star);
+	background: rgba(255, 200, 87, 0.1);
+}
+
+/* Cards that link to sections. */
+.doc .cards {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
+	margin: 20px 0;
+	padding: 0;
+	list-style: none;
+}
+.doc .cards li {
+	margin: 0;
+}
+.doc .cards a {
+	display: block;
+	height: 100%;
+	padding: 16px 18px;
+	border-radius: 14px;
+	border: 1px solid var(--line);
+	background: var(--panel);
+	text-decoration: none;
+	color: var(--muted);
+	font-size: 0.9rem;
+	line-height: 1.5;
+}
+.doc .cards a:hover {
+	border-color: rgba(159, 231, 255, 0.4);
+}
+.doc .cards b {
+	display: block;
+	margin-bottom: 4px;
+	font: 600 1rem var(--font-display);
+	color: var(--text);
+}
+
+@media (max-width: 600px) {
+	.doc .cards {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
