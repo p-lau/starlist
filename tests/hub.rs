@@ -391,3 +391,219 @@ fn trace_ids_win_over_request_ids() {
     assert!(!starlist::push::valid_service("../etc"));
     assert!(starlist::push::valid_service("checkout-api.eu"));
 }
+
+// ---- hub alerts and metrics ----
+
+use starlist::alerts::AlertConfig;
+use starlist::hub::spawn_alerts;
+use std::time::Duration;
+
+fn fast(notify_url: Option<String>) -> AlertConfig {
+    AlertConfig {
+        interval: Duration::from_millis(100),
+        debounce_secs: 0.0,
+        min_gap_secs: 0.0,
+        cooldown_secs: 1800.0,
+        window: "5m".into(),
+        notify_url,
+    }
+}
+
+/// A hub with a quiet day of traffic for each named service.
+fn quiet_hub(services: &[&str]) -> Arc<Hub> {
+    let hub = Arc::new(Hub::open(tmp("hub"), Some(20 << 20)).unwrap());
+    for svc in services {
+        let evs: Vec<Event> = (0..300)
+            .map(|i| ev("INFO GET /items 200", 86000.0 - i as f64 * 280.0))
+            .collect();
+        hub.store_or_create(svc).unwrap().record(&evs).unwrap();
+    }
+    hub
+}
+
+fn crash(hub: &Hub, svc: &str, text: &str) {
+    hub.store_or_create(svc)
+        .unwrap()
+        .record(&[ev(text, 0.0)])
+        .unwrap();
+}
+
+fn api_cfg() -> HttpConfig {
+    HttpConfig {
+        api: true,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_new_error_in_one_service_reaches_the_hub_alert_stream() {
+    let hub = quiet_hub(&["api", "pricing"]);
+    let alerts = spawn_alerts(hub.clone(), fast(None));
+    assert!(hub.alerts().is_some());
+    let base = serve(hub.clone(), api_cfg()).await;
+
+    let mut stream = reqwest::get(format!("{base}/api/v1/alerts/stream"))
+        .await
+        .unwrap();
+    assert_eq!(stream.status().as_u16(), 200);
+    let _keep = alerts;
+    crash(&hub, "api", "ERROR upstream exploded\nPanicError: boom");
+
+    let mut text = String::new();
+    let got = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(chunk) = stream.chunk().await.unwrap() {
+            text.push_str(&String::from_utf8_lossy(&chunk));
+            if text.contains("\n\n") && text.contains("data:") {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(got.is_ok(), "no alert within 10s: {text:?}");
+    assert!(text.contains("event: alert"), "{text}");
+    let data = text.lines().find_map(|l| l.strip_prefix("data:")).unwrap();
+    let v: Value = serde_json::from_str(data.trim()).unwrap();
+    assert_eq!(v["service"], "api", "{v}");
+    assert_eq!(v["source"], "starlist");
+    assert!(v["summary"].as_str().unwrap().starts_with("api: "), "{v}");
+    assert!(!v["findings"].as_array().unwrap().is_empty());
+
+    let (c, v) = get(format!("{base}/api/v1/alerts")).await;
+    assert_eq!(c, 200);
+    assert_eq!(v["enabled"], true);
+    assert_eq!(v["alert"]["service"], "api");
+}
+
+/// Accepts one POST and sends its JSON body down the channel.
+fn webhook_server() -> (String, std::sync::mpsc::Receiver<Value>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut c) = conn else { return };
+            let mut buf = vec![];
+            let mut tmp = [0u8; 4096];
+            let body = loop {
+                let n = c.read(&mut tmp).unwrap_or(0);
+                buf.extend_from_slice(&tmp[..n]);
+                let text = String::from_utf8_lossy(&buf).to_string();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let len = head
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= len {
+                        break body[..len].to_string();
+                    }
+                }
+                if n == 0 {
+                    break String::new();
+                }
+            };
+            let _ =
+                c.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            if let Ok(v) = serde_json::from_str(&body) {
+                let _ = tx.send(v);
+            }
+        }
+    });
+    (url, rx)
+}
+
+#[tokio::test]
+async fn a_new_error_is_posted_to_the_webhook_with_its_service() {
+    let (url, rx) = webhook_server();
+    let hub = quiet_hub(&["api"]);
+    let _alerts = spawn_alerts(hub.clone(), fast(Some(url)));
+    crash(
+        &hub,
+        "api",
+        "FATAL worker crashed\nPanicError: out of memory",
+    );
+
+    let v = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(10)))
+        .await
+        .unwrap()
+        .expect("no webhook call within 10s");
+    assert_eq!(v["service"], "api", "{v}");
+    assert_eq!(v["source"], "starlist");
+    assert!(v["summary"].as_str().unwrap().starts_with("api: "), "{v}");
+    assert!(v["findings"].is_array());
+}
+
+#[tokio::test]
+async fn the_same_pattern_does_not_alert_again_within_the_cooldown() {
+    let hub = quiet_hub(&["api"]);
+    let alerts = spawn_alerts(hub.clone(), fast(None));
+    let mut rx = alerts.subscribe();
+    crash(&hub, "api", "ERROR payment failed\nKeyError: 'currency'");
+    let first = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("no first alert")
+        .unwrap();
+    assert_eq!(first.service.as_deref(), Some("api"));
+
+    // More of the same pattern, over several watcher ticks: quiet.
+    for _ in 0..3 {
+        crash(&hub, "api", "ERROR payment failed\nKeyError: 'currency'");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(rx.try_recv().is_err(), "second alert inside the cooldown");
+}
+
+#[tokio::test]
+async fn alerts_are_404_and_disabled_without_a_watcher() {
+    let hub = quiet_hub(&["api"]);
+    assert!(hub.alerts().is_none());
+    let base = serve(hub, api_cfg()).await;
+    let (c, _) = get(format!("{base}/api/v1/alerts/stream")).await;
+    assert_eq!(c, 404);
+    let (c, v) = get(format!("{base}/api/v1/alerts")).await;
+    assert_eq!(c, 200);
+    assert_eq!(v["enabled"], false);
+    assert!(v["alert"].is_null());
+}
+
+#[cfg(feature = "prometheus")]
+#[tokio::test]
+async fn hub_metrics_label_every_series_with_its_service() {
+    let hub = quiet_hub(&["api", "pricing"]);
+    let base = serve(
+        hub.clone(),
+        HttpConfig {
+            api: true,
+            prometheus: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    let r = reqwest::get(format!("{base}/metrics")).await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let text = r.text().await.unwrap();
+    for svc in ["api", "pricing"] {
+        assert!(
+            text.contains(&format!("starlist_events_total{{service=\"{svc}\"")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("starlist_db_bytes{{service=\"{svc}\"}} ")),
+            "{text}"
+        );
+    }
+    for l in text
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
+        assert!(l.contains("service=\""), "series without service: {l}");
+    }
+
+    let off = serve(quiet_hub(&["api"]), api_cfg()).await;
+    let (c, _) = get(format!("{off}/metrics")).await;
+    assert_eq!(c, 404);
+}
