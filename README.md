@@ -121,7 +121,7 @@ Every tool is in [docs/tools.md](docs/tools.md). Tool definitions cost tokens on
 - **Dashboard** at `http://127.0.0.1:7341/` for people.
 - **JSON API** at `/api/v1` for your own scripts and UIs ([docs/api.md](docs/api.md)).
 - **Alerts** pushed to a subscribed agent or a webhook (`--notify-url`).
-- **Hub** to gather many services in one place, for when you run more than one app.
+- **Hub** to gather many services in one place, for when you run more than one app. It has its own push alerts (`--notify-url`, `--no-alerts`, and an SSE stream at `/api/v1/alerts/stream`, each alert naming its service) and, with `--prometheus`, a `/metrics` endpoint with a `service` label on every series.
 - **`starlist-ci`** to explain why a CI run failed, by comparing it with the last passing run ([ci/README.md](ci/README.md)).
 - **Prometheus** metrics and NDJSON export.
 
@@ -148,7 +148,6 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 - Lines without a timestamp get the time they were read.
 - Patterns are kept forever, so logs full of one-off free text grow the pattern table without limit.
-- A hub has no push alerts or Prometheus endpoint of its own yet.
 
 ## Development
 

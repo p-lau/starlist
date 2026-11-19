@@ -53,17 +53,23 @@ pub struct Alert {
     pub at: f64,
     pub summary: String,
     pub findings: Vec<Value>,
+    /// The service it is about; set on a hub, `None` on a collector.
+    pub service: Option<String>,
 }
 
 impl Alert {
     pub fn to_json(&self, now: f64) -> Value {
-        json!({
+        let mut v = json!({
             "source": "starlist",
             "at": analysis::fmt_time(self.at, now),
             "summary": self.summary,
             "findings": self.findings,
             "next": "Call whats_new or get_pattern for details.",
-        })
+        });
+        if let (Some(s), Some(o)) = (&self.service, v.as_object_mut()) {
+            o.insert("service".into(), json!(s));
+        }
+        v
     }
 }
 
@@ -148,6 +154,7 @@ impl Detector {
             at: now,
             summary: summarize(&findings),
             findings,
+            service: None,
         })
     }
 }
@@ -197,8 +204,19 @@ impl Alerts {
     }
 }
 
-/// Start the watcher thread. Returns the channel subscribed sessions listen on.
+/// Start the watcher thread for one store. Returns the channel subscribed
+/// sessions listen on.
 pub fn spawn_watcher(store: Arc<Store>, cfg: AlertConfig) -> Arc<Alerts> {
+    spawn_watcher_for(move || vec![(None, store.clone())], cfg)
+}
+
+/// Start one watcher thread over several stores. `sources` is called on every
+/// tick, so stores that appear later (a hub's new services) are picked up.
+/// Each named store gets its own detector and so its own spacing and cooldowns.
+pub fn spawn_watcher_for<F>(sources: F, cfg: AlertConfig) -> Arc<Alerts>
+where
+    F: Fn() -> Vec<(Option<String>, Arc<Store>)> + Send + 'static,
+{
     let (tx, _) = broadcast::channel(16);
     let alerts = Arc::new(Alerts {
         tx,
@@ -206,7 +224,7 @@ pub fn spawn_watcher(store: Arc<Store>, cfg: AlertConfig) -> Arc<Alerts> {
     });
     let out = alerts.clone();
     std::thread::spawn(move || {
-        let mut det = Detector::new(cfg.clone());
+        let mut dets: HashMap<Option<String>, Detector> = HashMap::new();
         loop {
             std::thread::sleep(cfg.interval);
             // Nobody to tell: skip the work.
@@ -214,12 +232,21 @@ pub fn spawn_watcher(store: Arc<Store>, cfg: AlertConfig) -> Arc<Alerts> {
                 continue;
             }
             let now = analysis::now();
-            if let Some(a) = det.tick(&store, now) {
-                eprintln!("starlist: alert: {}", a.summary);
-                if let Some(url) = &cfg.notify_url {
-                    post_webhook(url, &a.to_json(now));
+            for (name, store) in sources() {
+                let det = dets
+                    .entry(name.clone())
+                    .or_insert_with(|| Detector::new(cfg.clone()));
+                if let Some(mut a) = det.tick(&store, now) {
+                    if let Some(n) = &name {
+                        a.summary = format!("{n}: {}", a.summary);
+                    }
+                    a.service = name;
+                    eprintln!("starlist: alert: {}", a.summary);
+                    if let Some(url) = &cfg.notify_url {
+                        post_webhook(url, &a.to_json(now));
+                    }
+                    alerts.publish(a);
                 }
-                alerts.publish(a);
             }
         }
     });
@@ -238,5 +265,23 @@ pub fn post_webhook(url: &str, body: &Value) {
         .send(body.to_string())
     {
         eprintln!("starlist: webhook to {url} failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_is_in_json_only_when_set() {
+        let mut a = Alert {
+            at: 100.0,
+            summary: "x".into(),
+            findings: vec![],
+            service: None,
+        };
+        assert!(a.to_json(100.0).get("service").is_none());
+        a.service = Some("api".into());
+        assert_eq!(a.to_json(100.0)["service"], "api");
     }
 }

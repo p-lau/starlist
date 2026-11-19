@@ -11,6 +11,8 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 - Kubernetes: each container of a pod is read as its own stream, so a sidecar's lines no longer break the app's stack traces, and lines that arrive slightly out of time order from different containers are no longer skipped.
 ### Added
 
+- A hub now has push alerts: `/api/v1/alerts/stream` and `/api/v1/alerts` cover every service (alerts carry a `service` field), and `starlist hub` takes `--notify-url` and `--no-alerts`.
+- `starlist hub --prometheus` serves `/metrics` with a `service` label on every series.
 - `starlist-ci`, a separate binary for CI logs: compares a failing run's log with the last passing run's and reports new, grown and stopped patterns with line numbers, steps and code locations, as JSON within the same size limits as the MCP tools, or as Markdown. Reads plain output, `gh run view --log` output and raw GitHub Actions logs, from a file or stdin, and writes nothing to disk. See [ci/README.md](ci/README.md).
 - A GitHub Action (`p-lau/starlist/ci`) that keeps each run's log as an artifact and, when a job fails, writes the comparison to the job summary and optionally a pull request comment.
 - Release archives for `starlist-ci`, and `starlist-ci` on crates.io.
