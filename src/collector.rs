@@ -169,6 +169,9 @@ impl Pipeline {
         }
         let now = crate::analysis::now();
         let mut events: Vec<Event> = texts.iter().map(|t| self.parse(t, now)).collect();
+        // Held until the batch is recorded, so a prune cannot delete a pattern
+        // between merging into it and recording. Taken before the merger lock.
+        let _gate = self.store.write_gate();
         if let Some(m) = &self.merger {
             let mut live = m.lock().unwrap_or_else(|e| e.into_inner());
             if live.splits != self.store.split_generation() {

@@ -196,6 +196,8 @@ impl Hub {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let mut acked = last;
+        // Keeps a prune from deleting a pattern between a merge and its events.
+        let _gate = store.write_gate();
         for entry in batch.entries {
             if entry.seq <= last {
                 continue;

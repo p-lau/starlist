@@ -116,7 +116,7 @@ enum Cmd {
         /// How long to keep hourly counts and metrics.
         #[arg(long, default_value = "400d")]
         history: String,
-        /// Most patterns to keep; least recently seen rare ones are removed first. 0 = no limit.
+        /// Most patterns to keep (0 = no limit). Above it, rarely seen patterns go first, then the least recently seen; patterns with a state, timing or manual split, and errors from the last 7 days, are kept. Applied by serve, collect and hub, not ingest.
         #[arg(long, default_value_t = 10000)]
         max_patterns: usize,
         #[command(flatten)]
@@ -296,7 +296,7 @@ struct SourceArgs {
     /// How long to keep hourly counts and metrics, like "400d".
     #[arg(long, default_value = "400d")]
     history: String,
-    /// Most patterns to keep; least recently seen rare ones are removed first. 0 = no limit.
+    /// Most patterns to keep (0 = no limit). Above it, rarely seen patterns go first, then the least recently seen; patterns with a state, timing or manual split, and errors from the last 7 days, are kept. Applied by serve, collect and hub, not ingest.
     #[arg(long, default_value_t = 10000)]
     max_patterns: usize,
     /// Version of the app being watched, recorded as a deploy marker at startup

@@ -83,6 +83,8 @@ pub struct Store {
     outbox: Mutex<Option<Outbox>>,
     /// Bumped when patterns are split, so a running merger reloads.
     splits: std::sync::atomic::AtomicU64,
+    /// Held by writers that must not interleave with pattern deletion.
+    gate: Mutex<()>,
 }
 
 struct Outbox {
@@ -255,7 +257,8 @@ impl Store {
         )?;
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS raw_req ON raw(request_id, ts) WHERE request_id IS NOT NULL;
-             CREATE INDEX IF NOT EXISTS raw_pid_req ON raw(pattern_id, ts) WHERE request_id IS NOT NULL;",
+             CREATE INDEX IF NOT EXISTS raw_pid_req ON raw(pattern_id, ts) WHERE request_id IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS aliases_canonical ON aliases(canonical);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -265,6 +268,7 @@ impl Store {
             }),
             outbox: Mutex::new(None),
             splits: Default::default(),
+            gate: Mutex::new(()),
         })
     }
 
@@ -385,6 +389,13 @@ fn add_hist(
 }
 
 impl Store {
+    /// Serializes pattern deletion with merge-and-record batches. Take it
+    /// before any other lock (the live merger, the connection) and do not
+    /// call it again while held; `record` and `merge_patterns` do not take it.
+    pub fn write_gate(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.gate.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -619,6 +630,7 @@ impl Store {
     /// case, expire patterns left with no counts.
     /// Returns the number of 10-second rows folded.
     pub fn rollup(&self, before_ts: f64, history_before: Option<f64>) -> R<usize> {
+        let _gate = self.write_gate();
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let mut expired = 0;
@@ -651,6 +663,7 @@ impl Store {
     /// Delete patterns that have no counts left, unless a user set state,
     /// timing or a split on them. Returns how many were removed.
     pub fn expire_patterns(&self) -> R<usize> {
+        let _gate = self.write_gate();
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let n = delete_patterns(&tx, EXPIRED_PATTERNS, [])?;
@@ -661,16 +674,18 @@ impl Store {
         Ok(n)
     }
 
-    /// Keep at most `max` patterns (0 = no limit). Over the limit, remove
-    /// patterns until `CAP_TARGET_PCT` of `max` remain: rarely seen ones
-    /// (at most `LOW_COUNT`) first, least recently seen first, then the rest.
-    /// Patterns with a user-set state, timing or split, and ERROR or FATAL
-    /// ones seen within `PROTECT_ERRORS_SECS` of `now`, stay. Returns how many
-    /// were removed.
+    /// Keep at most `max` patterns (0 = no limit). This is a hard cap: over
+    /// the limit, remove patterns until `CAP_TARGET_PCT` of `max` remain,
+    /// rarely seen ones (total at most `LOW_COUNT`) least recently seen first,
+    /// then the other non-exempt ones least recently seen first. Exempt:
+    /// patterns with a user-set state, timing override or manual split, and
+    /// ERROR or FATAL ones seen within `PROTECT_ERRORS_SECS` of `now`.
+    /// Returns how many were removed.
     pub fn cap_patterns(&self, max: usize, now: f64) -> R<usize> {
         if max == 0 {
             return Ok(0);
         }
+        let _gate = self.write_gate();
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let count: i64 = tx.query_row("SELECT COUNT(*) FROM patterns", [], |r| r.get(0))?;
@@ -1409,30 +1424,39 @@ impl Store {
 }
 
 /// Delete the patterns `select` returns (a query of one column of IDs) and
-/// everything keyed by them, except user-set state. Returns how many.
+/// everything keyed by them, including their aliases, except user-set state.
+/// Returns how many.
 fn delete_patterns(
     tx: &rusqlite::Transaction,
     select: &str,
     params: impl rusqlite::Params,
 ) -> R<usize> {
-    let ids: Vec<String> = tx
-        .prepare(select)?
-        .query_map(params, |r| r.get(0))?
-        .collect::<R<_>>()?;
-    for id in &ids {
-        for sql in [
-            "DELETE FROM counts WHERE pattern_id = ?1",
-            "DELETE FROM hourly WHERE pattern_id = ?1",
-            "DELETE FROM samples WHERE pattern_id = ?1",
-            "DELETE FROM locations WHERE pattern_id = ?1",
-            "DELETE FROM raw WHERE pattern_id = ?1",
-            "DELETE FROM metric_hourly WHERE pattern_id = ?1",
-            "DELETE FROM merged_templates WHERE id = ?1",
-            "DELETE FROM aliases WHERE alias = ?1 OR canonical = ?1",
-            "DELETE FROM patterns WHERE id = ?1",
-        ] {
-            tx.execute(sql, [id])?;
-        }
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS doomed(id TEXT PRIMARY KEY) WITHOUT ROWID;
+         DELETE FROM doomed;",
+    )?;
+    let n = tx.execute(
+        &format!("INSERT OR IGNORE INTO doomed(id) {select}"),
+        params,
+    )?;
+    if n == 0 {
+        return Ok(0);
     }
-    Ok(ids.len())
+    for sql in [
+        "DELETE FROM counts WHERE pattern_id IN (SELECT id FROM doomed)",
+        "DELETE FROM hourly WHERE pattern_id IN (SELECT id FROM doomed)",
+        "DELETE FROM samples WHERE pattern_id IN (SELECT id FROM doomed)",
+        "DELETE FROM locations WHERE pattern_id IN (SELECT id FROM doomed)",
+        "DELETE FROM raw WHERE pattern_id IN (SELECT id FROM doomed)",
+        "DELETE FROM metric_hourly WHERE pattern_id IN (SELECT id FROM doomed)",
+        "DELETE FROM merged_templates WHERE id IN (SELECT id FROM doomed)
+         OR id IN (SELECT alias FROM aliases WHERE canonical IN (SELECT id FROM doomed))",
+        "DELETE FROM aliases WHERE alias IN (SELECT id FROM doomed)
+         OR canonical IN (SELECT id FROM doomed)",
+        "DELETE FROM patterns WHERE id IN (SELECT id FROM doomed)",
+    ] {
+        tx.execute(sql, [])?;
+    }
+    tx.execute("DELETE FROM doomed", [])?;
+    Ok(n)
 }
