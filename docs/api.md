@@ -402,7 +402,8 @@ es.addEventListener("alert", (e) => console.log(JSON.parse(e.data)));
   service. Each line has `service`, and `services` gives each one's
   `events`, `first_offset_ms` and `last_offset_ms`. Order across services
   follows each host's clock.
-- `/alerts/stream` answers 404; push alerts aren't available on a hub yet.
+- `/alerts` and `/alerts/stream` cover every service and ignore `service`. The alert JSON is the same as on a collector plus a `service` field, and the summary starts with the service name (`api: New error pattern: ...`). Each service is watched on its own, so spacing and quiet periods apply per service. Both answer as on a collector when alerts are off (`--no-alerts`: `enabled: false`, and 404 for the stream).
+- `/metrics` (with `starlist hub --prometheus`) has the collector's metrics, each with a `service="NAME"` label, one series per service and level.
 
 Collectors push to `POST /hub/v1/push` with their own tokens, from
 `starlist hub-token SERVICE`. That route isn't part of this API.
