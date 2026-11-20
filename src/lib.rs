@@ -1,4 +1,8 @@
 //! starlist: a log collector that distills an application's logs for AI agents over MCP.
+//!
+//! This library is shared by the `starlist` binary, its tests and examples. It
+//! isn't a stable interface: its modules may change in any release (see
+//! docs/versioning.md). Use the `starlist-core` crate for the log engine.
 
 pub mod alerts;
 pub mod analysis;
