@@ -187,6 +187,64 @@ mod fake_tools {
         assert_eq!(err.location.as_deref(), Some("shop/app.py:3 in main"));
     }
 
+    /// Lines without a timestamp in their text take the time docker recorded;
+    /// a line with its own timestamp keeps it.
+    #[test]
+    fn docker_lines_take_docker_time() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("starlist-fake-docker-ts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("docker");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+    echo "2020-01-01T00:00:00.000000000Z INFO old plain line"
+    echo "2020-01-01T00:00:05.000000000Z WARN another plain line"
+    echo "2020-01-01T00:00:09.000000000Z 2021-06-01T12:00:00Z ERROR has its own time"
+    "#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let s = store("docker-ts");
+        let p = Pipeline::new(s.clone(), Redactor::default(), None);
+        let tool = starlist::sources::docker::Docker {
+            program: script.display().to_string(),
+        };
+        let alive = Arc::new(AtomicBool::new(true));
+        let stop = AtomicBool::new(false);
+        let a = alive.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            a.store(false, Ordering::Relaxed);
+        });
+        let resume = Default::default();
+        command::follow(&p, &tool, "shop", Start::All, &resume, &alive, &stop);
+
+        let patterns = s.patterns_seen_since(0.0).unwrap();
+        let at = |level: &str| {
+            patterns
+                .iter()
+                .find(|p| p.level.as_deref() == Some(level))
+                .unwrap_or_else(|| panic!("{level} missing: {patterns:?}"))
+                .first_seen
+        };
+        assert!(
+            (at("INFO") - 1577836800.0).abs() < 0.001,
+            "INFO: {patterns:?}"
+        );
+        assert!(
+            (at("WARN") - 1577836805.0).abs() < 0.001,
+            "WARN: {patterns:?}"
+        );
+        assert!(
+            (at("ERROR") - 1622548800.0).abs() < 0.001,
+            "ERROR: {patterns:?}"
+        );
+    }
+
     /// journald keeps each line an app writes as its own entry. A fake
     /// `journalctl` prints a Python traceback that way, at error priority as
     /// systemd's `StandardError=` setups often log it; the frames must stay with

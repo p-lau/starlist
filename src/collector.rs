@@ -164,11 +164,22 @@ impl Pipeline {
 
     /// Parse, record, and pick up deploy markers from a batch of raw events.
     pub fn ingest(&self, texts: &[String]) {
+        self.ingest_at(texts, &[]);
+    }
+
+    /// Like `ingest`, with the time (Unix seconds) the source recorded each
+    /// event, used when its text has no timestamp of its own. Events past the
+    /// end of `at`, or with `None`, use the time they are read.
+    pub fn ingest_at(&self, texts: &[String], at: &[Option<f64>]) {
         if texts.is_empty() {
             return;
         }
         let now = crate::analysis::now();
-        let mut events: Vec<Event> = texts.iter().map(|t| self.parse(t, now)).collect();
+        let mut events: Vec<Event> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| self.parse(t, at.get(i).copied().flatten().unwrap_or(now)))
+            .collect();
         // Held until the batch is recorded, so a prune cannot delete a pattern
         // between merging into it and recording. Taken before the merger lock.
         let _gate = self.store.write_gate();
@@ -239,6 +250,10 @@ pub(crate) struct Feeder<'a> {
     pipeline: &'a Pipeline,
     asm: Assembler,
     batch: Vec<String>,
+    /// Source time of each event in `batch`.
+    batch_at: Vec<Option<f64>>,
+    /// Source time of the pending event's first line.
+    pending_at: Option<f64>,
     last_line: Instant,
 }
 
@@ -248,16 +263,30 @@ impl<'a> Feeder<'a> {
             pipeline,
             asm: Assembler::default(),
             batch: vec![],
+            batch_at: vec![],
+            pending_at: None,
             last_line: Instant::now(),
         }
     }
     pub(crate) fn line(&mut self, l: &str) {
+        self.line_at(l, None);
+    }
+    /// A line with the time (Unix seconds) its source recorded it. An event
+    /// takes the time of its first line when its text has no timestamp.
+    pub(crate) fn line_at(&mut self, l: &str, at: Option<f64>) {
         self.last_line = Instant::now();
-        if let Some(ev) = self.asm.feed(l) {
+        let starts =
+            !l.trim().is_empty() && !self.asm.continues(l.trim_end_matches(char::is_control));
+        let done = self.asm.feed(l);
+        if let Some(ev) = done {
             self.batch.push(ev);
-            if self.batch.len() >= BATCH {
-                self.commit();
-            }
+            self.batch_at.push(self.pending_at);
+        }
+        if starts {
+            self.pending_at = at;
+        }
+        if self.batch.len() >= BATCH {
+            self.commit();
         }
     }
     /// True when `l` would continue the pending event (see `Assembler::continues`).
@@ -267,14 +296,20 @@ impl<'a> Feeder<'a> {
     }
     /// Called when the source is idle: finish a pending event if nothing new arrived for a while.
     pub(crate) fn idle(&mut self, force: bool) {
-        if self.asm.has_pending() && (force || self.last_line.elapsed() >= IDLE_FLUSH) {
-            self.batch.extend(self.asm.flush());
+        if self.asm.has_pending()
+            && (force || self.last_line.elapsed() >= IDLE_FLUSH)
+            && let Some(ev) = self.asm.flush()
+        {
+            self.batch.push(ev);
+            self.batch_at.push(self.pending_at.take());
         }
         self.commit();
     }
     fn commit(&mut self) {
         if !self.batch.is_empty() {
-            self.pipeline.ingest(&std::mem::take(&mut self.batch));
+            let at = std::mem::take(&mut self.batch_at);
+            self.pipeline
+                .ingest_at(&std::mem::take(&mut self.batch), &at);
         }
     }
 }
