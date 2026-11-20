@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Push alerts for new and spiking errors (issue #12).
 
 use rmcp::model::{

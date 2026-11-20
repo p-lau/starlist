@@ -9,26 +9,30 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-static PY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"^\s*File "([^"]+)", line (\d+)(?:, in (\S+))?"#).unwrap());
+static PY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^\s*File "([^"]+)", line (\d+)(?:, in (\S+))?"#).expect("valid regex")
+});
 static JAVA: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*at\s+([\w$.<>/]+)\(([\w$-]+\.(?:java|kt|kts|scala|groovy|clj)):(\d+)\)")
-        .unwrap()
+        .expect("valid regex")
 });
 static NODE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*at\s+(?:async\s+)?(?:(.+?)\s+\()?(?:file://)?([^\s()]+?):(\d+):\d+\)?\s*$")
-        .unwrap()
+        .expect("valid regex")
 });
 static GO_FILE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s+(\S+\.go):(\d+)(?:\s|$)").unwrap());
-static GO_FUNC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([\w./*()$\[\]-]+)\(").unwrap());
+    LazyLock::new(|| Regex::new(r"^\s+(\S+\.go):(\d+)(?:\s|$)").expect("valid regex"));
+static GO_FUNC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([\w./*()$\[\]-]+)\(").expect("valid regex"));
 static RUST_PANIC: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"panicked at (?:'.*?', |".*?", )?([^\s:'"]+\.rs):(\d+):\d+"#).unwrap()
+    Regex::new(r#"panicked at (?:'.*?', |".*?", )?([^\s:'"]+\.rs):(\d+):\d+"#).expect("valid regex")
 });
 static RUST_AT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s+at\s+(\S+\.rs):(\d+)(?::\d+)?\s*$").unwrap());
-static RUST_FN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\d+:\s+(\S+)").unwrap());
-static RUST_HASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"::h[0-9a-f]{16}$").unwrap());
+    LazyLock::new(|| Regex::new(r"^\s+at\s+(\S+\.rs):(\d+)(?::\d+)?\s*$").expect("valid regex"));
+static RUST_FN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*\d+:\s+(\S+)").expect("valid regex"));
+static RUST_HASH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"::h[0-9a-f]{16}$").expect("valid regex"));
 
 /// Paths and function prefixes that belong to runtimes and third-party code.
 const LIB_PATH: &[&str] = &[

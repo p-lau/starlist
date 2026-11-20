@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! End-to-end tests of the starlist-ci binary.
 
 use serde_json::Value;

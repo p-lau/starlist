@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)] // a build script may panic on failure
+
 //! Embed the dashboard (dashboard/build, made by `npm run build` there) when it
 //! has been built. Without it the binary serves a page saying how to build it,
 //! so `cargo build` never needs Node.

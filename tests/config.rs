@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! `starlist.toml` handling: `config::apply` and `config::to_args`.
 
 mod common;

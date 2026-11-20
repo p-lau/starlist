@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Long-term history and metrics read from logs (issue #24).
 
 use regex::Regex;

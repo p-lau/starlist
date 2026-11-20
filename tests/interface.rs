@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! The public tool interface: every tool's name, arguments and output fields,
 //! checked against docs/tools.md. From 1.0.0 these only grow within a major
 //! version (see docs/versioning.md). After an intended change, regenerate the

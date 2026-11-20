@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Reading a LogQL stream from Loki (issue #27).
 
 use axum::extract::Query;

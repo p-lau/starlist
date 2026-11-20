@@ -12,18 +12,21 @@ use std::sync::LazyLock;
 const MAX_LINE_CHARS: usize = 4000;
 
 static ANSI: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)").unwrap()
+    Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)").expect("valid regex")
 });
 /// `gh run view --log`: job, step, then the runner's timestamp.
 static GH_COLUMNS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[^\t]*\t([^\t]*)\t(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) ?").unwrap()
+    Regex::new(r"^[^\t]*\t([^\t]*)\t(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) ?")
+        .expect("valid regex")
 });
 /// A runner timestamp at the start of a raw job log line.
-static RUNNER_TS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z ").unwrap());
+static RUNNER_TS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z ").expect("valid regex")
+});
 /// `::error file=a.rs,line=3::message` and the like, as echoed into a log.
-static WORKFLOW_COMMAND: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::(error|warning|notice|debug)(?: [^:]*)?::").unwrap());
+static WORKFLOW_COMMAND: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^::(error|warning|notice|debug)(?: [^:]*)?::").expect("valid regex")
+});
 
 /// What a raw line turned into.
 #[derive(Debug, Clone, PartialEq)]
@@ -61,7 +64,7 @@ impl Cleaner {
             if !step.is_empty() && self.section.as_deref() != Some(step) {
                 self.section = Some(step.to_string());
             }
-            s = &s[c.get(0).unwrap().end()..];
+            s = &s[c.get(0).expect("group 0 always matches").end()..];
         } else if let Some(m) = RUNNER_TS.find(s) {
             s = &s[m.end()..];
         }
@@ -99,7 +102,10 @@ impl Cleaner {
                 "warning" => "WARN ",
                 _ => "",
             };
-            format!("{level}{}", &s[c.get(0).unwrap().end()..])
+            format!(
+                "{level}{}",
+                &s[c.get(0).expect("group 0 always matches").end()..]
+            )
         } else {
             s.to_string()
         };

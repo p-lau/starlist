@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Raw, redacted lines around an event (issue #10).
 
 use starlist::analysis::{Detail, compact, get_context};

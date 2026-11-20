@@ -894,7 +894,9 @@ impl ServerHandler for HubServer {
                 a.remove("cursor");
                 let mut req = request.clone();
                 req.arguments = Some(a);
-                let store = self.hub.store(&svc).expect("listed service");
+                let Some(store) = self.hub.store(&svc) else {
+                    continue;
+                };
                 let r = LogServer::new(store)
                     .call_tool(req, context.clone())
                     .await?;
