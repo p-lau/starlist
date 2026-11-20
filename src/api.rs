@@ -821,17 +821,23 @@ async fn add_marker(
 }
 
 async fn latest_alert(State(s): State<ApiState>) -> ApiResult {
+    Ok(Json(latest_alert_json(s.alerts.as_ref())))
+}
+
+/// `{enabled, alert}`; shared with the hub API.
+pub(crate) fn latest_alert_json(alerts: Option<&Arc<Alerts>>) -> Value {
     let now = analysis::now();
-    let alert = s
-        .alerts
-        .as_ref()
-        .and_then(|a| a.latest())
-        .map(|a| a.to_json(now));
-    Ok(Json(json!({"enabled": s.alerts.is_some(), "alert": alert})))
+    let alert = alerts.and_then(|a| a.latest()).map(|a| a.to_json(now));
+    json!({"enabled": alerts.is_some(), "alert": alert})
 }
 
 async fn alert_stream(State(s): State<ApiState>) -> Result<Response, ApiError> {
-    let Some(alerts) = s.alerts else {
+    alert_stream_response(s.alerts)
+}
+
+/// The SSE stream of alerts; shared with the hub API.
+pub(crate) fn alert_stream_response(alerts: Option<Arc<Alerts>>) -> Result<Response, ApiError> {
+    let Some(alerts) = alerts else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "Alerts are off (--no-alerts).",

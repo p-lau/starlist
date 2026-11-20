@@ -88,3 +88,62 @@ async fn follows_a_stream_without_reading_lines_twice() {
         .unwrap();
     assert_eq!(err.exc_type.as_deref(), Some("ValueError"));
 }
+
+fn old_time() -> u64 {
+    static T: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *T.get_or_init(|| (starlist::analysis::now() * 1e9) as u64 - 600_000_000_000)
+}
+
+/// An entry whose text has no timestamp is recorded at the time Loki holds
+/// for it, not the time it was read.
+async fn old_entry(Query(q): Query<HashMap<String, String>>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let start: u64 = q["start"].parse().unwrap();
+    // Ten minutes before the first poll, the same on every poll.
+    let t = old_time();
+    let values: Vec<(String, &str)> = [(t, "ERROR plain line from long ago")]
+        .into_iter()
+        .filter(|(ts, _)| *ts >= start)
+        .map(|(ts, l)| (ts.to_string(), l))
+        .collect();
+    axum::Json(
+        serde_json::json!({"status": "success", "data": {"resultType": "streams",
+        "result": [{"stream": {"app": "shop"}, "values": values}]}}),
+    )
+    .into_response()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn entries_without_a_timestamp_take_loki_time() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = axum::Router::new().route("/loki/api/v1/query_range", axum::routing::get(old_entry));
+    tokio::spawn(axum::serve(listener, app).into_future());
+
+    let p = std::env::temp_dir().join(format!("starlist-loki-ts-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&p);
+    let s = Arc::new(Store::open(p).unwrap());
+    let pipeline = Pipeline::new(s.clone(), Redactor::default(), None);
+    static STOP: AtomicBool = AtomicBool::new(false);
+    let cfg = LokiConfig {
+        url: format!("http://{addr}/"),
+        query: r#"{app="shop"}"#.into(),
+        token: None,
+        user: None,
+        org: None,
+    };
+    let h = std::thread::spawn(move || follow(&pipeline, cfg, true, &STOP));
+    tokio::time::sleep(Duration::from_millis(4500)).await;
+    STOP.store(true, Ordering::Relaxed);
+    tokio::task::spawn_blocking(move || h.join().unwrap())
+        .await
+        .unwrap();
+
+    let patterns = s.patterns_seen_since(0.0).unwrap();
+    assert_eq!(patterns.len(), 1, "{patterns:?}");
+    let want = old_time() as f64 / 1e9;
+    assert!(
+        (patterns[0].first_seen - want).abs() < 0.001,
+        "{patterns:?}"
+    );
+}

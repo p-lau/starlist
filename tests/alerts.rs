@@ -294,3 +294,19 @@ async fn listen_is_refused_when_alerts_are_off() -> anyhow::Result<()> {
     client.list_resources(None).await?;
     Ok(())
 }
+
+#[test]
+fn collector_alert_json_has_no_service_key() {
+    let s = store();
+    baseline(&s);
+    let mut d = Detector::new(AlertConfig {
+        debounce_secs: 0.0,
+        ..Default::default()
+    });
+    record(&s, "FATAL worker crashed", NOW + 1.0, 1);
+    let a = d.tick(&s, NOW + 2.0).expect("alert");
+    assert_eq!(a.service, None);
+    let v = a.to_json(NOW + 2.0);
+    assert!(v.get("service").is_none(), "{v}");
+    assert_eq!(v["source"], "starlist");
+}

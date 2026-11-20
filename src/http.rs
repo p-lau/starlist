@@ -116,7 +116,10 @@ pub fn app(store: Arc<Store>, cfg: HttpConfig) -> axum::Router {
     if cfg.prometheus {
         guarded = guarded.route(
             "/metrics",
-            axum::routing::get(move || prometheus(store.clone())),
+            axum::routing::get(move || {
+                let store = store.clone();
+                metrics_response(move |now| crate::prometheus::render(&store, now))
+            }),
         );
     }
     assemble(mcp, guarded, &cfg)
@@ -133,6 +136,17 @@ pub fn hub_app(hub: Arc<crate::hub::Hub>, cfg: HttpConfig) -> axum::Router {
     let mut guarded = axum::Router::new();
     if cfg.api {
         guarded = guarded.nest("/api/v1", crate::hub::api_routes(hub.clone()));
+    }
+    #[cfg(feature = "prometheus")]
+    if cfg.prometheus {
+        let h = hub.clone();
+        guarded = guarded.route(
+            "/metrics",
+            axum::routing::get(move || {
+                let h = h.clone();
+                metrics_response(move |now| crate::prometheus::render_services(&h.stores(), now))
+            }),
+        );
     }
     assemble(mcp, guarded, &cfg).merge(crate::hub::push_routes(hub))
 }
@@ -193,9 +207,12 @@ fn assemble(mcp: axum::Router, mut guarded: axum::Router, cfg: &HttpConfig) -> a
 }
 
 #[cfg(feature = "prometheus")]
-async fn prometheus(store: Arc<Store>) -> Response {
+async fn metrics_response<F>(render: F) -> Response
+where
+    F: FnOnce(f64) -> Result<String, String> + Send + 'static,
+{
     let now = crate::analysis::now();
-    match tokio::task::spawn_blocking(move || crate::prometheus::render(&store, now)).await {
+    match tokio::task::spawn_blocking(move || render(now)).await {
         Ok(Ok(text)) => (
             [(
                 header::CONTENT_TYPE,

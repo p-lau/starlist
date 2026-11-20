@@ -121,6 +121,8 @@ enum Cmd {
         max_patterns: usize,
         #[command(flatten)]
         mcp: McpArgs,
+        #[command(flatten)]
+        alerts: AlertArgs,
     },
     /// Create a token a collector uses to push one service to a hub.
     #[cfg_attr(not(feature = "hub"), command(hide = true))]
@@ -870,6 +872,7 @@ async fn main() -> Result<()> {
             history,
             max_patterns,
             mcp,
+            alerts,
         } => {
             let hub = Arc::new(
                 starlist::hub::Hub::open(&dir, (!no_raw).then_some(raw_size))
@@ -892,8 +895,13 @@ async fn main() -> Result<()> {
                     format!(": {}", names.join(", "))
                 }
             );
-            if mcp.prometheus {
-                eprintln!("starlist: --prometheus is not available on a hub yet; ignoring it");
+            let alert_cfg = (!alerts.no_alerts && (!mcp.stdio || alerts.notify_url.is_some()))
+                .then(|| starlist::alerts::AlertConfig {
+                    notify_url: alerts.notify_url.clone(),
+                    ..Default::default()
+                });
+            if let Some(cfg) = alert_cfg {
+                starlist::hub::spawn_alerts(hub.clone(), cfg);
             }
             if mcp.stdio {
                 eprintln!(
@@ -905,8 +913,7 @@ async fn main() -> Result<()> {
                 svc.waiting().await?;
                 return Ok(());
             }
-            let mut cfg = http_config(&mcp, &dir.join("hub.db"), None)?;
-            cfg.prometheus = false;
+            let cfg = http_config(&mcp, &dir.join("hub.db"), None)?;
             eprintln!(
                 "starlist: collectors push to http://{}/hub/v1/push",
                 mcp.http

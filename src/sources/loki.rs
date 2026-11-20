@@ -151,7 +151,7 @@ pub fn follow(pipeline: &Pipeline, cfg: LokiConfig, from_start: bool, stop: &Ato
                     feeders
                         .entry(labels.clone())
                         .or_insert_with(|| Feeder::new(pipeline))
-                        .line(line);
+                        .line_at(line, Some(*ts as f64 / 1e9));
                 }
                 if full && let Some(last) = lines.last() {
                     // A full page: move on past it even if the window holds more.
