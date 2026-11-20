@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Writes a realistic 26-hour log for a fake checkout service, ending now:
 //!   - v1.4.1 runs normally (requests, occasional slow queries and timeouts)
 //!   - v1.4.2 deploys 50 minutes ago: a new KeyError crash and a timeout spike

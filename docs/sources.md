@@ -14,7 +14,7 @@ starlist reads logs from where you already keep them. Every source goes through 
 
 All of them are on by default. Docker, journald and Kubernetes run the platform's own command-line tool, so they add no dependencies and use the access you already have (your Docker socket, your kubectl context). The `otel` feature adds a small gzip decoder; `loki` reuses the HTTP client starlist already has. To build without them, use `--no-default-features` and list the features you want.
 
-By default every source starts with lines written from now on. `--from-start` reads what the source still has: whole files, a container's or pod's full logs, a unit's whole journal, or the last hour of a Loki stream.
+By default every source starts with lines written from now on. `--from-start` reads what the source still has: whole files, a container's or pod's full logs, a unit's whole journal, or the last hour of a Loki stream. Lines that don't carry their own timestamp get the time the source recorded them (Docker's and Kubernetes' log timestamps, Loki's entry time, journald's entry time).
 
 ## Docker
 
@@ -108,6 +108,8 @@ service:
       exporters: [otlphttp/starlist]
 ```
 
+An exporter in a container on Docker Desktop reaches a starlist on the host at `http://host.docker.internal:4318/v1/logs`; starlist then has to listen beyond localhost (`--otlp 0.0.0.0:4318`), which needs `--otlp-token`. SDKs send the token with `OTEL_EXPORTER_OTLP_LOGS_HEADERS=Authorization=Bearer%20TOKEN`.
+
 Each log record becomes one event. Its severity becomes the level, its body the message, and its trace and span IDs are kept, so `get_request` with a trace ID returns every record of that trace. The `exception.type`, `exception.message` and `exception.stacktrace` attributes become the event's stack trace, which gives the pattern its exception type and code location. Other attributes, including the resource's (like `service.name`), stay on the event, so `--metric` and `--request-key` can read them.
 
 Listening beyond localhost needs `--otlp-token TOKEN` (or `STARLIST_OTLP_TOKEN`, at least 16 characters), sent as `Authorization: Bearer TOKEN`. The endpoint only takes `application/x-protobuf` and `application/json`, which a web page on another site can't send to it. gRPC (port 4317) isn't supported; use OTLP/HTTP.
@@ -122,6 +124,6 @@ starlist serve --loki https://logs-prod-012.grafana.net --loki-user 123456 \
   --loki-token "$GRAFANA_TOKEN" --loki-query '{service_name="api"}'
 ```
 
-starlist asks `query_range` every 2 seconds for the lines since the last ones it read, looking back 15 seconds more so lines that reach Loki late aren't missed, and skipping lines it already has. The query has to be a log query (a selector, optionally with filters like `|= "error"`), not a metric query. Lines from different streams are grouped into events separately, so two pods' stack traces don't mix. Streams are told apart by their own labels only, not by labels Loki adds per line (like Loki 3's `detected_level`) or labels the query parses, so a stack trace stays in one stream. `--loki-token` alone is sent as a bearer token; `--loki-org` sets `X-Scope-OrgID` for a multi-tenant Loki.
+starlist asks `query_range` every 2 seconds for the lines since the last ones it read, looking back 15 seconds more so lines that reach Loki late aren't missed, and skipping lines it already has. The query has to be a log query (a selector, optionally with filters like `|= "error"`), not a metric query. Lines from different streams are grouped into events separately, so two pods' stack traces don't mix. Streams are told apart by their own labels only, not by labels Loki adds per line (like Loki 3's `detected_level`) or labels the query parses, so a stack trace stays in one stream. `--loki-token` alone is sent as a bearer token; `--loki-org` sets `X-Scope-OrgID` for a multi-tenant Loki. Without it, a Loki with `auth_enabled` answers 401 `no org id`, which starlist prints.
 
 If Loki already holds your logs, this lets an agent get starlist's patterns, `whats_new` and `verify_fix` over them without changing how they're shipped.

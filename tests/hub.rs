@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! The hub: collectors push, replicas add up, requests cross services (issue #25).
 
 use rmcp::ServiceExt;
@@ -361,6 +363,82 @@ async fn pushes_are_idempotent_and_survive_an_outage() {
     assert_eq!(w.pattern(&id).unwrap().unwrap().total, 2);
 }
 
+#[tokio::test]
+async fn push_route_checks_the_bearer_token() {
+    let dir = tmp("hub");
+    let hub = Arc::new(Hub::open(&dir, Some(20 << 20)).unwrap());
+    let api_token = Hub::add_token(&dir, "api").unwrap();
+    let base = serve(hub, HttpConfig::default()).await;
+    let body = |service: &str| {
+        json!({"protocol": 1, "service": service, "instance": "i1", "entries": []}).to_string()
+    };
+    let post = |auth: Option<String>, body: String| {
+        let url = format!("{base}/hub/v1/push");
+        async move {
+            let mut r = reqwest::Client::new()
+                .post(url)
+                .header("Content-Type", "application/json");
+            if let Some(a) = auth {
+                r = r.header("Authorization", a);
+            }
+            r.body(body).send().await.unwrap().status().as_u16()
+        }
+    };
+    assert_eq!(post(None, body("api")).await, 401);
+    assert_eq!(post(Some("Bearer nope".into()), body("api")).await, 401);
+    assert_eq!(post(Some(api_token.clone()), body("api")).await, 401);
+    assert_eq!(
+        post(Some(format!("Bearer {api_token}")), body("other")).await,
+        403
+    );
+    assert_eq!(
+        post(Some(format!("Bearer {api_token}")), "not json".into()).await,
+        400
+    );
+    assert_eq!(
+        post(Some(format!("Bearer {api_token}")), body("api")).await,
+        200
+    );
+}
+
+#[tokio::test]
+async fn the_hub_pruner_folds_every_service() {
+    let dir = tmp("hub");
+    let hub = Arc::new(Hub::open(&dir, Some(20 << 20)).unwrap());
+    const D: f64 = 86400.0;
+    let mut ids = vec![];
+    for svc in ["api", "pricing"] {
+        let s = hub.store_or_create(svc).unwrap();
+        let old: Vec<Event> = (0..5)
+            .map(|_| ev(&format!("ERROR {svc} old failure"), 20.0 * D))
+            .collect();
+        let recent: Vec<Event> = (0..3)
+            .map(|_| ev(&format!("ERROR {svc} recent failure"), 60.0))
+            .collect();
+        s.record(&old).unwrap();
+        s.record(&recent).unwrap();
+        ids.push((s, old[0].pattern_id.clone(), recent[0].pattern_id.clone()));
+    }
+    let now = starlist::analysis::now();
+    for (s, old, _) in &ids {
+        assert_eq!(s.count(old, now - 30.0 * D, now).unwrap(), 5);
+    }
+    // Retention 7 days, history 14 days: the 20-day-old counts go, the rest stay.
+    hub.spawn_pruner(7.0 * D, 14.0 * D, 0);
+    for (s, old, recent) in &ids {
+        let mut gone = false;
+        for _ in 0..100 {
+            if s.count(old, now - 30.0 * D, now).unwrap() == 0 {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(gone, "old counts were not pruned");
+        assert_eq!(s.count(recent, now - 30.0 * D, now + 60.0).unwrap(), 3);
+    }
+}
+
 #[test]
 fn outbox_drops_the_oldest_beyond_its_cap() {
     let p = tmp("c.db");
@@ -390,4 +468,378 @@ fn trace_ids_win_over_request_ids() {
     );
     assert!(!starlist::push::valid_service("../etc"));
     assert!(starlist::push::valid_service("checkout-api.eu"));
+}
+
+// ---- hub alerts and metrics ----
+
+use starlist::alerts::AlertConfig;
+use starlist::hub::spawn_alerts;
+use std::time::Duration;
+
+fn fast(notify_url: Option<String>) -> AlertConfig {
+    AlertConfig {
+        interval: Duration::from_millis(100),
+        debounce_secs: 0.0,
+        min_gap_secs: 0.0,
+        cooldown_secs: 1800.0,
+        window: "5m".into(),
+        notify_url,
+    }
+}
+
+/// A hub with a quiet day of traffic for each named service.
+fn quiet_hub(services: &[&str]) -> Arc<Hub> {
+    let hub = Arc::new(Hub::open(tmp("hub"), Some(20 << 20)).unwrap());
+    for svc in services {
+        let evs: Vec<Event> = (0..300)
+            .map(|i| ev("INFO GET /items 200", 86000.0 - i as f64 * 280.0))
+            .collect();
+        hub.store_or_create(svc).unwrap().record(&evs).unwrap();
+    }
+    hub
+}
+
+fn crash(hub: &Hub, svc: &str, text: &str) {
+    hub.store_or_create(svc)
+        .unwrap()
+        .record(&[ev(text, 0.0)])
+        .unwrap();
+}
+
+fn api_cfg() -> HttpConfig {
+    HttpConfig {
+        api: true,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_new_error_in_one_service_reaches_the_hub_alert_stream() {
+    let hub = quiet_hub(&["api", "pricing"]);
+    let alerts = spawn_alerts(hub.clone(), fast(None));
+    assert!(hub.alerts().is_some());
+    let base = serve(hub.clone(), api_cfg()).await;
+
+    let mut stream = reqwest::get(format!("{base}/api/v1/alerts/stream"))
+        .await
+        .unwrap();
+    assert_eq!(stream.status().as_u16(), 200);
+    let _keep = alerts;
+    crash(&hub, "api", "ERROR upstream exploded\nPanicError: boom");
+
+    let mut text = String::new();
+    let got = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(chunk) = stream.chunk().await.unwrap() {
+            text.push_str(&String::from_utf8_lossy(&chunk));
+            if text.contains("\n\n") && text.contains("data:") {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(got.is_ok(), "no alert within 10s: {text:?}");
+    assert!(text.contains("event: alert"), "{text}");
+    let data = text.lines().find_map(|l| l.strip_prefix("data:")).unwrap();
+    let v: Value = serde_json::from_str(data.trim()).unwrap();
+    assert_eq!(v["service"], "api", "{v}");
+    assert_eq!(v["source"], "starlist");
+    assert!(v["summary"].as_str().unwrap().starts_with("api: "), "{v}");
+    assert!(!v["findings"].as_array().unwrap().is_empty());
+
+    let (c, v) = get(format!("{base}/api/v1/alerts")).await;
+    assert_eq!(c, 200);
+    assert_eq!(v["enabled"], true);
+    assert_eq!(v["alert"]["service"], "api");
+}
+
+/// Accepts one POST and sends its JSON body down the channel.
+fn webhook_server() -> (String, std::sync::mpsc::Receiver<Value>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut c) = conn else { return };
+            let mut buf = vec![];
+            let mut tmp = [0u8; 4096];
+            let body = loop {
+                let n = c.read(&mut tmp).unwrap_or(0);
+                buf.extend_from_slice(&tmp[..n]);
+                let text = String::from_utf8_lossy(&buf).to_string();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let len = head
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= len {
+                        break body[..len].to_string();
+                    }
+                }
+                if n == 0 {
+                    break String::new();
+                }
+            };
+            let _ =
+                c.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            if let Ok(v) = serde_json::from_str(&body) {
+                let _ = tx.send(v);
+            }
+        }
+    });
+    (url, rx)
+}
+
+#[tokio::test]
+async fn a_new_error_is_posted_to_the_webhook_with_its_service() {
+    let (url, rx) = webhook_server();
+    let hub = quiet_hub(&["api"]);
+    let _alerts = spawn_alerts(hub.clone(), fast(Some(url)));
+    crash(
+        &hub,
+        "api",
+        "FATAL worker crashed\nPanicError: out of memory",
+    );
+
+    let v = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(10)))
+        .await
+        .unwrap()
+        .expect("no webhook call within 10s");
+    assert_eq!(v["service"], "api", "{v}");
+    assert_eq!(v["source"], "starlist");
+    assert!(v["summary"].as_str().unwrap().starts_with("api: "), "{v}");
+    assert!(v["findings"].is_array());
+}
+
+#[tokio::test]
+async fn the_same_pattern_does_not_alert_again_within_the_cooldown() {
+    let hub = quiet_hub(&["api"]);
+    let alerts = spawn_alerts(hub.clone(), fast(None));
+    let mut rx = alerts.subscribe();
+    crash(&hub, "api", "ERROR payment failed\nKeyError: 'currency'");
+    let first = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("no first alert")
+        .unwrap();
+    assert_eq!(first.service.as_deref(), Some("api"));
+
+    // More of the same pattern, over several watcher ticks: quiet.
+    for _ in 0..3 {
+        crash(&hub, "api", "ERROR payment failed\nKeyError: 'currency'");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(rx.try_recv().is_err(), "second alert inside the cooldown");
+}
+
+#[tokio::test]
+async fn alerts_are_404_and_disabled_without_a_watcher() {
+    let hub = quiet_hub(&["api"]);
+    assert!(hub.alerts().is_none());
+    let base = serve(hub, api_cfg()).await;
+    let (c, _) = get(format!("{base}/api/v1/alerts/stream")).await;
+    assert_eq!(c, 404);
+    let (c, v) = get(format!("{base}/api/v1/alerts")).await;
+    assert_eq!(c, 200);
+    assert_eq!(v["enabled"], false);
+    assert!(v["alert"].is_null());
+}
+
+#[cfg(feature = "prometheus")]
+#[tokio::test]
+async fn hub_metrics_label_every_series_with_its_service() {
+    let hub = quiet_hub(&["api", "pricing"]);
+    let base = serve(
+        hub.clone(),
+        HttpConfig {
+            api: true,
+            prometheus: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    let r = reqwest::get(format!("{base}/metrics")).await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let text = r.text().await.unwrap();
+    for svc in ["api", "pricing"] {
+        assert!(
+            text.contains(&format!("starlist_events_total{{service=\"{svc}\"")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("starlist_db_bytes{{service=\"{svc}\"}} ")),
+            "{text}"
+        );
+    }
+    for l in text
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
+        assert!(l.contains("service=\""), "series without service: {l}");
+    }
+
+    let off = serve(quiet_hub(&["api"]), api_cfg()).await;
+    let (c, _) = get(format!("{off}/metrics")).await;
+    assert_eq!(c, 404);
+}
+
+// ---- hub alerts: late services, auth, status, flags ----
+
+async fn next_services(
+    rx: &mut tokio::sync::broadcast::Receiver<starlist::alerts::Alert>,
+    want: &[&str],
+) -> Vec<String> {
+    let mut seen: Vec<String> = vec![];
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        while !want.iter().all(|w| seen.iter().any(|s| s == w)) {
+            if let Ok(a) = rx.recv().await {
+                seen.extend(a.service);
+            }
+        }
+    })
+    .await;
+    seen
+}
+
+#[tokio::test]
+async fn a_service_that_first_pushes_after_start_still_gets_alerts() {
+    let hub = quiet_hub(&["api"]);
+    let alerts = spawn_alerts(hub.clone(), fast(None));
+    let mut rx = alerts.subscribe();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let late = hub.store_or_create("late").unwrap();
+    let evs: Vec<Event> = (0..300)
+        .map(|i| ev("INFO GET /items 200", 86000.0 - i as f64 * 280.0))
+        .collect();
+    late.record(&evs).unwrap();
+    crash(
+        &hub,
+        "late",
+        "ERROR late service exploded\nPanicError: boom",
+    );
+    let seen = next_services(&mut rx, &["late"]).await;
+    assert!(seen.iter().any(|s| s == "late"), "{seen:?}");
+}
+
+#[tokio::test]
+async fn the_same_error_in_two_services_alerts_once_per_service() {
+    let hub = quiet_hub(&["api", "pricing"]);
+    let alerts = spawn_alerts(hub.clone(), fast(None));
+    let mut rx = alerts.subscribe();
+    for svc in ["api", "pricing"] {
+        crash(&hub, svc, "ERROR cache down\nPanicError: redis gone");
+    }
+    let seen = next_services(&mut rx, &["api", "pricing"]).await;
+    for svc in ["api", "pricing"] {
+        assert!(seen.iter().any(|s| s == svc), "{svc} missing in {seen:?}");
+    }
+}
+
+#[tokio::test]
+async fn hub_alert_routes_need_the_token() {
+    let hub = quiet_hub(&["api"]);
+    let _alerts = spawn_alerts(hub.clone(), fast(None));
+    let base = serve(
+        hub,
+        HttpConfig {
+            api: true,
+            #[cfg(feature = "prometheus")]
+            prometheus: true,
+            token: Some("s3cret".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut paths = vec!["/api/v1/alerts", "/api/v1/alerts/stream"];
+    if cfg!(feature = "prometheus") {
+        paths.push("/metrics");
+    }
+    let client = reqwest::Client::new();
+    for p in paths {
+        let r = client.get(format!("{base}{p}")).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 401, "{p}");
+        let r = client
+            .get(format!("{base}{p}"))
+            .bearer_auth("s3cret")
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(r.status().as_u16(), 401, "{p}");
+    }
+}
+
+#[tokio::test]
+async fn hub_status_reports_whether_alerts_are_on() {
+    let hub = quiet_hub(&["api"]);
+    let base = serve(hub.clone(), api_cfg()).await;
+    let (c, v) = get(format!("{base}/api/v1/status?service=api")).await;
+    assert_eq!(c, 200);
+    assert_eq!(v["alerts"], false, "{v}");
+    // The per-service router above is cached; enabling alerts must rebuild it.
+    let _alerts = spawn_alerts(hub, fast(None));
+    let (c, v) = get(format!("{base}/api/v1/status?service=api")).await;
+    assert_eq!(c, 200);
+    assert_eq!(v["alerts"], true, "{v}");
+}
+
+#[cfg(feature = "prometheus")]
+#[test]
+fn an_unreadable_service_is_skipped_in_hub_metrics() {
+    let mk = |name: &str| {
+        let p = tmp(name);
+        let s = Arc::new(Store::open(&p).unwrap());
+        s.record(&[ev("INFO ok", 1.0)]).unwrap();
+        (p, s)
+    };
+    let (_, good) = mk("good.db");
+    let (bad_path, bad) = mk("bad.db");
+    let conn = rusqlite::Connection::open(&bad_path).unwrap();
+    conn.execute_batch("DROP TABLE patterns").unwrap();
+    drop(conn);
+    let stores = vec![("bad".to_string(), bad), ("good".to_string(), good)];
+    let text = starlist::prometheus::render_services(&stores, starlist::analysis::now()).unwrap();
+    assert!(text.contains("service=\"good\""), "{text}");
+    assert!(!text.contains("service=\"bad\""), "{text}");
+}
+
+#[tokio::test]
+async fn no_alerts_flag_turns_the_stream_off() {
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    struct Kill(std::process::Child);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let dir = tmp("flaghub");
+    let _child = Kill(
+        std::process::Command::new(env!("CARGO_BIN_EXE_starlist"))
+            .args(["hub", "--no-alerts", "--http"])
+            .arg(format!("127.0.0.1:{port}"))
+            .arg("--dir")
+            .arg(&dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let base = format!("http://127.0.0.1:{port}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(r) = reqwest::get(format!("{base}/api/v1/alerts/stream")).await {
+            assert_eq!(r.status().as_u16(), 404);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "hub never came up");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (_, v) = get(format!("{base}/api/v1/alerts")).await;
+    assert_eq!(v["enabled"], false, "{v}");
 }

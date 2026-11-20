@@ -7,30 +7,35 @@ use std::sync::LazyLock;
 
 static PRIVATE_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
-        .unwrap()
+        .expect("valid regex")
 });
-static JWT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").unwrap());
-static BEARER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9\-._~+/]+=*").unwrap());
+static JWT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").expect("valid regex")
+});
+static BEARER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9\-._~+/]+=*").expect("valid regex")
+});
 static API_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"\b(?:(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16})\b",
     )
-    .unwrap()
+    .expect("valid regex")
 });
 static KEY_VALUE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r#"(?i)\b(password|passwd|pwd|secret|client[_-]?secret|token|access[_-]?token|refresh[_-]?token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|authorization|auth|session[_-]?id|sessionid|cookie|set-cookie)(["']?\s*[:=]\s*["']?)([^\s"',;&}]+)"#,
     )
-    .unwrap()
+    .expect("valid regex")
 });
-static EMAIL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b").unwrap());
+static EMAIL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b").expect("valid regex")
+});
 static IPV4: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b").unwrap()
+    Regex::new(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
+        .expect("valid regex")
 });
-static CARD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(?:\d[ -]?){12,18}\d\b").unwrap());
+static CARD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:\d[ -]?){12,18}\d\b").expect("valid regex"));
 
 fn luhn_valid(digits: &[u32]) -> bool {
     let mut sum = 0;

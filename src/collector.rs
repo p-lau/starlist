@@ -164,11 +164,25 @@ impl Pipeline {
 
     /// Parse, record, and pick up deploy markers from a batch of raw events.
     pub fn ingest(&self, texts: &[String]) {
+        self.ingest_at(texts, &[]);
+    }
+
+    /// Like `ingest`, with the time (Unix seconds) the source recorded each
+    /// event, used when its text has no timestamp of its own. Events past the
+    /// end of `at`, or with `None`, use the time they are read.
+    pub fn ingest_at(&self, texts: &[String], at: &[Option<f64>]) {
         if texts.is_empty() {
             return;
         }
         let now = crate::analysis::now();
-        let mut events: Vec<Event> = texts.iter().map(|t| self.parse(t, now)).collect();
+        let mut events: Vec<Event> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| self.parse(t, at.get(i).copied().flatten().unwrap_or(now)))
+            .collect();
+        // Held until the batch is recorded, so a prune cannot delete a pattern
+        // between merging into it and recording. Taken before the merger lock.
+        let _gate = self.store.write_gate();
         if let Some(m) = &self.merger {
             let mut live = m.lock().unwrap_or_else(|e| e.into_inner());
             if live.splits != self.store.split_generation() {
@@ -222,7 +236,9 @@ impl Pipeline {
             for e in &events {
                 if let Some(name) = re.captures(&e.head).and_then(|c| c.name("name")) {
                     let name = format!("v{}", name.as_str().trim_start_matches('v'));
-                    if let Ok(true) = self.store.add_deploy(&name, e.ts.unwrap(), None) {
+                    // parse() always stamps a timestamp.
+                    let Some(ts) = e.ts else { continue };
+                    if let Ok(true) = self.store.add_deploy(&name, ts, None) {
                         eprintln!("starlist: deploy marker {name}");
                     }
                 }
@@ -236,6 +252,10 @@ pub(crate) struct Feeder<'a> {
     pipeline: &'a Pipeline,
     asm: Assembler,
     batch: Vec<String>,
+    /// Source time of each event in `batch`.
+    batch_at: Vec<Option<f64>>,
+    /// Source time of the pending event's first line.
+    pending_at: Option<f64>,
     last_line: Instant,
 }
 
@@ -245,16 +265,30 @@ impl<'a> Feeder<'a> {
             pipeline,
             asm: Assembler::default(),
             batch: vec![],
+            batch_at: vec![],
+            pending_at: None,
             last_line: Instant::now(),
         }
     }
     pub(crate) fn line(&mut self, l: &str) {
+        self.line_at(l, None);
+    }
+    /// A line with the time (Unix seconds) its source recorded it. An event
+    /// takes the time of its first line when its text has no timestamp.
+    pub(crate) fn line_at(&mut self, l: &str, at: Option<f64>) {
         self.last_line = Instant::now();
-        if let Some(ev) = self.asm.feed(l) {
+        let starts =
+            !l.trim().is_empty() && !self.asm.continues(l.trim_end_matches(char::is_control));
+        let done = self.asm.feed(l);
+        if let Some(ev) = done {
             self.batch.push(ev);
-            if self.batch.len() >= BATCH {
-                self.commit();
-            }
+            self.batch_at.push(self.pending_at);
+        }
+        if starts {
+            self.pending_at = at;
+        }
+        if self.batch.len() >= BATCH {
+            self.commit();
         }
     }
     /// True when `l` would continue the pending event (see `Assembler::continues`).
@@ -264,14 +298,20 @@ impl<'a> Feeder<'a> {
     }
     /// Called when the source is idle: finish a pending event if nothing new arrived for a while.
     pub(crate) fn idle(&mut self, force: bool) {
-        if self.asm.has_pending() && (force || self.last_line.elapsed() >= IDLE_FLUSH) {
-            self.batch.extend(self.asm.flush());
+        if self.asm.has_pending()
+            && (force || self.last_line.elapsed() >= IDLE_FLUSH)
+            && let Some(ev) = self.asm.flush()
+        {
+            self.batch.push(ev);
+            self.batch_at.push(self.pending_at.take());
         }
         self.commit();
     }
     fn commit(&mut self) {
         if !self.batch.is_empty() {
-            self.pipeline.ingest(&std::mem::take(&mut self.batch));
+            let at = std::mem::take(&mut self.batch_at);
+            self.pipeline
+                .ingest_at(&std::mem::take(&mut self.batch), &at);
         }
     }
 }
@@ -396,12 +436,20 @@ pub fn read_stdin(pipeline: &Pipeline, tee: bool) {
 }
 
 /// Background thread that folds counts older than the retention period into
-/// hourly counts, and drops hourly counts and metrics older than `history_secs`.
-pub fn spawn_pruner(store: Arc<Store>, retention_secs: f64, history_secs: f64) {
+/// hourly counts, drops hourly counts and metrics older than `history_secs`
+/// along with patterns left with no counts, and removes the least recently
+/// seen rare patterns beyond `max_patterns`.
+pub fn spawn_pruner(
+    store: Arc<Store>,
+    retention_secs: f64,
+    history_secs: f64,
+    max_patterns: usize,
+) {
     thread::spawn(move || {
         loop {
             let now = crate::analysis::now();
             let _ = store.rollup(now - retention_secs, Some(now - history_secs));
+            let _ = store.cap_patterns(max_patterns, now);
             thread::sleep(Duration::from_secs(3600));
         }
     });

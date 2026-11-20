@@ -85,7 +85,7 @@ starlist-ci --baseline passing.log --format markdown < failing.log
 # No passing log yet: list the failing log's errors and warnings
 starlist-ci failing.log`;
 
-	const ciInstall = `cargo install --git https://github.com/p-lau/starlist starlist-ci`;
+	const ciInstall = `cargo install starlist-ci`;
 
 	const ciAnswer = {
 		summary:
@@ -135,6 +135,7 @@ tools = "core"`;
 		['--log-tz +02:00', 'Zone for timestamps that have none. Default UTC.'],
 		['--raw-size 20MB, --no-raw', 'Disk for recent redacted lines (get_context, get_request), or none.'],
 		['--retention 7d, --history 400d', 'How long fine-grained and hourly counts are kept.'],
+		['--max-patterns N', 'Cap on stored patterns. Default 10000; 0 means no limit. Rarely and least recently seen ones go first; patterns set by hand and errors from the last 7 days are kept.'],
 		['--env NAME', 'Label for what this collector watches (STARLIST_ENV).'],
 		['--notify-url URL, --no-alerts', 'Alert webhook, or no alerts at all.'],
 		['--no-dashboard, --no-api, --prometheus', 'Turn the dashboard or JSON API off, or /metrics on.']
@@ -401,7 +402,9 @@ tools = "core"`;
 		<p>
 			Fine-grained counts are kept for 7 days (<code>--retention</code>), then folded into hourly
 			counts kept for 400 days (<code>--history</code>), so a month-over-month question still has an
-			answer. A pattern costs about 45 bytes for each hour it occurs in.
+			answer. A pattern costs about 45 bytes for each hour it occurs in. A pattern with no counts left
+			after that is removed unless a state was set on it, and <code>--max-patterns</code> caps how many are
+			kept.
 		</p>
 		<ul>
 			<li><code>--metric duration_ms</code> reads that field from each line (<code>duration_ms=532</code>, <code>latency: 0.53</code> or JSON) and keeps an hourly histogram per pattern, so p50, p95 and p99 survive for months without the lines.</li>
@@ -426,14 +429,15 @@ tools = "core"`;
 			<li><strong>Replicas</strong> of a service add up in one place, because pattern IDs are the same on every host. A deploy reported by every replica is recorded once.</li>
 			<li><strong>Outages:</strong> a collector queues batches in its own database (up to <code>--hub-buffer</code>, 200 MB by default) and catches up afterwards. A retried batch is applied once.</li>
 			<li><strong>Asking the hub:</strong> the same tools with a <code>service</code> argument, plus <code>list_services</code>. <code>whats_new</code> and <code>diagnose</code> without a service cover them all, and <code>get_request</code> without one follows a request across services.</li>
-			<li>The hub has no TLS of its own, so put it behind an HTTPS proxy. It has no push alerts or <code>/metrics</code> of its own yet; each collector still has both.</li>
+			<li><strong>Alerts and metrics:</strong> the hub alerts on every service at once, with the service named in each alert (<code>--notify-url</code>, <code>--no-alerts</code>), and <code>--prometheus</code> serves <code>/metrics</code> with a <code>service</code> label on every series.</li>
+			<li>The hub has no TLS of its own, so put it behind an HTTPS proxy.</li>
 		</ul>
 	</section>
 
 	<!-- CI -->
 	<section id="ci">
 		<p class="eyebrow">Launch telemetry</p>
-		<h2>starlist-ci for CI logs <span class="kind soon">next release</span></h2>
+		<h2>starlist-ci for CI logs</h2>
 		<p>
 			A CI job starts fresh, so there is no history to compare with. <code>starlist-ci</code> is a
 			separate small binary that compares a failing run's log with the last passing run's and reports
@@ -442,13 +446,11 @@ tools = "core"`;
 		</p>
 		<Code title="starlist-ci" code={ci} />
 		<Code lang="json" title="answer (trimmed)" code={json(ciAnswer)} wrap />
-		<div class="note warn">
-			<p>
-				<code>starlist-ci</code> is merged but not in a release yet, so it isn't on crates.io or the
-				releases page. Until it is, build it from the repository:
-			</p>
-			<Code title="install from source" code={ciInstall} />
-		</div>
+		<p>
+			Install it with Cargo, or take the <code>starlist-ci-&lt;target&gt;</code> archive for your
+			platform from the <a href="{repo}/releases/latest" rel="noopener">releases page</a>.
+		</p>
+		<Code title="install" code={ciInstall} />
 		<p>
 			It reads plain output, <code>gh run view --log</code> output and raw GitHub Actions logs. Ready-made
 			setups are in <a href="/docs/integrations/#github-actions">GitHub Actions</a>,

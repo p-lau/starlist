@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Issue states, regressions, releases, manual merges and grouping rules (issue #23).
 
 use regex::Regex;

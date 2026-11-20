@@ -72,7 +72,7 @@ These are real answers from the [demo](#try-the-demo), which you can run yoursel
 ## Install
 
 ```sh
-cargo install starlist
+cargo install --locked starlist
 ```
 
 Or grab a prebuilt binary from the [latest release](https://github.com/p-lau/starlist/releases/latest) (Linux, macOS, Windows), or run the container `ghcr.io/p-lau/starlist:1`. See [deploy/](deploy/) for Docker Compose and Kubernetes.
@@ -113,7 +113,7 @@ Every tool is in [docs/tools.md](docs/tools.md). Tool definitions cost tokens on
 1. **Collect** from files, stdin, Docker, journald, Kubernetes, OpenTelemetry or Loki ([sources](docs/sources.md)).
 2. **Redact** emails, IPs, tokens, API keys, passwords and card numbers before anything is stored.
 3. **Group** similar lines into patterns. A pattern's ID stays the same across restarts and hosts.
-4. **Store** counts in SQLite: every 10 seconds for a week, then hourly for 400 days.
+4. **Store** counts in SQLite: every 10 seconds for a week, then hourly for 400 days. Patterns with no counts left are removed, and `--max-patterns` (default 10000) caps how many are kept.
 5. **Answer** questions about those patterns, sized to fit an agent's context.
 
 ## Also included
@@ -121,7 +121,7 @@ Every tool is in [docs/tools.md](docs/tools.md). Tool definitions cost tokens on
 - **Dashboard** at `http://127.0.0.1:7341/` for people.
 - **JSON API** at `/api/v1` for your own scripts and UIs ([docs/api.md](docs/api.md)).
 - **Alerts** pushed to a subscribed agent or a webhook (`--notify-url`).
-- **Hub** to gather many services in one place, for when you run more than one app.
+- **Hub** to gather many services in one place, for when you run more than one app. It has its own push alerts (`--notify-url`, `--no-alerts`, and an SSE stream at `/api/v1/alerts/stream`, each alert naming its service) and, with `--prometheus`, a `/metrics` endpoint with a `service` label on every series.
 - **`starlist-ci`** to explain why a CI run failed, by comparing it with the last passing run ([ci/README.md](ci/README.md)).
 - **Prometheus** metrics and NDJSON export.
 
@@ -148,7 +148,6 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 - Lines without a timestamp get the time they were read.
 - Patterns are kept forever, so logs full of one-off free text grow the pattern table without limit.
-- A hub has no push alerts or Prometheus endpoint of its own yet.
 
 ## Development
 

@@ -1,0 +1,5 @@
+2026-11-19 10:15:02 ERROR unhandled exception
+Traceback (most recent call last):
+  File "app/main.py", line 42, in handler
+    raise ValueError("bad input 12345")
+ValueError: bad input 12345

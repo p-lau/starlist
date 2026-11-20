@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! End to end: collector pipeline -> store -> MCP over HTTP -> real MCP client.
 
 use rmcp::ServiceExt;

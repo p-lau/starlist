@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! The dashboard is served at / without shadowing /mcp or the API (issue #22).
 
 use starlist::http::{HttpConfig, app};

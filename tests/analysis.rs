@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Scenario tests for "what's new" and "verify my fix" with controlled time.
 
 use starlist::analysis::{

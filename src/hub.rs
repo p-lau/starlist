@@ -39,6 +39,7 @@ pub struct Hub {
     raw_cap: Option<i64>,
     services: RwLock<BTreeMap<String, Arc<Store>>>,
     apis: RwLock<BTreeMap<String, Router>>,
+    alerts: RwLock<Option<Arc<crate::alerts::Alerts>>>,
 }
 
 fn hash(token: &str) -> String {
@@ -58,6 +59,7 @@ impl Hub {
             raw_cap,
             services: RwLock::default(),
             apis: RwLock::default(),
+            alerts: RwLock::default(),
         };
         let entries = std::fs::read_dir(&hub.dir)
             .map_err(|e| format!("reading {}: {e}", hub.dir.display()))?;
@@ -81,6 +83,23 @@ impl Hub {
             .keys()
             .cloned()
             .collect()
+    }
+
+    /// Where hub alerts go (see `spawn_alerts`); `None` means alerts are off.
+    /// Set before serving. Per-service `?service=` API routers don't carry
+    /// alerts; `/alerts` and `/alerts/stream` are answered by the hub itself
+    /// for every service.
+    pub fn set_alerts(&self, alerts: Option<Arc<crate::alerts::Alerts>>) {
+        *self.alerts.write().unwrap_or_else(|e| e.into_inner()) = alerts;
+        // Cached per-service routers carry the alerts handle; rebuild them.
+        self.apis.write().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    pub fn alerts(&self) -> Option<Arc<crate::alerts::Alerts>> {
+        self.alerts
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn store(&self, service: &str) -> Option<Arc<Store>> {
@@ -142,7 +161,7 @@ impl Hub {
         let store = self.store(service)?;
         let r = crate::api::routes(crate::api::ApiState {
             store,
-            alerts: None,
+            alerts: self.alerts(),
             service: Some(service.to_string()),
         });
         self.apis
@@ -196,6 +215,8 @@ impl Hub {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let mut acked = last;
+        // Keeps a prune from deleting a pattern between a merge and its events.
+        let _gate = store.write_gate();
         for entry in batch.entries {
             if entry.seq <= last {
                 continue;
@@ -262,19 +283,39 @@ impl Hub {
         Ok(out)
     }
 
-    /// Fold old counts into hourly ones in every service, like a collector does.
-    pub fn spawn_pruner(self: &Arc<Self>, retention_secs: f64, history_secs: f64) {
+    /// Fold old counts into hourly ones in every service and cap the pattern
+    /// count, like a collector does.
+    pub fn spawn_pruner(
+        self: &Arc<Self>,
+        retention_secs: f64,
+        history_secs: f64,
+        max_patterns: usize,
+    ) {
         let hub = self.clone();
         std::thread::spawn(move || {
             loop {
                 let now = analysis::now();
                 for (_, s) in hub.stores() {
                     let _ = s.rollup(now - retention_secs, Some(now - history_secs));
+                    let _ = s.cap_patterns(max_patterns, now);
                 }
                 std::thread::sleep(std::time::Duration::from_secs(3600));
             }
         });
     }
+}
+
+/// Watch every service of the hub for new or spiking errors, with a detector
+/// per service (services that appear later are picked up). Also sets the
+/// result as the hub's alerts, so `/api/v1/alerts` and `/alerts/stream` serve it.
+pub fn spawn_alerts(hub: Arc<Hub>, cfg: crate::alerts::AlertConfig) -> Arc<crate::alerts::Alerts> {
+    let h = hub.clone();
+    let alerts = crate::alerts::spawn_watcher_for(
+        move || h.stores().into_iter().map(|(n, s)| (Some(n), s)).collect(),
+        cfg,
+    );
+    hub.set_alerts(Some(alerts.clone()));
+    alerts
 }
 
 // ---- push ----
@@ -416,11 +457,14 @@ async fn hub_api(State(hub): State<Arc<Hub>>, req: Request) -> Response {
     if path == "/services" {
         return services(&hub).await;
     }
+    if path == "/alerts" {
+        return Json(crate::api::latest_alert_json(hub.alerts().as_ref())).into_response();
+    }
     if path == "/alerts/stream" {
-        return err(
-            StatusCode::NOT_FOUND,
-            "Push alerts aren't available on a hub yet.",
-        );
+        return match crate::api::alert_stream_response(hub.alerts()) {
+            Ok(r) => r,
+            Err(e) => e.into_response(),
+        };
     }
     let names = hub.names();
     let service = match query_param(&req, "service") {
@@ -850,7 +894,9 @@ impl ServerHandler for HubServer {
                 a.remove("cursor");
                 let mut req = request.clone();
                 req.arguments = Some(a);
-                let store = self.hub.store(&svc).expect("listed service");
+                let Some(store) = self.hub.store(&svc) else {
+                    continue;
+                };
                 let r = LogServer::new(store)
                     .call_tool(req, context.clone())
                     .await?;

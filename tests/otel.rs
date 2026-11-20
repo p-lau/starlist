@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! OTLP logs over HTTP (issue #27): protobuf, JSON and gzip, with trace IDs
 //! kept for get_request.
 

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Following one request through the log (issue #11).
 
 use starlist::analysis::{DEFAULT_MAX_CHARS, Detail, Page, compact, get_request, whats_new};

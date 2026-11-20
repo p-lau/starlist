@@ -140,11 +140,12 @@ pub fn follow(
                         }
                         got_lines = true;
                         let f = feeders.entry(key).or_insert_with(|| Feeder::new(pipeline));
+                        let at = Some(e.ts as f64 / 1e9);
                         for (i, l) in e.text.lines().enumerate() {
                             if i == 0 && !e.head.is_empty() && !f.continues(l) {
-                                f.line(&format!("{}{l}", e.head));
+                                f.line_at(&format!("{}{l}", e.head), at);
                             } else {
-                                f.line(l);
+                                f.line_at(l, if i == 0 { at } else { None });
                             }
                         }
                     }

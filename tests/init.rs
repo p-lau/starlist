@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! `starlist init` and `starlist.toml` (issue #28).
 
 use clap::{Arg, ArgAction, Command};

@@ -174,20 +174,12 @@ jobs:
       - name: Tests
         shell: bash      # with pipefail, so tee keeps the test's exit code
         run: cargo test 2>&1 | tee test.log
-      - uses: p-lau/starlist/ci@v1.1.0   # the first release with starlist-ci
+      - uses: p-lau/starlist/ci@v1.1.0
         if: always()
         with:
           log: test.log
           status: \${{ job.status }}
           comment: true`;
-	const ghaNow = `# Until the release: put starlist-ci on PATH first, then use the action from main
-- run: cargo install --git https://github.com/p-lau/starlist starlist-ci
-  if: failure()
-- uses: p-lau/starlist/ci@main
-  if: always()
-  with:
-    log: test.log
-    status: \${{ job.status }}`;
 	const ghaAgent = `gh run view <failed-run-id> --log > failing.log
 gh run view <last-passing-run-id> --log > passing.log
 starlist-ci --baseline passing.log failing.log`;
@@ -196,7 +188,7 @@ starlist-ci --baseline passing.log failing.log`;
 	const gitlab = `test:
   image: rust:1
   before_script:
-    - cargo install --git https://github.com/p-lau/starlist starlist-ci
+    - cargo install starlist-ci
   script:
     - set -o pipefail
     - cargo test 2>&1 | tee test.log
@@ -614,7 +606,7 @@ ssh -N -L 7341:127.0.0.1:7341 app-host`;
 	<!-- GITHUB ACTIONS -->
 	<section id="github-actions">
 		<p class="eyebrow">CI</p>
-		<h2>GitHub Actions <span class="kind builtin">built in</span> <span class="kind soon">next release</span></h2>
+		<h2>GitHub Actions <span class="kind builtin">built in</span></h2>
 		<p>
 			The <code>p-lau/starlist/ci</code> action keeps each run's log as an artifact. When the job fails,
 			it compares the log with the last passing run of the same workflow on the pull request's base
@@ -622,14 +614,6 @@ ssh -N -L 7341:127.0.0.1:7341 app-host`;
 			updated on later failures. It never fails the job itself.
 		</p>
 		<Code lang="yaml" title=".github/workflows/test.yml" code={gha} />
-		<div class="note warn">
-			<p>
-				The action and <code>starlist-ci</code> are merged but not released yet, so there is no
-				<code>v1.1.0</code> tag or release binary. Until then, install <code>starlist-ci</code> in the job
-				(the action uses one on <code>PATH</code>) and point at <code>main</code>:
-			</p>
-			<Code lang="yaml" title="until the release" code={ghaNow} />
-		</div>
 		<p>
 			Give each matrix entry its own artifact with <code>name: starlist-log-$&#123;&#123; matrix.os &#125;&#125;</code>.
 			An agent fixing a red build can also run the comparison itself:

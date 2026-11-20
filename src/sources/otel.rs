@@ -362,7 +362,9 @@ pub mod pb {
             let key = self.varint()?;
             let f = match key & 7 {
                 0 => Field::Varint(self.varint()?),
-                1 => Field::Fixed64(u64::from_le_bytes(self.take(8)?.try_into().unwrap())),
+                1 => Field::Fixed64(u64::from_le_bytes(
+                    self.take(8)?.try_into().expect("take(8) returns 8 bytes"),
+                )),
                 2 => {
                     let n = self.varint()? as usize;
                     Field::Bytes(self.take(n)?)

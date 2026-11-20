@@ -4,13 +4,21 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-19
+
 ### Fixed
 
 - journald: a stack trace an app writes line by line (each line its own journal entry) is kept as one event again, instead of one pattern per frame.
 - Loki: Loki 3 labels each line with a `detected_level`, which split a stream's stack traces across patterns. Streams are now read by their own labels (`categorize-labels`), also when the query parses labels with `| json` or `| logfmt`.
 - Kubernetes: each container of a pod is read as its own stream, so a sidecar's lines no longer break the app's stack traces, and lines that arrive slightly out of time order from different containers are no longer skipped.
+- Docker, Kubernetes and Loki: lines without a timestamp of their own get the time the source recorded them, instead of the time starlist read them, so `--from-start` and lines read after a restart or late from Loki land at the right time.
+- A timestamp with a multi-byte character near its end no longer crashes parsing.
+
 ### Added
 
+- A hub now has push alerts: `/api/v1/alerts/stream` and `/api/v1/alerts` cover every service (alerts carry a `service` field), and `starlist hub` takes `--notify-url` and `--no-alerts`.
+- `starlist hub --prometheus` serves `/metrics` with a `service` label on every series.
+- `--max-patterns` (config key `max-patterns`, default 10000, 0 = no limit) on `serve`, `collect` and `hub`: a hard cap: past the limit, rarely seen patterns are removed first, then the least recently seen. `ingest` does not apply it; the next `serve`, `collect` or `hub` prune does. Patterns with a state, timing or split set by hand, and ERROR or FATAL patterns seen in the last 7 days, are kept. A removed pattern gets the same ID if seen again, but its first-seen time and totals start over.
 - `starlist-ci`, a separate binary for CI logs: compares a failing run's log with the last passing run's and reports new, grown and stopped patterns with line numbers, steps and code locations, as JSON within the same size limits as the MCP tools, or as Markdown. Reads plain output, `gh run view --log` output and raw GitHub Actions logs, from a file or stdin, and writes nothing to disk. See [ci/README.md](ci/README.md).
 - A GitHub Action (`p-lau/starlist/ci`) that keeps each run's log as an artifact and, when a job fails, writes the comparison to the job summary and optionally a pull request comment.
 - Release archives for `starlist-ci`, and `starlist-ci` on crates.io.
@@ -18,8 +26,16 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- Patterns with no counts left after the history window are removed, unless a state, timing or split was set on them.
 - Bundled SQLite updated to 3.54.1 (rusqlite 0.42); rmcp updated to 3.10 and ureq to 3.5.2.
 - Library: `WhatsNewData::tally` and `DeployDiff::tally` are now structs with named counts (`FindingCounts`, `ChangeCounts`) instead of arrays. Tool and API output are unchanged.
+
+### Packaging
+
+- starlist-core now ships with a README and the license text, and starlist-ci with the license text.
+- All three crates declare their minimum Rust version (1.89), and CI checks the workspace with it.
+- The crates.io package no longer includes the unused Brotli copies of the dashboard.
+- docs/versioning.md says the `starlist` crate's Rust library isn't a stable interface.
 
 ## [1.0.0] - 2026-11-10
 
@@ -48,5 +64,6 @@ The first public release. Everything below is new.
 - Seven days of 10-second counts and 400 days of hourly history, with a bounded buffer of redacted raw lines (`--raw-size`, `--no-raw`).
 - The log engine as a separate crate, `starlist-core`.
 
-[Unreleased]: https://github.com/p-lau/starlist/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/p-lau/starlist/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/p-lau/starlist/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/p-lau/starlist/releases/tag/v1.0.0

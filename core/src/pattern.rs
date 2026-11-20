@@ -35,51 +35,55 @@ pub fn level_rank(level: Option<&str>) -> u8 {
 
 static TS_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\[?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\]?[\s,|]*")
-        .unwrap()
+        .expect("valid regex")
 });
-static LEVEL_KV: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)\b(?:level|lvl|severity)[=:]\s*"?([A-Za-z]+)"#).unwrap());
+static LEVEL_KV: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\b(?:level|lvl|severity)[=:]\s*"?([A-Za-z]+)"#).expect("valid regex")
+});
 static LEVEL_WORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|SEVERE|CRITICAL|FATAL|PANIC)\b")
-        .unwrap()
+        .expect("valid regex")
 });
 static CONTINUATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"^(?:\s+\S|Traceback \(most recent call last\)|Caused by:|During handling of the above exception|The above exception was the direct cause|\.\.\. \d+ (?:more|common frames omitted)|[A-Za-z_][\w.$]*(?:Error|Exception|Exit|Interrupt|Warning)(?::|\s*$))",
     )
-    .unwrap()
+    .expect("valid regex")
 });
 /// The line that ends a Python traceback: the exception's (possibly dotted) name, then
 /// `: message` or nothing. Python exceptions are often named without an Error suffix
 /// (`NotFound`, `GatewayTimeout`), so inside a traceback any such name counts.
 static PY_EXC_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^([A-Za-z_][\w.]*)(?::\s|:?$)").unwrap());
+    LazyLock::new(|| Regex::new(r"^([A-Za-z_][\w.]*)(?::\s|:?$)").expect("valid regex"));
 static EXC_TYPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"([A-Za-z_][\w.$]*(?:Error|Exception|Exit|Interrupt|Fault))(?::|\s*$)").unwrap()
+    Regex::new(r"([A-Za-z_][\w.$]*(?:Error|Exception|Exit|Interrupt|Fault))(?::|\s*$)")
+        .expect("valid regex")
 });
 
 static MASK_UUID: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
-        .unwrap()
+        .expect("valid regex")
 });
 static MASK_TS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
-        .unwrap()
+        .expect("valid regex")
 });
-static MASK_DQ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*""#).unwrap());
+static MASK_DQ: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*""#).expect("valid regex"));
 static MASK_HEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(?:0x[0-9a-fA-F]+|[0-9a-fA-F]{12,})\b").unwrap());
-static MASK_TOKEN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*").unwrap());
+    LazyLock::new(|| Regex::new(r"\b(?:0x[0-9a-fA-F]+|[0-9a-fA-F]{12,})\b").expect("valid regex"));
+static MASK_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*").expect("valid regex")
+});
 static NUMBER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[-+]?\d+(?:\.\d+)?(?:[A-Za-z%]{1,3})?$").unwrap());
-static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+    LazyLock::new(|| Regex::new(r"^[-+]?\d+(?:\.\d+)?(?:[A-Za-z%]{1,3})?$").expect("valid regex"));
+static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").expect("valid regex"));
 
 const MAX_TEMPLATE_CHARS: usize = 400;
 const MAX_EVENT_LINES: usize = 200;
 
 static HAS_ZONE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:[Zz]|[+-]\d{2}:?\d{2})$").unwrap());
+    LazyLock::new(|| Regex::new(r"(?:[Zz]|[+-]\d{2}:?\d{2})$").expect("valid regex"));
 
 /// Whether a timestamp string carries its own zone ("Z" or an offset).
 pub fn has_zone(raw: &str) -> bool {
@@ -125,14 +129,13 @@ pub fn parse_timestamp(raw: &str) -> Option<f64> {
         s.push_str("+00:00");
     }
     // +0000 -> +00:00
-    let bytes = s.as_bytes();
-    if bytes.len() > 5 {
-        let tail = &s[s.len() - 5..];
-        if (tail.starts_with('+') || tail.starts_with('-'))
-            && tail[1..].chars().all(|c| c.is_ascii_digit())
-        {
-            s.insert(s.len() - 2, ':');
-        }
+    // `get` rather than slicing: the cut can land inside a multi-byte char.
+    if let Some(tail) = s.len().checked_sub(5).and_then(|i| s.get(i..))
+        && s.len() > 5
+        && (tail.starts_with('+') || tail.starts_with('-'))
+        && tail[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        s.insert(s.len() - 2, ':');
     }
     if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
         return Some(dt.timestamp_micros() as f64 / 1e6);
@@ -333,7 +336,7 @@ pub fn parse_event_with(
             let (ts, msg) = match TS_PREFIX.captures(first) {
                 Some(c) => (
                     parse_timestamp(&c[1]).map(|t| (t, !has_zone(&c[1]))),
-                    first[c.get(0).unwrap().end()..].to_string(),
+                    first[c.get(0).expect("group 0 always matches").end()..].to_string(),
                 ),
                 None => (None, first.to_string()),
             };
@@ -597,5 +600,8 @@ mod tests {
         assert_eq!(parse_timestamp("2026-11-06 10:00:00").unwrap(), a);
         assert_eq!(parse_timestamp("2026-11-06T12:00:00+0200").unwrap(), a);
         assert_eq!(parse_timestamp("2026-11-06T10:00:00,500").unwrap(), a + 0.5);
+        // A cut five bytes from the end that falls inside a multi-byte char
+        // (found by fuzzing) is not a timestamp, and must not panic.
+        assert_eq!(parse_timestamp("2026-11-19T10:15\u{fffd}02`"), None);
     }
 }
