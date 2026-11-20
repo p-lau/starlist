@@ -129,14 +129,13 @@ pub fn parse_timestamp(raw: &str) -> Option<f64> {
         s.push_str("+00:00");
     }
     // +0000 -> +00:00
-    let bytes = s.as_bytes();
-    if bytes.len() > 5 {
-        let tail = &s[s.len() - 5..];
-        if (tail.starts_with('+') || tail.starts_with('-'))
-            && tail[1..].chars().all(|c| c.is_ascii_digit())
-        {
-            s.insert(s.len() - 2, ':');
-        }
+    // `get` rather than slicing: the cut can land inside a multi-byte char.
+    if let Some(tail) = s.len().checked_sub(5).and_then(|i| s.get(i..))
+        && s.len() > 5
+        && (tail.starts_with('+') || tail.starts_with('-'))
+        && tail[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        s.insert(s.len() - 2, ':');
     }
     if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
         return Some(dt.timestamp_micros() as f64 / 1e6);
@@ -601,5 +600,8 @@ mod tests {
         assert_eq!(parse_timestamp("2026-11-06 10:00:00").unwrap(), a);
         assert_eq!(parse_timestamp("2026-11-06T12:00:00+0200").unwrap(), a);
         assert_eq!(parse_timestamp("2026-11-06T10:00:00,500").unwrap(), a + 0.5);
+        // A cut five bytes from the end that falls inside a multi-byte char
+        // (found by fuzzing) is not a timestamp, and must not panic.
+        assert_eq!(parse_timestamp("2026-11-19T10:15\u{fffd}02`"), None);
     }
 }

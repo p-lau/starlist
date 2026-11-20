@@ -12,6 +12,7 @@ Notable changes to starlist. The format follows [Keep a Changelog](https://keepa
 - Loki: Loki 3 labels each line with a `detected_level`, which split a stream's stack traces across patterns. Streams are now read by their own labels (`categorize-labels`), also when the query parses labels with `| json` or `| logfmt`.
 - Kubernetes: each container of a pod is read as its own stream, so a sidecar's lines no longer break the app's stack traces, and lines that arrive slightly out of time order from different containers are no longer skipped.
 - Docker, Kubernetes and Loki: lines without a timestamp of their own get the time the source recorded them, instead of the time starlist read them, so `--from-start` and lines read after a restart or late from Loki land at the right time.
+- A timestamp with a multi-byte character near its end no longer crashes parsing.
 
 ### Added
 
