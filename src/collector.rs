@@ -225,7 +225,9 @@ impl Pipeline {
             for e in &events {
                 if let Some(name) = re.captures(&e.head).and_then(|c| c.name("name")) {
                     let name = format!("v{}", name.as_str().trim_start_matches('v'));
-                    if let Ok(true) = self.store.add_deploy(&name, e.ts.unwrap(), None) {
+                    // parse() always stamps a timestamp.
+                    let Some(ts) = e.ts else { continue };
+                    if let Ok(true) = self.store.add_deploy(&name, ts, None) {
                         eprintln!("starlist: deploy marker {name}");
                     }
                 }

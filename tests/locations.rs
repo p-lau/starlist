@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Code locations from stack traces on findings and patterns (issue #9).
 
 use starlist::analysis::{DEFAULT_MAX_CHARS, Detail, Page, get_pattern, whats_new};

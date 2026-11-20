@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Errors that come at certain times of day: usual spikes are labelled, not alerted, and
 //! verify_fix waits for a pattern's usual hours.
 

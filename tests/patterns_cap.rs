@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Pattern expiry and the pattern cap.
 
 mod common;

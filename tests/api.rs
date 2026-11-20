@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! The JSON API under /api/v1 (issue #21).
 
 use serde_json::{Value, json};

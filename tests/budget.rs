@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Output stays within its size budget on a noisy log, and paging covers
 //! every item exactly once (issue #8).
 

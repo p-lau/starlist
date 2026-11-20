@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! The hub: collectors push, replicas add up, requests cross services (issue #25).
 
 use rmcp::ServiceExt;

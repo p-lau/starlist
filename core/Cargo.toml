@@ -11,6 +11,9 @@ readme = "README.md"
 keywords = ["logs", "redaction", "log-parsing", "clustering"]
 categories = ["parser-implementations", "development-tools::debugging"]
 
+[lints]
+workspace = true
+
 [dependencies]
 regex.workspace = true
 serde_json.workspace = true

@@ -10,7 +10,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 static TRACEPARENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}\b").unwrap()
+    Regex::new(r"\b[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}\b").expect("valid regex")
 });
 
 const DEFAULT_KEYS: &[&str] = &[

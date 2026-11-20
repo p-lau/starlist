@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Which release introduced each pattern (issue #7).
 
 use starlist::analysis::{

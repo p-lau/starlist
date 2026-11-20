@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Bearer-token auth on the HTTP endpoint.
 
 use rmcp::ServiceExt;

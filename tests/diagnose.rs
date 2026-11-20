@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! The diagnose answer and the slow-rise test, with controlled time.
 
 use starlist::analysis::{DEFAULT_MAX_CHARS, Detail, Page, whats_new};

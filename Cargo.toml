@@ -10,6 +10,9 @@ homepage = "https://starlist.app"
 # Oldest Rust that builds starlist with its locked dependencies; CI checks it.
 rust-version = "1.89"
 
+[workspace.lints.clippy]
+unwrap_used = "warn"
+
 [workspace.dependencies]
 regex = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -64,6 +67,9 @@ kubernetes = []
 otel = ["dep:flate2"]
 # `--loki URL --loki-query QUERY`: read a LogQL stream.
 loki = []
+
+[lints]
+workspace = true
 
 [dependencies]
 starlist-core = { path = "core", version = "1.1.0" }

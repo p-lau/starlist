@@ -16,7 +16,7 @@ static FAILURE_WORDS: LazyLock<Regex> = LazyLock::new(|| {
         r"|(?i:\bfailed (?:to|with)\b)",
         r"|(?i:\bexit (?:code|status) [1-9])",
     ))
-    .unwrap()
+    .expect("valid regex")
 });
 
 const TEMPLATE_CHARS: usize = 240;
@@ -153,9 +153,10 @@ fn finding_json(f: &Finding, i: usize, shape: Shape, has_baseline: bool) -> Valu
     v[key] = json!(s.line);
     if !has_baseline {
         // Nothing to compare with, so "new" and "before" would say nothing.
-        let o = v.as_object_mut().unwrap();
-        o.remove("kind");
-        o.remove("before");
+        if let Some(o) = v.as_object_mut() {
+            o.remove("kind");
+            o.remove("before");
+        }
     }
     if s.level.is_none() && f.severity == 3 {
         v["level"] = json!("ERROR?");
