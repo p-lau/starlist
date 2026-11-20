@@ -72,6 +72,19 @@ jobs:
           name: lcov
           path: lcov.info
 
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Keep in step with rust-version in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --workspace --all-targets --locked
+      - name: Check (no default features)
+        run: cargo check --workspace --all-targets --locked --no-default-features
+
   image:
     name: Container image
     runs-on: ubuntu-latest
