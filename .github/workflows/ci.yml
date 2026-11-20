@@ -53,6 +53,25 @@ jobs:
       - name: Tests (no default features)
         run: cargo test --workspace --locked --no-default-features
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage
+        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info
+
   msrv:
     name: Minimum Rust version
     runs-on: ubuntu-latest
@@ -92,3 +111,28 @@ jobs:
           done
           curl -sf -H "Authorization: Bearer ci-smoke-test-token-0123456789" http://127.0.0.1:7341/api/v1/status || { docker logs sl; exit 1; }
           docker logs sl
+
+  fuzz:
+    name: Fuzz (60s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # The prebuilt cargo-fuzz is a static musl binary and defaults to its own
+      # target, where sanitizers can't be used; build for the runner's target.
+      - name: parse_event
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu parse_event fuzz/seeds/parse_event -- -max_total_time=60
+      - name: redact
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu redact fuzz/seeds/redact -- -max_total_time=60
+      - name: Upload crashes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/

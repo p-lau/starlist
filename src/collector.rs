@@ -180,6 +180,9 @@ impl Pipeline {
             .enumerate()
             .map(|(i, t)| self.parse(t, at.get(i).copied().flatten().unwrap_or(now)))
             .collect();
+        // Held until the batch is recorded, so a prune cannot delete a pattern
+        // between merging into it and recording. Taken before the merger lock.
+        let _gate = self.store.write_gate();
         if let Some(m) = &self.merger {
             let mut live = m.lock().unwrap_or_else(|e| e.into_inner());
             if live.splits != self.store.split_generation() {
@@ -431,12 +434,20 @@ pub fn read_stdin(pipeline: &Pipeline, tee: bool) {
 }
 
 /// Background thread that folds counts older than the retention period into
-/// hourly counts, and drops hourly counts and metrics older than `history_secs`.
-pub fn spawn_pruner(store: Arc<Store>, retention_secs: f64, history_secs: f64) {
+/// hourly counts, drops hourly counts and metrics older than `history_secs`
+/// along with patterns left with no counts, and removes the least recently
+/// seen rare patterns beyond `max_patterns`.
+pub fn spawn_pruner(
+    store: Arc<Store>,
+    retention_secs: f64,
+    history_secs: f64,
+    max_patterns: usize,
+) {
     thread::spawn(move || {
         loop {
             let now = crate::analysis::now();
             let _ = store.rollup(now - retention_secs, Some(now - history_secs));
+            let _ = store.cap_patterns(max_patterns, now);
             thread::sleep(Duration::from_secs(3600));
         }
     });

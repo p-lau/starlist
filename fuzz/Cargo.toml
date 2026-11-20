@@ -1,0 +1,29 @@
+[package]
+name = "starlist-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+starlist-core = { path = "../core" }
+
+# Not a member of the root workspace: it needs nightly and is built by cargo-fuzz.
+[workspace]
+
+[[bin]]
+name = "parse_event"
+path = "fuzz_targets/parse_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redact"
+path = "fuzz_targets/redact.rs"
+test = false
+doc = false
+bench = false

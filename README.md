@@ -113,7 +113,7 @@ Every tool is in [docs/tools.md](docs/tools.md). Tool definitions cost tokens on
 1. **Collect** from files, stdin, Docker, journald, Kubernetes, OpenTelemetry or Loki ([sources](docs/sources.md)).
 2. **Redact** emails, IPs, tokens, API keys, passwords and card numbers before anything is stored.
 3. **Group** similar lines into patterns. A pattern's ID stays the same across restarts and hosts.
-4. **Store** counts in SQLite: every 10 seconds for a week, then hourly for 400 days.
+4. **Store** counts in SQLite: every 10 seconds for a week, then hourly for 400 days. Patterns with no counts left are removed, and `--max-patterns` (default 10000) caps how many are kept.
 5. **Answer** questions about those patterns, sized to fit an agent's context.
 
 ## Also included

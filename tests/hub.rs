@@ -361,6 +361,82 @@ async fn pushes_are_idempotent_and_survive_an_outage() {
     assert_eq!(w.pattern(&id).unwrap().unwrap().total, 2);
 }
 
+#[tokio::test]
+async fn push_route_checks_the_bearer_token() {
+    let dir = tmp("hub");
+    let hub = Arc::new(Hub::open(&dir, Some(20 << 20)).unwrap());
+    let api_token = Hub::add_token(&dir, "api").unwrap();
+    let base = serve(hub, HttpConfig::default()).await;
+    let body = |service: &str| {
+        json!({"protocol": 1, "service": service, "instance": "i1", "entries": []}).to_string()
+    };
+    let post = |auth: Option<String>, body: String| {
+        let url = format!("{base}/hub/v1/push");
+        async move {
+            let mut r = reqwest::Client::new()
+                .post(url)
+                .header("Content-Type", "application/json");
+            if let Some(a) = auth {
+                r = r.header("Authorization", a);
+            }
+            r.body(body).send().await.unwrap().status().as_u16()
+        }
+    };
+    assert_eq!(post(None, body("api")).await, 401);
+    assert_eq!(post(Some("Bearer nope".into()), body("api")).await, 401);
+    assert_eq!(post(Some(api_token.clone()), body("api")).await, 401);
+    assert_eq!(
+        post(Some(format!("Bearer {api_token}")), body("other")).await,
+        403
+    );
+    assert_eq!(
+        post(Some(format!("Bearer {api_token}")), "not json".into()).await,
+        400
+    );
+    assert_eq!(
+        post(Some(format!("Bearer {api_token}")), body("api")).await,
+        200
+    );
+}
+
+#[tokio::test]
+async fn the_hub_pruner_folds_every_service() {
+    let dir = tmp("hub");
+    let hub = Arc::new(Hub::open(&dir, Some(20 << 20)).unwrap());
+    const D: f64 = 86400.0;
+    let mut ids = vec![];
+    for svc in ["api", "pricing"] {
+        let s = hub.store_or_create(svc).unwrap();
+        let old: Vec<Event> = (0..5)
+            .map(|_| ev(&format!("ERROR {svc} old failure"), 20.0 * D))
+            .collect();
+        let recent: Vec<Event> = (0..3)
+            .map(|_| ev(&format!("ERROR {svc} recent failure"), 60.0))
+            .collect();
+        s.record(&old).unwrap();
+        s.record(&recent).unwrap();
+        ids.push((s, old[0].pattern_id.clone(), recent[0].pattern_id.clone()));
+    }
+    let now = starlist::analysis::now();
+    for (s, old, _) in &ids {
+        assert_eq!(s.count(old, now - 30.0 * D, now).unwrap(), 5);
+    }
+    // Retention 7 days, history 14 days: the 20-day-old counts go, the rest stay.
+    hub.spawn_pruner(7.0 * D, 14.0 * D, 0);
+    for (s, old, recent) in &ids {
+        let mut gone = false;
+        for _ in 0..100 {
+            if s.count(old, now - 30.0 * D, now).unwrap() == 0 {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(gone, "old counts were not pruned");
+        assert_eq!(s.count(recent, now - 30.0 * D, now + 60.0).unwrap(), 3);
+    }
+}
+
 #[test]
 fn outbox_drops_the_oldest_beyond_its_cap() {
     let p = tmp("c.db");
