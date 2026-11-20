@@ -29,6 +29,14 @@ The `starlist-core` crate is versioned with the binary. Its public Rust API foll
 
 `starlist-ci` is versioned with the binary too. Its interface is its options, the JSON output fields (`summary`, `events`, `patterns`, `findings` and the fields of each finding, `remaining`, `trimmed`) and the action's inputs and outputs, with the same rules as above. The Markdown report's layout, and the wording, ranking and thresholds of findings, may change in any release.
 
+## The starlist crate's Rust API
+
+The `starlist` crate also builds a library, so its tests, examples and binaries can share code. That library isn't an interface: its modules may change in any release, and the crate's version follows the binary's interface above, not the library's. Depend on `starlist-core` for the log engine.
+
+## Minimum Rust version
+
+The minimum supported Rust version is the `rust-version` in Cargo.toml, and CI builds with it. Raising it is allowed in a minor release and is noted in the changelog.
+
 ## Before 1.0.0
 
 0.x releases may change anything, and say so in [CHANGELOG.md](../CHANGELOG.md).

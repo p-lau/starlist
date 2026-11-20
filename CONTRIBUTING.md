@@ -39,3 +39,15 @@ To try a change against a realistic log, the demo in the README generates 26 hou
 - Update the README or `docs/api.md` when behaviour, flags or output change.
 - Make sure the commands above pass. New code should build both with default features and with `--no-default-features`.
 - By contributing, you agree that your work is licensed under the [MIT License](LICENSE).
+
+## Fuzzing
+
+`fuzz/` holds [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets for `starlist-core` (`parse_event` and `redact`). They need a nightly toolchain and Linux or macOS. Seed inputs live in `fuzz/seeds/<target>/`.
+
+```sh
+cargo install cargo-fuzz
+cargo +nightly fuzz run parse_event fuzz/seeds/parse_event -- -max_total_time=60
+cargo +nightly fuzz run redact fuzz/seeds/redact -- -max_total_time=60
+```
+
+A crash is saved under `fuzz/artifacts/<target>/`; replay it with `cargo +nightly fuzz run <target> <that file>`. Attach it to the issue or fix it with a unit test.
