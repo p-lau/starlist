@@ -116,6 +116,9 @@ enum Cmd {
         /// How long to keep hourly counts and metrics.
         #[arg(long, default_value = "400d")]
         history: String,
+        /// Most patterns to keep (0 = no limit). Above it, rarely seen patterns go first, then the least recently seen; patterns with a state, timing or manual split, and errors from the last 7 days, are kept. Applied by serve, collect and hub, not ingest.
+        #[arg(long, default_value_t = 10000)]
+        max_patterns: usize,
         #[command(flatten)]
         mcp: McpArgs,
     },
@@ -293,6 +296,9 @@ struct SourceArgs {
     /// How long to keep hourly counts and metrics, like "400d".
     #[arg(long, default_value = "400d")]
     history: String,
+    /// Most patterns to keep (0 = no limit). Above it, rarely seen patterns go first, then the least recently seen; patterns with a state, timing or manual split, and errors from the last 7 days, are kept. Applied by serve, collect and hub, not ingest.
+    #[arg(long, default_value_t = 10000)]
+    max_patterns: usize,
     /// Version of the app being watched, recorded as a deploy marker at startup
     /// (when it differs from the release already live).
     #[arg(long, env = "STARLIST_VERSION")]
@@ -535,7 +541,7 @@ fn start_collection(
         .max(retention);
     store.set_meta("retention_secs", Some(&retention.to_string()))?;
     store.set_meta("history_secs", Some(&history.to_string()))?;
-    collector::spawn_pruner(store.clone(), retention, history);
+    collector::spawn_pruner(store.clone(), retention, history, src.max_patterns);
     if let Some(v) = src
         .app_version
         .as_deref()
@@ -862,6 +868,7 @@ async fn main() -> Result<()> {
             no_raw,
             retention,
             history,
+            max_patterns,
             mcp,
         } => {
             let hub = Arc::new(
@@ -873,7 +880,7 @@ async fn main() -> Result<()> {
             let history = starlist::analysis::parse_duration(&history)
                 .context("bad --history")?
                 .max(retention);
-            hub.spawn_pruner(retention, history);
+            hub.spawn_pruner(retention, history, max_patterns);
             let names = hub.names();
             eprintln!(
                 "starlist: hub in {} with {} service(s){}",
