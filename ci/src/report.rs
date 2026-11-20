@@ -404,3 +404,325 @@ fn html(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('\n', " ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn seen(level: Option<&'static str>, template: &str, count: usize, line: usize) -> Seen {
+        Seen {
+            template: template.into(),
+            level,
+            count,
+            line,
+            section: None,
+            sample: template.into(),
+            location: None,
+        }
+    }
+
+    fn run(items: Vec<(&str, Seen)>) -> RunLog {
+        let events = items.iter().map(|(_, s)| s.count).sum();
+        RunLog {
+            patterns: items
+                .into_iter()
+                .map(|(id, s)| (id.to_string(), s))
+                .collect::<HashMap<_, _>>(),
+            events,
+            ..Default::default()
+        }
+    }
+
+    fn shape(full: bool, limit: usize, max_chars: usize) -> Shape {
+        Shape {
+            full,
+            limit,
+            max_chars,
+        }
+    }
+
+    fn ids(f: &[Finding]) -> Vec<&str> {
+        f.iter().map(|f| f.pattern_id.as_str()).collect()
+    }
+
+    #[test]
+    fn orders_by_severity_then_kind_then_line() {
+        let failing = run(vec![
+            ("new-err-late", seen(Some("ERROR"), "late", 1, 10)),
+            ("new-err-early", seen(Some("ERROR"), "early", 1, 5)),
+            ("new-warn", seen(Some("WARN"), "warn", 1, 1)),
+            ("grew-err", seen(Some("ERROR"), "grew", 6, 2)),
+            ("same", seen(Some("ERROR"), "same", 3, 4)),
+        ]);
+        let passing = run(vec![
+            ("grew-err", seen(Some("ERROR"), "grew", 2, 2)),
+            ("same", seen(Some("ERROR"), "same", 3, 4)),
+            ("gone-err", seen(Some("ERROR"), "gone", 1, 3)),
+        ]);
+        let f = compare(&failing, Some(&passing), 0);
+        assert_eq!(
+            ids(&f),
+            [
+                "new-err-early",
+                "new-err-late",
+                "grew-err",
+                "gone-err",
+                "new-warn"
+            ]
+        );
+        let kinds: Vec<_> = f.iter().map(|f| f.kind).collect();
+        assert_eq!(
+            kinds,
+            [Kind::New, Kind::New, Kind::Grew, Kind::Stopped, Kind::New]
+        );
+        assert_eq!((f[2].count, f[2].before), (6, 2));
+        assert_eq!((f[3].count, f[3].before), (0, 1));
+    }
+
+    #[test]
+    fn grew_needs_double_and_two_more() {
+        let passing = run(vec![
+            ("a", seen(Some("ERROR"), "a", 1, 1)),
+            ("b", seen(Some("ERROR"), "b", 2, 2)),
+            ("c", seen(Some("ERROR"), "c", 2, 3)),
+        ]);
+        let failing = run(vec![
+            ("a", seen(Some("ERROR"), "a", 2, 1)),
+            ("b", seen(Some("ERROR"), "b", 3, 2)),
+            ("c", seen(Some("ERROR"), "c", 4, 3)),
+        ]);
+        assert_eq!(ids(&compare(&failing, Some(&passing), 0)), ["c"]);
+    }
+
+    #[test]
+    fn min_severity_filters_findings() {
+        let failing = run(vec![
+            ("w", seen(Some("WARN"), "w", 1, 1)),
+            ("e", seen(Some("ERROR"), "e", 1, 2)),
+        ]);
+        assert_eq!(ids(&compare(&failing, None, 3)), ["e"]);
+    }
+
+    #[test]
+    fn levelless_failure_lines_rank_as_errors() {
+        let failing = run(vec![
+            ("p", seen(None, "error[E0308]: mismatched types", 1, 9)),
+            ("q", seen(None, "compiling foo", 1, 1)),
+        ]);
+        let f = compare(&failing, None, 0);
+        assert_eq!(ids(&f), ["p", "q"]);
+        assert_eq!((f[0].severity, f[1].severity), (3, 1));
+    }
+
+    #[test]
+    fn identical_runs_have_no_findings() {
+        let mk = || run(vec![("a", seen(Some("ERROR"), "boom", 4, 3))]);
+        let (failing, passing) = (mk(), mk());
+        let f = compare(&failing, Some(&passing), 0);
+        assert!(f.is_empty());
+        let v = to_json(&failing, Some(&passing), &f, shape(false, 10, 8000));
+        assert_eq!(
+            v["summary"],
+            "Nothing in the failing run stands out from the passing run."
+        );
+        assert_eq!(v["findings"], json!([]));
+        assert!(v.get("remaining").is_none() && v.get("trimmed").is_none());
+    }
+
+    #[test]
+    fn without_a_passing_run_every_pattern_is_new() {
+        let failing = run(vec![("a", seen(Some("ERROR"), "boom", 4, 3))]);
+        let f = compare(&failing, None, 0);
+        assert_eq!(f.len(), 1);
+        assert_eq!((f[0].kind, f[0].count, f[0].before), (Kind::New, 4, 0));
+        let empty = run(vec![]);
+        assert!(compare(&empty, None, 0).is_empty());
+    }
+
+    #[test]
+    fn json_has_the_documented_fields() {
+        let mut s = seen(Some("ERROR"), "db down <NUM>", 3, 12);
+        s.section = Some("Run tests".into());
+        s.location = Some("src/db.rs:10".into());
+        s.sample = "ERROR db down 5\n  at db.rs:10".into();
+        let failing = run(vec![("a", s)]);
+        let passing = run(vec![("z", seen(Some("ERROR"), "old", 2, 7))]);
+        let f = compare(&failing, Some(&passing), 0);
+        let v = to_json(&failing, Some(&passing), &f, shape(true, 10, 16000));
+        assert_eq!(v["events"], json!({"failing": 3, "passing": 2}));
+        assert_eq!(v["patterns"], json!({"failing": 1, "passing": 1}));
+        assert!(
+            v["summary"]
+                .as_str()
+                .unwrap()
+                .starts_with("1 new, 0 grew, 1 stopped compared with the passing run.")
+        );
+        let items = v["findings"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        let a = &items[0];
+        assert_eq!(a["kind"], "new");
+        assert_eq!(a["pattern_id"], "a");
+        assert_eq!(a["level"], "ERROR");
+        assert_eq!(a["template"], "db down <NUM>");
+        assert_eq!(
+            (a["count"].as_u64(), a["before"].as_u64()),
+            (Some(3), Some(0))
+        );
+        assert_eq!(a["line"], 12);
+        assert_eq!(a["step"], "Run tests");
+        assert_eq!(a["location"], "src/db.rs:10");
+        assert_eq!(a["sample"], "ERROR db down 5\n  at db.rs:10");
+        // A stopped pattern points into the passing log and has no null fields.
+        let z = &items[1];
+        assert_eq!(z["kind"], "stopped");
+        assert_eq!(z["passing_line"], 7);
+        assert!(z.get("line").is_none() && z.get("step").is_none());
+        assert!(z.get("location").is_none() && z.get("sample").is_none());
+        assert_eq!(
+            (z["count"].as_u64(), z["before"].as_u64()),
+            (Some(0), Some(2))
+        );
+    }
+
+    #[test]
+    fn json_without_a_baseline_drops_kind_and_before() {
+        let failing = run(vec![
+            ("a", seen(None, "error: boom", 1, 1)),
+            ("b", seen(Some("WARN"), "slow", 1, 2)),
+        ]);
+        let f = compare(&failing, None, 0);
+        let v = to_json(&failing, None, &f, shape(false, 10, 8000));
+        assert!(v["events"].get("passing").is_none());
+        let a = &v["findings"][0];
+        assert!(a.get("kind").is_none() && a.get("before").is_none());
+        assert_eq!(a["level"], "ERROR?");
+        assert_eq!(v["findings"][1]["level"], "WARN");
+        assert!(
+            v["summary"]
+                .as_str()
+                .unwrap()
+                .starts_with("No passing run to compare with: 2 error and warning patterns")
+        );
+    }
+
+    #[test]
+    fn json_limit_reports_remaining() {
+        let items = ["a", "b", "c", "d", "e"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| (id, seen(Some("ERROR"), "t", 1, i + 1)))
+            .collect();
+        let failing = run(items);
+        let f = compare(&failing, None, 0);
+        let v = to_json(&failing, None, &f, shape(false, 2, 8000));
+        assert_eq!(v["findings"].as_array().unwrap().len(), 2);
+        assert_eq!(v["remaining"], 3);
+        assert!(v.get("trimmed").is_none());
+    }
+
+    fn big(n: usize, sample: usize) -> (RunLog, Vec<Finding>) {
+        let names: Vec<String> = (0..n).map(|i| format!("p{i:03}")).collect();
+        let items = names
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let mut s = seen(Some("ERROR"), &format!("failure number {i}"), 1, i + 1);
+                s.sample = format!("{}\n{}", s.template, "x".repeat(sample));
+                (id.as_str(), s)
+            })
+            .collect();
+        let failing = run(items);
+        let f = compare(&failing, None, 0);
+        (failing, f)
+    }
+
+    #[test]
+    fn trims_samples_first() {
+        let (failing, f) = big(3, 1000);
+        let v = to_json(&failing, None, &f, shape(true, 10, 2000));
+        assert!(json_len(&v) <= 2000);
+        assert_eq!(v["findings"].as_array().unwrap().len(), 3);
+        assert!(v.get("remaining").is_none());
+        assert_eq!(v["trimmed"], "Samples shortened to fit max_chars.");
+        for it in v["findings"].as_array().unwrap() {
+            assert!(it["sample"].as_str().unwrap().chars().count() <= 210);
+        }
+    }
+
+    #[test]
+    fn drops_samples_then_findings_and_says_so() {
+        let (failing, f) = big(40, 1000);
+        let max = 3000;
+        let v = to_json(&failing, None, &f, shape(true, 100, max));
+        assert!(json_len(&v) <= max, "{}", json_len(&v));
+        let shown = v["findings"].as_array().unwrap();
+        assert!(shown.len() < 40 && !shown.is_empty());
+        assert!(shown.iter().all(|it| it.get("sample").is_none()));
+        assert_eq!(v["remaining"], 40 - shown.len());
+        let note = v["trimmed"].as_str().unwrap();
+        assert!(note.contains("Samples removed to fit max_chars"), "{note}");
+        let left_out = format!("{} more left out to fit max_chars.", 40 - shown.len());
+        assert!(note.contains(&left_out), "{note}");
+        // The most telling findings are the ones kept.
+        assert_eq!(shown[0]["pattern_id"], "p000");
+    }
+
+    #[test]
+    fn brief_output_samples_only_the_top_findings() {
+        let (failing, f) = big(5, 50);
+        let v = to_json(&failing, None, &f, shape(false, 10, 16000));
+        let with: Vec<bool> = v["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|it| it.get("sample").is_some())
+            .collect();
+        assert_eq!(with, [true, true, true, false, false]);
+    }
+
+    #[test]
+    fn markdown_table_for_a_comparison() {
+        let mut s = seen(Some("ERROR"), "bad | thing", 3, 12);
+        s.section = Some("Run tests".into());
+        s.location = Some("src/db.rs:10".into());
+        s.sample = "bad | thing\n```boom```".into();
+        let failing = run(vec![("a", s)]);
+        let passing = run(vec![("z", seen(Some("WARN"), "old", 2, 7))]);
+        let f = compare(&failing, Some(&passing), 0);
+        let v = to_json(&failing, Some(&passing), &f, shape(true, 10, 16000));
+        let md = to_markdown(&v);
+        assert!(md.starts_with("### starlist-ci\n\n1 new, 0 grew, 1 stopped"));
+        assert!(md.contains("| | Level | Pattern | Failing | Passing | Where |"));
+        assert!(md.contains(
+            "| new | ERROR | `bad \\| thing` | 3 | 0 | line 12, step Run tests, `src/db.rs:10` |"
+        ));
+        assert!(md.contains("| stopped | WARN | `old` | 0 | 2 | passing log line 7 |"));
+        assert!(md.contains("<details><summary>bad | thing, line 12</summary>"));
+        assert!(md.contains("'''boom'''") && !md.contains("```boom"));
+    }
+
+    #[test]
+    fn markdown_without_a_baseline_and_with_notes() {
+        let (failing, f) = big(40, 1000);
+        let v = to_json(&failing, None, &f, shape(true, 100, 3000));
+        let md = to_markdown(&v);
+        assert!(md.contains("| Level | Pattern | Count | Where |"));
+        assert!(!md.contains("Passing"));
+        assert!(md.contains("| ERROR | `failure number 0` | 1 | line 1 |"));
+        let tail = md.trim_end().lines().last().unwrap();
+        assert!(tail.starts_with('_') && tail.ends_with('_'), "{tail}");
+        assert!(tail.contains(&format!("{} more not shown.", v["remaining"])));
+        assert!(tail.contains("Samples removed to fit max_chars"));
+    }
+
+    #[test]
+    fn markdown_for_an_empty_answer_is_just_the_summary() {
+        let empty = run(vec![]);
+        let v = to_json(&empty, None, &[], shape(false, 10, 8000));
+        assert_eq!(
+            to_markdown(&v),
+            "### starlist-ci\n\nNo passing run to compare with, and no errors or warnings in this log. The failing log had no events.\n\n"
+        );
+    }
+}
