@@ -380,7 +380,6 @@ export const tools: Tool[] = [
 	},
 	{
 		name: 'split_pattern',
-		unreleased: true,
 		group: 'tidy',
 		summary: 'Undo a merge: patterns merged by mistake count on their own again and aren’t merged automatically again.',
 		when: 'When an automatic merge lumped together things you want to track apart.',
