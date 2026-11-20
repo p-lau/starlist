@@ -422,7 +422,7 @@ async fn the_hub_pruner_folds_every_service() {
         assert_eq!(s.count(old, now - 30.0 * D, now).unwrap(), 5);
     }
     // Retention 7 days, history 14 days: the 20-day-old counts go, the rest stay.
-    hub.spawn_pruner(7.0 * D, 14.0 * D);
+    hub.spawn_pruner(7.0 * D, 14.0 * D, 0);
     for (s, old, recent) in &ids {
         let mut gone = false;
         for _ in 0..100 {
